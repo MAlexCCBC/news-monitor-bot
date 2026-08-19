@@ -1,7 +1,7 @@
 # News Monitor Bot
 
-Monitorizeaza automat 4 canale Telegram (G4Media, Digi24, Mediafax, HotNews),
-filtreaza dupa keywords politice, verifica sa fie stiri din ziua curenta,
+Monitorizeaza canale Telegram,
+filtreaza dupa keywords politice,
 verifica sa nu fie duplicat/similar cu ce ai postat in ultimele 72h,
 reformateaza cu AI in stilul tau, gaseste o imagine potrivita, si **iti trimite
 tie privat pe Telegram** rezultatul gata pregatit.
@@ -94,9 +94,9 @@ real e mai potrivit Railway/VPS, nu Actions.
 
 ## Cum funcționează fluxul (rezumat)
 
-1. Botul ascultă mesajele din cele 4 canale (contul tău normal, MTProto)
-2. Când apare un mesaj cu link, extrage articolul, curăță "recomandările" de jos
-3. Verifică dacă data articolului e azi
+1. Botul ascultă mesajele din canale (contul tău normal, MTProto)
+2. Când apare un mesaj cu link, extrage, curăță
+3. Verifică dacă data e azi
 4. Caută keywords (lista completă e în `.env`, o poți edita oricând)
 5. Calculează embedding cu Gemini pe **titlu + primul paragraf** și compară cu
    ultimele 72h — dacă similaritatea trece de 80%, ignoră (sau te anunță scurt,
