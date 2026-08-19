@@ -1,0 +1,21 @@
+{
+  "name": "news-monitor-bot",
+  "version": "1.0.0",
+  "description": "Monitorizeaza canale Telegram, filtreaza dupa keywords, reformateaza cu AI, trimite privat pentru aprobare manuala",
+  "main": "src/index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/index.js",
+    "login": "node src/telegram/login.js"
+  },
+  "dependencies": {
+    "telegram": "^2.22.2",
+    "node-telegram-bot-api": "^0.66.0",
+    "better-sqlite3": "^11.3.0",
+    "cheerio": "^1.0.0",
+    "axios": "^1.7.7",
+    "dotenv": "^16.4.5",
+    "input": "^1.0.1",
+    "sharp": "^0.33.5"
+  }
+}

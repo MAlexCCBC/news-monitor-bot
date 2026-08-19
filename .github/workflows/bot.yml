@@ -1,0 +1,52 @@
+name: Bot
+
+on:
+  # Rulezi botul manual din tab-ul Actions -> "Run workflow"
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  # Validare rapida la fiecare push (fara secrete, merge si fara ele)
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Verifica sintaxa
+        run: node --check src/index.js && echo "sintax OK"
+
+  # Ruleaza botul, doar manual. TOATE valorile vin din GitHub Secrets
+  # (tab-ul Settings -> Secrets and variables -> Actions) - nimic nu e in cod.
+  # ATENTIE: un job GitHub Actions se opreste automat dupa 6 ore (timeout-max).
+  run:
+    runs-on: ubuntu-latest
+    needs: validate
+    if: github.event_name == 'workflow_dispatch'
+    timeout-minutes: 300
+    env:
+      TG_API_ID: ${{ secrets.TG_API_ID }}
+      TG_API_HASH: ${{ secrets.TG_API_HASH }}
+      TG_SESSION: ${{ secrets.TG_SESSION }}
+      NOTIFY_BOT_TOKEN: ${{ secrets.NOTIFY_BOT_TOKEN }}
+      NOTIFY_CHAT_ID: ${{ secrets.NOTIFY_CHAT_ID }}
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      TAVILY_API_KEY: ${{ secrets.TAVILY_API_KEY }}
+      CHANNELS: ${{ secrets.CHANNELS }}
+      KEYWORDS: ${{ secrets.KEYWORDS }}
+      SIMILARITY_THRESHOLD: ${{ secrets.SIMILARITY_THRESHOLD }}
+      HISTORY_HOURS: ${{ secrets.HISTORY_HOURS }}
+      IMAGE_HISTORY_DAYS: ${{ secrets.IMAGE_HISTORY_DAYS }}
+      BYPASS_SIMILARITY_CHANNELS: ${{ secrets.BYPASS_SIMILARITY_CHANNELS }}
+      ROMANIAN_PERSONALITIES: ${{ secrets.ROMANIAN_PERSONALITIES }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Porneste botul
+        run: npm start
