@@ -27,6 +27,8 @@ jobs:
     needs: validate
     if: github.event_name == 'workflow_dispatch'
     timeout-minutes: 300
+    permissions:
+      contents: write
     env:
       TG_API_ID: ${{ secrets.TG_API_ID }}
       TG_API_HASH: ${{ secrets.TG_API_HASH }}
@@ -42,11 +44,27 @@ jobs:
       IMAGE_HISTORY_DAYS: ${{ secrets.IMAGE_HISTORY_DAYS }}
       BYPASS_CHANNELS: ${{ secrets.BYPASS_CHANNELS }}
       ROMANIAN_PERSONALITIES: ${{ secrets.ROMANIAN_PERSONALITIES }}
+      DB_PERSIST_BRANCH: data
     steps:
       - uses: actions/checkout@v5
+
+      # Baza de date se restauraza din branch-ul "data" (botul o salveaza
+      # periodic + la oprire). Asa istoricul de 72h NU se pierde intre rulari,
+      # chiar daca jobul e oprit fortat (ultima salvare periodica ramane).
+      - name: Restaurare baza de date din branch data
+        run: |
+          git fetch origin data || true
+          if git cat-file -e origin/data:data.sqlite 2>/dev/null; then
+            git checkout origin/data -- data.sqlite
+            echo "Baza de date restaurata din branch-ul data"
+          else
+            echo "Baza de date noua (branch-ul data nu exista inca)"
+          fi
+
       - uses: actions/setup-node@v5
         with:
           node-version: 22
       - run: npm ci
+
       - name: Porneste botul
         run: npm start

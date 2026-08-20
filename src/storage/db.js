@@ -5,7 +5,7 @@ import { fileURLToPath } from "url";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const db = new Database(path.join(__dirname, "../../data.sqlite"));
 
-db.pragma("journal_mode = WAL");
+db.pragma("journal_mode = DELETE");
 
 db.exec(`
   CREATE TABLE IF NOT EXISTS news_history (
@@ -94,6 +94,15 @@ export function cleanupOld(hoursBack, daysBackImages) {
   const cutoffImg = Date.now() - daysBackImages * 24 * 60 * 60 * 1000 * 2;
   db.prepare(`DELETE FROM news_history WHERE created_at < ?`).run(cutoffNews);
   db.prepare(`DELETE FROM image_history WHERE created_at < ?`).run(cutoffImg);
+}
+
+// Forteaza scrierea completa pe disc a bazei de date (folosit inainte de a
+// salva data.sqlite in git, ca sa fie salvata toata istoria, nu doar ce e
+// inca in jurnalul tranzactiilor).
+export function checkpointDb() {
+  try {
+    db.pragma("wal_checkpoint(TRUNCATE)");
+  } catch {}
 }
 
 export default db;

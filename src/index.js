@@ -27,8 +27,13 @@ if (fs.existsSync(LOCK_FILE)) {
 }
 fs.writeFileSync(LOCK_FILE, String(process.pid));
 process.on("exit", () => { try { fs.unlinkSync(LOCK_FILE); } catch {} });
-process.on("SIGINT", () => process.exit(0));
-process.on("SIGTERM", () => process.exit(0));
+function gracefulExit() {
+  persistNow(dbPersistBranch)
+    .catch(() => {})
+    .finally(() => process.exit(0));
+}
+process.on("SIGINT", gracefulExit);
+process.on("SIGTERM", gracefulExit);
 
 import { TelegramClient } from "telegram";
 import { StringSession } from "telegram/sessions/index.js";
@@ -41,6 +46,7 @@ import { checkSimilarity } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
 import { findImage } from "./image/search.js";
 import { saveNews, getRecentNews, isUrlSeen, cleanupOld } from "./storage/db.js";
+import { persistNow } from "./storage/persist.js";
 
 const {
   TG_API_ID,
@@ -75,6 +81,15 @@ const historyHours = Number(HISTORY_HOURS || 72);
 const bypassChannels = (BYPASS_CHANNELS || "gtasixleak")
   .split(",")
   .map((c) => c.trim().toLowerCase());
+
+// Persistarea bazei de date in git (doar cand e configurata, ex: pe GitHub
+// Actions). Botul salveaza data.sqlite periodic + la oprire, ca istoricul de
+// 72h sa nu se piarda intre rulari.
+const dbPersistBranch = process.env.DB_PERSIST_BRANCH?.trim() || "";
+const dbPersistIntervalMin = Number(process.env.DB_PERSIST_INTERVAL_MIN || 5);
+if (dbPersistBranch) {
+  console.log(`[persist] Baza de date se va salva in branch '${dbPersistBranch}' la fiecare ${dbPersistIntervalMin} min si la oprire`);
+}
 
 // Diagnostic rapid la pornire: confirma ca s-a incarcat cheia corecta din .env
 // (doar prefix + lungime, fara sa afiseze cheia integrala)
@@ -277,6 +292,13 @@ async function main() {
 
   // Curatam periodic istoricul vechi (o data la 6 ore)
   setInterval(() => cleanupOld(historyHours, Number(process.env.IMAGE_HISTORY_DAYS || 7)), 6 * 60 * 60 * 1000);
+
+  // Salvam periodic baza de date in git (pe Actions filesystem-ul e efemer;
+  // fara asta istoricul de 72h s-ar pierde la fiecare oprire).
+  if (dbPersistBranch) {
+    persistNow(dbPersistBranch).catch(() => {});
+    setInterval(() => persistNow(dbPersistBranch).catch(() => {}), dbPersistIntervalMin * 60 * 1000);
+  }
 
   client.addEventHandler(async (event) => {
     const message = event.message;
