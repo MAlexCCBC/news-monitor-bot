@@ -140,6 +140,7 @@ async function processCandidate(imgUrl) {
 export async function findImage(personOrTopic, articleTitle) {
   const recentImages = getRecentImages(IMAGE_HISTORY_DAYS());
   const usedUrls = new Set(recentImages.map((i) => i.image_url));
+  const usedMeta = new Map(recentImages.map((i) => [i.image_url, i]));
 
   const queries = [
     `${personOrTopic} Romania politica`,
@@ -168,12 +169,20 @@ export async function findImage(personOrTopic, articleTitle) {
   }
 
   // Ultima varianta: reutilizam o imagine folosita recent, daca apare din nou
-  // in rezultate. Mai bine asa decat sa nu avem nicio poza.
+  // in rezultate. Alegem imaginea folosita CEL MAI DEMULT (si mai rar), ca sa
+  // fie cat mai mult timp intre repetari - nu prima gasita, care s-ar repeta
+  // des.
+  const reusePool = [];
   for (const imgUrl of seen) {
-    if (!usedUrls.has(imgUrl)) continue;
-    const processed = await processCandidate(imgUrl);
+    const meta = usedMeta.get(imgUrl);
+    if (meta) reusePool.push({ url: imgUrl, lastUsed: meta.last_used, usedCount: meta.used_count });
+  }
+  reusePool.sort((a, b) => a.lastUsed - b.lastUsed || a.usedCount - b.usedCount);
+
+  for (const { url } of reusePool) {
+    const processed = await processCandidate(url);
     if (processed) {
-      saveImage({ imageUrl: imgUrl, personOrTopic });
+      saveImage({ imageUrl: url, personOrTopic });
       return processed;
     }
   }

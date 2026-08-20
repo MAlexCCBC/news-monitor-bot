@@ -46,7 +46,7 @@ export function isForeignOnly(text, personalities) {
 }
 
 // Detecteaza CINE face declaratia (vorbitorul), nu despre cine se vorbeste.
-// Ex: "Dragos Paslaru despre Nicusor Dan" -> "Dragos Paslaru".
+// Ex: "Dragoș Pîslaru despre Nicușor Dan" -> "Dragoș Pîslaru".
 // Regula: cuvintele cheie care apar INAINTE de "despre" in titlu sunt
 // vorbitorul (cel mai apropiat de "despre"); fara "despre", vorbitorul e
 // keyword-ul care apare PRIMUL in titlu.

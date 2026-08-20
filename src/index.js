@@ -223,8 +223,8 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
     });
 
     // 6. Cautare imagine - cautam imaginea CELUI CARE DECLARA (vorbitorul), nu
-    // a persoanei despre care se vorbeste. Ex: "Dragos Paslaru despre Nicusor
-    // Dan" -> se cauta poza cu Dragos Paslaru. "despre" din titlu desparte
+    // a persoanei despre care se vorbeste. Ex: "Dragoș Pîslaru despre Nicușor
+    // Dan" -> se cauta poza cu Dragoș Pîslaru. "despre" din titlu desparte
     // vorbitorul de subiect.
     const speaker = detectSpeaker(article.title, matchedKeywords) || article.title;
 
@@ -257,6 +257,16 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
   }
 }
 
+// Coada de procesare: articolele sunt procesate UNUL CATE UNUL, chiar daca
+// mai multe mesaje ajung aproape simultan (de pe canale diferite). Fara coada,
+// doua articole s-ar compara cu similaritatea in paralel - inainte ca oricare
+// sa fie salvat in istoric - si ambele ar trece de filtrul de duplicate.
+let processQueue = Promise.resolve();
+function enqueueProcess(fn) {
+  processQueue = processQueue.then(fn, fn);
+  return processQueue;
+}
+
 async function main() {
   const client = new TelegramClient(new StringSession(TG_SESSION), Number(TG_API_ID), TG_API_HASH, {
     connectionRetries: 5,
@@ -287,7 +297,7 @@ async function main() {
 
     const bypassFilters = bypassChannels.includes(chatUsername);
     if (bypassFilters) console.log(`[bypass] Canalul ${chatUsername} ocoleste filtrele (similaritate, keywords, straine)`);
-    await processArticleUrl(link, { bypassFilters });
+    await enqueueProcess(() => processArticleUrl(link, { bypassFilters }));
   }, new NewMessage({}));
 
   console.log(`👀 Monitorizez canalele: ${channelsList.join(", ")}`);
