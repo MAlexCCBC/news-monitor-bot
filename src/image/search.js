@@ -74,26 +74,32 @@ async function getImageDimensions(imageUrl) {
 }
 
 // Ajusteaza imaginea la 3:4 (portret) daca nu e deja 3:4 sau 9:16.
-// Crop-ul pastreaza intotdeauna SUSUL imaginii (unde e fata/capul),
-// nu mijlocul - asa nu mai iese poza cu persoana taiata pe jumatate.
+// Pentru imaginile late (ex 16:9) crop-ul e orientat pe SUBIECTUL principal
+// (fata/persoana) prin strategia "attention" a lui libvips - nu pe mijlocul
+// imaginii, ca sa nu tai persoana care sta in stanga sau dreapta.
+// Pentru imaginile inalte se pastreaza SUSUL (unde e capul/fata).
 async function cropTo3x4(buffer) {
   const meta = await sharp(buffer).metadata();
   const targetRatio = 3 / 4;
-  const currentRatio = meta.width / meta.height;
 
-  if (currentRatio > targetRatio) {
-    // prea lata: taiem pe orizontala, pastram toata inaltimea (capul inclus)
+  if (meta.width / meta.height > targetRatio) {
+    // prea lata (ex 16:9): taiem pe orizontala, dar urmarim persoana
     const cropWidth = Math.round(meta.height * targetRatio);
-    const left = Math.round((meta.width - cropWidth) / 2);
     return sharp(buffer)
-      .extract({ left, top: 0, width: cropWidth, height: meta.height })
+      .resize(cropWidth, meta.height, {
+        fit: "cover",
+        position: sharp.strategy.attention,
+      })
       .toBuffer();
   }
 
-  // prea inalta: taiem pe verticala, dar tinem crop-ul SUS (capul/fata)
+  // prea inalta: taiem pe verticala, tinem crop-ul SUS (capul/fata)
   const cropHeight = Math.round(meta.width / targetRatio);
   return sharp(buffer)
-    .extract({ left: 0, top: 0, width: meta.width, height: cropHeight })
+    .resize(meta.width, cropHeight, {
+      fit: "cover",
+      position: "top",
+    })
     .toBuffer();
 }
 
