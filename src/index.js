@@ -36,7 +36,7 @@ import { NewMessage } from "telegram/events/index.js";
 import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
-import { matchesKeywords, isPublishedToday, isForeignOnly } from "./filter/keywords.js";
+import { matchesKeywords, isPublishedToday, isForeignOnly, detectSpeaker } from "./filter/keywords.js";
 import { checkSimilarity } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
 import { findImage } from "./image/search.js";
@@ -52,7 +52,7 @@ const {
   SIMILARITY_THRESHOLD,
   HISTORY_HOURS,
   KEYWORDS,
-  BYPASS_SIMILARITY_CHANNELS,
+  BYPASS_CHANNELS,
   ROMANIAN_PERSONALITIES,
 } = process.env;
 
@@ -69,9 +69,10 @@ const romanianPersonalities = (
 const channelsList = CHANNELS.split(",").map((c) => c.trim().toLowerCase());
 const threshold = Number(SIMILARITY_THRESHOLD || 0.4);
 const historyHours = Number(HISTORY_HOURS || 72);
-// Canalele care OCOLESC filtrul de similaritate (ex: canalul tau de rezerva,
-// unde vrei sa postezi orice fara sa fie blocat ca "duplicat")
-const bypassSimChannels = (BYPASS_SIMILARITY_CHANNELS || "gtasixleak")
+// Canalele care OCOLESC toate filtrele de continut (similaritate, keywords,
+// stiri straine) - ex: canalul tau de rezerva, unde vrei sa pui orice daca da
+// prost. RAMANE activ doar deduplicarea de URL (protectie la bug-uri Telegram).
+const bypassChannels = (BYPASS_CHANNELS || "gtasixleak")
   .split(",")
   .map((c) => c.trim().toLowerCase());
 
@@ -123,7 +124,7 @@ function extractLink(message) {
   return urlMatch ? urlMatch[0] : null;
 }
 
-async function processArticleUrl(url, { bypassSimilarity = false } = {}) {
+async function processArticleUrl(url, { bypassFilters = false } = {}) {
   try {
     if (isUrlSeen(url)) {
       console.log(`[skip] URL deja procesat: ${url}`);
@@ -151,33 +152,41 @@ async function processArticleUrl(url, { bypassSimilarity = false } = {}) {
     // nume din sidebar/recomandari si provoaca false pozitive).
     const essentialText = `${article.title}\n${(article.content || "").slice(0, 500)}`;
 
-    // 2. Verificare keywords (pe titlu + primul paragraf)
+    // 2. Verificare keywords (pe titlu + primul paragraf).
+    // Canalele din BYPASS_CHANNELS (ex: canalul tau de rezerva) nu sunt blocate
+    // de lipsa keywords, dar LOGAM daca sunt sau nu gasite.
     const { matched, matchedKeywords } = matchesKeywords(essentialText, keywordsList);
     if (!matched) {
-      console.log("[skip] Niciun keyword gasit");
-      return;
+      if (bypassFilters) {
+        console.log("[pas] Canal bypass - NU sunt keywords gasite, dar continuam oricum");
+      } else {
+        console.log("[skip] Niciun keyword gasit");
+        return;
+      }
+    } else {
+      console.log(`[match] Keywords gasite: ${matchedKeywords.join(", ")}`);
     }
-    console.log(`[match] Keywords gasite: ${matchedKeywords.join(", ")}`);
 
     // 2b. Filtru stiri straine: Rusia/Ucraina/etc. fara implicare romaneasca.
     // O stire straina trece DOAR daca mentioneaza o personalitate romaneasca
     // reala (ex. Bolojan, Fritz) - cuvinte generice ca "ministrul" nu conteaza.
-    if (isForeignOnly(essentialText, romanianPersonalities)) {
+    // Canalele bypass trec si peste asta.
+    if (!bypassFilters && isForeignOnly(essentialText, romanianPersonalities)) {
       console.log("[skip] Stire straina fara implicare romaneasca");
       return;
     }
 
     // 3. Verificare similaritate cu ultimele 72h, pe titlu + primul paragraf.
-    // Canalele din BYPASS_SIMILARITY_CHANNELS (ex: canalul tau de rezerva)
-    // ocolesc complet acest filtru - nu se compara si nu se blocheaza nimic,
-    // ca sa poti pune orice acolo daca da prost.
+    // Canalele din BYPASS_CHANNELS (ex: canalul tau de rezerva) ocolesc complet
+    // acest filtru - nu se compara si nu se blocheaza nimic, ca sa poti pune
+    // orice acolo daca da prost.
     // Regula de site: daca match-ul cel mai apropiat e de pe ACELASI site,
     // nu-l consideram duplicat - un site nu isi republiceaza singur aceeasi
     // stire cu alt URL, deci e un articol diferit (chiar daca similar ca subiect,
     // ex. doua declaratii Bolojan in aceeasi zi). Duplicatele reale apar pe
     // SITE-URI DIFERITE (aceeasi stire preluata in toate canalele).
     let simResult = null;
-    if (!bypassSimilarity) {
+    if (!bypassFilters) {
       const recentNews = getRecentNews(historyHours);
       simResult = await checkSimilarity(essentialText, recentNews, threshold);
 
@@ -213,12 +222,13 @@ async function processArticleUrl(url, { bypassSimilarity = false } = {}) {
       embedding: simResult?.embedding ?? null,
     });
 
-    // 6. Cautare imagine - folosim primul keyword matched (de obicei numele persoanei) ca subiect
-    const personOrTopic = matchedKeywords.find((k) =>
-      ["Bolojan", "Nicusor Dan", "Nicușor Dan", "Fritz", "Buzoianu"].some((name) => k.includes(name))
-    ) || matchedKeywords[0];
+    // 6. Cautare imagine - cautam imaginea CELUI CARE DECLARA (vorbitorul), nu
+    // a persoanei despre care se vorbeste. Ex: "Dragos Paslaru despre Nicusor
+    // Dan" -> se cauta poza cu Dragos Paslaru. "despre" din titlu desparte
+    // vorbitorul de subiect.
+    const speaker = detectSpeaker(article.title, matchedKeywords) || article.title;
 
-    const imageResult = await findImage(personOrTopic || article.title, article.title);
+    const imageResult = await findImage(speaker, article.title);
 
     // 7. Trimitem TIE rezultatul, gata pregatit, pentru aprobare + postare MANUALA.
     // Postarea finala e doar textul curat (fara header, fara nota imagine,
@@ -236,7 +246,7 @@ async function processArticleUrl(url, { bypassSimilarity = false } = {}) {
       // ca sa nu se amestece cu postarea.
       if (cleanPost) await notifyPlain(cleanPost);
       await notifyPlain(
-        `Sursa: ${url}\n\n⚠️ Nu am gasit imagine noua automat, cauta manual pentru: ${personOrTopic}`
+        `Sursa: ${url}\n\n⚠️ Nu am gasit imagine noua automat, cauta manual pentru: ${speaker}`
       );
     }
 
@@ -275,9 +285,9 @@ async function main() {
     const link = extractLink(message);
     if (!link) return; // mesaj fara link, il ignoram (nu e stire)
 
-    const bypassSimilarity = bypassSimChannels.includes(chatUsername);
-    if (bypassSimilarity) console.log(`[bypass] Canalul ${chatUsername} ocoleste filtrul de similaritate`);
-    await processArticleUrl(link, { bypassSimilarity });
+    const bypassFilters = bypassChannels.includes(chatUsername);
+    if (bypassFilters) console.log(`[bypass] Canalul ${chatUsername} ocoleste filtrele (similaritate, keywords, straine)`);
+    await processArticleUrl(link, { bypassFilters });
   }, new NewMessage({}));
 
   console.log(`👀 Monitorizez canalele: ${channelsList.join(", ")}`);

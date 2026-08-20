@@ -45,6 +45,27 @@ export function isForeignOnly(text, personalities) {
   return !hasRomanianContext && !hasRomanianPerson;
 }
 
+// Detecteaza CINE face declaratia (vorbitorul), nu despre cine se vorbeste.
+// Ex: "Dragos Paslaru despre Nicusor Dan" -> "Dragos Paslaru".
+// Regula: cuvintele cheie care apar INAINTE de "despre" in titlu sunt
+// vorbitorul (cel mai apropiat de "despre"); fara "despre", vorbitorul e
+// keyword-ul care apare PRIMUL in titlu.
+export function detectSpeaker(title, matchedKeywords) {
+  const normTitle = normalize(title || "");
+  const positions = matchedKeywords
+    .map((kw) => ({ kw, pos: normTitle.indexOf(normalize(kw)) }))
+    .filter((p) => p.pos !== -1)
+    .sort((a, b) => a.pos - b.pos);
+  if (positions.length === 0) return null;
+
+  const desprePos = normTitle.indexOf("despre");
+  if (desprePos !== -1) {
+    const before = positions.filter((p) => p.pos < desprePos);
+    if (before.length > 0) return before[before.length - 1].kw; // cel mai apropiat de "despre"
+  }
+  return positions[0].kw; // fara "despre": primul nume din titlu e vorbitorul
+}
+
 // Verifica daca data articolului (ISO, din meta tags: article:published_time)
 // e din ziua curenta, comparat in ora Romaniei (Europe/Bucharest).
 export function isPublishedToday(isoDate) {
