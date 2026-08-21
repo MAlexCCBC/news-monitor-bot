@@ -1,7 +1,7 @@
 import axios from "axios";
 import sharp from "sharp";
 import { getRecentImages, saveImage } from "../storage/db.js";
-import { getFaceBox, samePerson } from "./vision.js";
+import { getFaceBox, verifyCandidate } from "./vision.js";
 
 const TAVILY_KEY = () => process.env.TAVILY_API_KEY;
 const IMAGE_HISTORY_DAYS = () => Number(process.env.IMAGE_HISTORY_DAYS || 7);
@@ -191,13 +191,20 @@ async function buildCandidate(imgUrl, personName, referenceBuffer) {
   if (!dims) return null;
 
   if (referenceBuffer) {
-    const verdict = await samePerson(referenceBuffer, dims.buffer);
-    if (verdict === false && urlMentionsPerson(imgUrl, personName)) {
+    const verdict = await verifyCandidate(referenceBuffer, dims.buffer);
+
+    // Respingere pt. text vizibil (watermark, logo post TV, titluri, subtitrari)
+    if (verdict.hasText === true) {
+      console.log(`[image] Respins (are text vizibil in imagine): ${imgUrl}`);
+      return null;
+    }
+
+    if (verdict.samePerson === false && urlMentionsPerson(imgUrl, personName)) {
       console.log(`[image] Model a zis NU DAR numele apare in URL - accept (${personName}): ${imgUrl}`);
-    } else if (verdict === false) {
+    } else if (verdict.samePerson === false) {
       console.log(`[image] Respins (NU e ${personName}): ${imgUrl}`);
       return null;
-    } else if (verdict === null) {
+    } else if (verdict.samePerson === null) {
       // Analiza nedisponibila: acceptam, dar logam - mai bine o poza plauzibila
       // decat deloc (numele era deja cel al vorbitorului in cautare).
       console.log(`[image] Verificare faciala indisponibila, accept oricum: ${imgUrl}`);
@@ -212,7 +219,7 @@ async function buildCandidate(imgUrl, personName, referenceBuffer) {
     buffer: finalBuffer,
     sourceUrl: imgUrl,
     note: faceBox
-      ? "Imagine verificata facial si decupata centrat pe fata."
+      ? "Imagine verificata facial (fara text vizibil), decupata centrat pe fata."
       : "Imagine decupata la 3:4 cu focalizare pe subiect.",
   };
 }
@@ -235,10 +242,11 @@ export async function processArticleImage(imgUrl) {
 // Flux complet pentru o persoana/subiect:
 //  1. Ia portretul Wikipedia ca REFERINTA faciala (nu il posteaza).
 //  2. Cauta poze pe net (Tavily -> DuckDuckGo -> Bing) cu numele vorbitorului.
-//  3. Fiecare candidat e verificat facial contra referintei, apoi cropuit
-//     centrat pe fata. Primul confirmat castiga; preferam pozele NEfolosite.
-//  4. Daca nimic nu trece verificarea, POSTAM referinta Wikipedia - persoana
-//     corecta garantat, mai bine decat o poza gresita sau deloc.
+//  3. Fiecare candidat e verificat facial + anti-text contra referintei, apoi
+//     cropuit centrat pe fata. Primul confirmat castiga; pozele folosite in
+//     ultimele IMAGE_HISTORY_DAYS zile sunt sarite (fara repetitii).
+//  4. Nimic nou verificat => portretul Wikipedia (daca nu e repetat recent),
+//     apoi reutilizare LRU, iar portretul Wikipedia repetat e ultima rezerva.
 export async function findImage(personOrTopic, articleTitle) {
   const recentImages = getRecentImages(IMAGE_HISTORY_DAYS());
   const usedUrls = new Set(recentImages.map((i) => i.image_url));
@@ -285,11 +293,27 @@ export async function findImage(personOrTopic, articleTitle) {
       }
     }
   }
-
   if (!winner) {
-    // 4. Nimic verificat: postam direct referinta Wikipedia (persoana sigura),
-    // daca o avem. Altfel incercam reutilizarea unei imagini vechi.
-    if (referenceBuffer) {
+    // 4. Nimic nou verificat. ORDINEA conteaza ca sa evitam repetarile:
+    //    a) daca portretul Wikipedia NU a fost folosit recent -> il folosim
+    //       (persoana corecta garantat);
+    //    b) daca A fost folosit recent (ex: acelasi politician la doua stiri in
+    //       aceeasi zi) -> incercam intai reutilizarea LRU a altor poze vechi
+    //       ale lui, ca sa nu repetam identic;
+    //    c) abia daca nu exista nimic altceva, repetam si portretul Wikipedia
+    //       (mai bine o poza repetata decat una gresita sau deloc).
+    const wikiRecentlyUsed = reference?.url ? usedUrls.has(reference.url) : false;
+
+    // Reutilizare LRU din istoricul recent (poze vechi care au reaparut in
+    // rezultatele de azi; sortate ca sa luam cea mai putin folosita).
+    const reusePool = [];
+    for (const imgUrl of seen) {
+      const meta = usedMeta.get(imgUrl);
+      if (meta) reusePool.push({ url: imgUrl, lastUsed: meta.last_used, usedCount: meta.used_count });
+    }
+    reusePool.sort((a, b) => a.lastUsed - b.lastUsed || a.usedCount - b.usedCount);
+
+    if (referenceBuffer && !wikiRecentlyUsed) {
       const faceBox = await getFaceBox(referenceBuffer);
       const processed = {
         buffer: await cropPortrait3x4(referenceBuffer, faceBox),
@@ -301,19 +325,24 @@ export async function findImage(personOrTopic, articleTitle) {
       return processed;
     }
 
-    // Reutilizare LRU din istoricul recent (ultima varianta inainte de nimic).
-    const reusePool = [];
-    for (const imgUrl of seen) {
-      const meta = usedMeta.get(imgUrl);
-      if (meta) reusePool.push({ url: imgUrl, lastUsed: meta.last_used, usedCount: meta.used_count });
-    }
-    reusePool.sort((a, b) => a.lastUsed - b.lastUsed || a.usedCount - b.usedCount);
     for (const { url } of reusePool) {
       const candidate = await buildCandidate(url, personOrTopic, referenceBuffer);
       if (candidate) {
         saveImage({ imageUrl: url, personOrTopic });
         return candidate;
       }
+    }
+
+    if (referenceBuffer && wikiRecentlyUsed) {
+      const faceBox = await getFaceBox(referenceBuffer);
+      const processed = {
+        buffer: await cropPortrait3x4(referenceBuffer, faceBox),
+        sourceUrl: reference.url || null,
+        note: "Portret oficial (Wikipedia) - reutilizat; nu am gasit alta poza verificata.",
+      };
+      saveImage({ imageUrl: reference.url || "", personOrTopic });
+      console.log("[image] Ultima rezerva: repetau portretul Wikipedia (deja folosit recent)");
+      return processed;
     }
   }
 

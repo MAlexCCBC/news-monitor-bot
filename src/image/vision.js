@@ -102,10 +102,15 @@ export async function getFaceBox(imageBuffer) {
   }
 }
 
-// Verifica daca doua imagini arata ACEEASI persoana (comparare faciala).
-// Intoarce true/false; null daca analiza nu a putut fi facuta (apelantul
-// decide politica de fallback).
-export async function samePerson(referenceBuffer, candidateBuffer) {
+// Verifica candidatul fata de referinta INTR-UN SINGUR apel Gemini, doua
+// verdicturi deodata (economie de cota):
+//   samePerson - candidatul arata aceeasi persoana ca in referinta?
+//   hasText    - candidatul are text vizibil suprapus (watermark, logo post TV,
+//                titluri de stire, subtitrari)? Astfel de poze arata neprofesional
+//                si sunt respinse.
+// Intoarce { samePerson, hasText } cu valori true/false; null pe componenta
+// respectiva daca analiza nu a putut fi facuta (apelantul decide fallback-ul).
+export async function verifyCandidate(referenceBuffer, candidateBuffer) {
   try {
     const refImg = await toInlineJpeg(referenceBuffer);
     const candImg = await toInlineJpeg(candidateBuffer);
@@ -114,13 +119,29 @@ export async function samePerson(referenceBuffer, candidateBuffer) {
       { text: "PRIMA imagine este POZA DE REFERINTA a unei persoane." },
       { inlineData: candImg },
       {
-        text: 'A DOUA imagine arata ACEEASI persoana ca in poza de referinta? Comparati trasaturile faciale (forma fetei, ochi, nas, gura, sprancene). Ignorati imbracamintea, fundalul, varsta usor diferita sau unghiul. Raspunde EXACT cu o singura linie: DA sau NU. Daca a doua imagine nu contine clar o fata umana (e obiect, logo, multime indepartata), raspunde NU.',
+        text: `Evalueaza A DOUA imagine (candidatul) si raspunde EXACT in acest format, pe 3 linii:
+PERSOANA: DA sau NU
+TEXT: DA sau NU
+MOTIV: maxim 10 cuvinte
+
+PERSOANA - candidatul arata ACEEASI persoana ca in poza de referinta? Comparati trasaturile faciale (forma fetei, ochi, nas, gura). Ignorati imbracamintea, fundalul, varsta usor diferita sau unghiul. Daca a doua imagine nu contine clar o fata umana (obiect, logo, multime indepartata), raspunsul e NU.
+
+TEXT - candidatul contine TEXT vizibil suprapus peste imagine: watermark, nume sau logo de post TV/ziar, titluri de stire, subtitrari, data/ora afisata? Textul mic de tip semnatura a fotografului NU se pune (raspunde NU doar daca textul e vizibil si deranjeaza).`,
       },
     ]);
-    const verdict = text.split("\n")[0].trim().toUpperCase();
-    return verdict.startsWith("DA");
+
+    const personMatch = text.match(/PERSOANA:\s*(DA|NU)/i);
+    const textMatch = text.match(/TEXT:\s*(DA|NU)/i);
+    if (!personMatch) {
+      console.warn(`[vision] verifyCandidate: format neasteptat: ${text.slice(0, 80)}`);
+      return { samePerson: null, hasText: null };
+    }
+    return {
+      samePerson: personMatch[1].toUpperCase() === "DA",
+      hasText: textMatch ? textMatch[1].toUpperCase() === "DA" : null,
+    };
   } catch (err) {
-    console.warn(`[vision] samePerson esuat: ${err.message}`);
-    return null;
+    console.warn(`[vision] verifyCandidate esuat: ${err.message}`);
+    return { samePerson: null, hasText: null };
   }
 }
