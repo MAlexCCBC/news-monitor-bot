@@ -55,14 +55,47 @@ function extractPublishDate($) {
   return found || null; // ex: "2026-08-19T14:43:12+00:00"
 }
 
+// Header-uri complete de browser: unele site-uri (ex. hotnews.ro) resping
+// intermitent request-urile cu doar User-Agent (403), mai ales de pe IP-uri
+// de datacenter precum runner-ele GitHub Actions.
+const BROWSER_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+  Accept:
+    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+  "Accept-Language": "ro-RO,ro;q=0.9,en;q=0.8",
+  Referer: "https://www.google.com/",
+  "Sec-Fetch-Dest": "document",
+  "Sec-Fetch-Mode": "navigate",
+  "Sec-Fetch-Site": "cross-site",
+  "Upgrade-Insecure-Requests": "1",
+};
+
+// GET cu retry: erorile 403/429/5xx sunt de obicei temporare (rate limit /
+// bot protection), deci reincercam cu backoff crescunt inainte sa renuntam.
+async function getWithRetry(url, attempts = 3) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await axios.get(url, {
+        headers: BROWSER_HEADERS,
+        timeout: 15000,
+      });
+    } catch (err) {
+      lastError = err;
+      const status = err.response?.status;
+      const retryable = status === 403 || status === 429 || status >= 500 || !status;
+      if (!retryable || i === attempts - 1) throw err;
+      const waitMs = 1500 * (i + 1);
+      console.warn(`[scraper] ${status || "eroare retea"} la ${url} - reincerc in ${waitMs}ms`);
+      await new Promise((r) => setTimeout(r, waitMs));
+    }
+  }
+  throw lastError;
+}
+
 export async function fetchArticle(url) {
-  const { data: html } = await axios.get(url, {
-    headers: {
-      "User-Agent":
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36",
-    },
-    timeout: 15000,
-  });
+  const { data: html } = await getWithRetry(url);
 
   const $ = cheerio.load(html);
   const config = getSiteConfig(url);

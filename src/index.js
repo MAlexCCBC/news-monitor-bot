@@ -45,7 +45,7 @@ import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianCont
 import { checkSimilarity } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
-import { findImage, processCandidate } from "./image/search.js";
+import { findImage, processArticleImage } from "./image/search.js";
 import { saveNews, getRecentNews, isUrlSeen, cleanupOld } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
 
@@ -250,27 +250,24 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
       embedding: simResult?.embedding ?? null,
     });
 
-    // 6. Imagine — PRIMA OPTIUNE: imaginea articolului insusi (cea mai fiabila,
-    // e deja persoana corecta despre care se scrie). Daca articolul nu are
-    // imagine, cautam pe motoare dupa numele vorbitorului.
+    // 6. Sistemul inteligent de imagini: ia numele vorbitorului, analizeaza
+    // fata din portretul sau Wikipedia (REFERINTA), cauta poze NOI pe net cu
+    // numele lui si le verifica facial contra referintei; le decupeaza centrat
+    // pe fata. Daca nu gaseste nimic verificat, fallback la imaginea articolului.
     const speaker = detectSpeaker(article.title, matchedKeywords) || article.title;
 
     let imageResult = null;
-
-    // a) Imaginea articolului (og:image sau prima imagine din continut)
-    if (article.imageUrl) {
-      try {
-        imageResult = await processCandidate(article.imageUrl);
-        if (imageResult) {
-          saveImage({ imageUrl: article.imageUrl, personOrTopic: speaker });
-          console.log("[image] Imaginea articolului: " + article.imageUrl);
-        }
-      } catch {}
+    try {
+      imageResult = await findImage(speaker, article.title);
+    } catch (e) {
+      console.warn("[image] findImage esuat:", e.message);
     }
 
-    // b) Fallback: cautare pe motoare (Wikipedia, Tavily, DuckDuckGo, Bing)
-    if (!imageResult) {
-      imageResult = await findImage(speaker, article.title);
+    if (!imageResult && article.imageUrl) {
+      try {
+        imageResult = await processArticleImage(article.imageUrl);
+        console.log("[image] Fallback: imaginea articolului " + article.imageUrl);
+      } catch {}
     }
 
     // 7. Trimitem TIE rezultatul, gata pregatit, pentru aprobare + postare MANUALA.
