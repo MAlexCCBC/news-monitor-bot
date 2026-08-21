@@ -8,14 +8,20 @@ import sharp from "sharp";
 // dupa importurile modulelor).
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
-// Modele vision, lite-urile primele: au cele mai mari cote zilnice si NU
-// intra in conflict cu modelul folosit la rescrierea stirilor (gemini-3.5-flash),
-// care altfel ajunge la 429 cand imaginea si textul ruleaza simultan.
+// Modele vision, in cascada lunga de fallback. Lite-urile primele: cele mai
+// mari cote zilnice si NU intra in conflict cu modelele folosite la rescrierea
+// stirilor (gemini-3.6/3.5-flash), care altfel ajung la 429 cand imaginea si
+// textul ruleaza simultan. Flash-urile normale sunt rezerva, iar Gemma 4 e
+// ultima linie de aparare - cote imense (14.4K/zi) si nu se atinge de nicio
+// alta componenta a botului.
 const VISION_MODELS = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
   "gemini-2.5-flash-lite",
   "gemini-3.5-flash",
+  "gemini-3-flash",
+  "gemma-4-31b-it",
+  "gemma-4-26b-a4b-it",
 ];
 
 // Pregatim imaginea pt. Gemini: JPEG mic (512px max), calitate 80 - requesturi
@@ -27,6 +33,8 @@ export async function toInlineJpeg(buffer, maxSize = 512) {
     .toBuffer();
   return { mimeType: "image/jpeg", data: jpeg.toString("base64") };
 }
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function geminiVision(parts) {
   let lastError;
@@ -49,6 +57,9 @@ async function geminiVision(parts) {
     } catch (err) {
       lastError = err;
       console.warn(`[vision] ${model} a esuat (${err.response?.status || err.message})`);
+      // La 429 (rate limit) asteptam putin inainte sa trecem la urmatorul
+      // model - limitele se pot reseta rapid si salvam un apel din cascada.
+      if (err.response?.status === 429) await sleep(2000);
       continue;
     }
   }
