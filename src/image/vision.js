@@ -8,18 +8,17 @@ import sharp from "sharp";
 // dupa importurile modulelor).
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
-// Modele vision, in cascada lunga de fallback. Lite-urile primele: cele mai
-// mari cote zilnice si NU intra in conflict cu modelele folosite la rescrierea
-// stirilor (gemini-3.6/3.5-flash), care altfel ajung la 429 cand imaginea si
-// textul ruleaza simultan. Flash-urile normale sunt rezerva, iar Gemma 4 e
-// ultima linie de aparare - cote imense (14.4K/zi) si nu se atinge de nicio
-// alta componenta a botului.
+// Modele vision, in cascada de fallback. Lite-urile primele: cele mai mari
+// cote zilnice si NU intra in conflict cu modelele folosite la rescrierea
+// stirilor. Scoatem din lista modelele care dau 404 constant pe acest cont
+// (gemini-2.5-flash-lite, gemini-3-flash) - fiecare incercare pe ele inseamna
+// doar timp irosit si cascada aluneca pana la Gemma (mult mai slab la comparat
+// fețe -> respinsere false, ex. portretul corect primit verdict "NU e persoana").
 const VISION_MODELS = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
-  "gemini-2.5-flash-lite",
   "gemini-3.5-flash",
-  "gemini-3-flash",
+  "gemini-3.6-flash",
   "gemma-4-31b-it",
   "gemma-4-26b-a4b-it",
 ];
@@ -44,7 +43,7 @@ async function geminiVision(parts) {
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         { contents: [{ parts }], generationConfig: { temperature: 0 } },
         {
-          timeout: 30000,
+          timeout: 60000,
           headers: {
             "x-goog-api-key": GEMINI_KEY(),
             "Content-Type": "application/json",

@@ -166,6 +166,22 @@ export async function cropPortrait3x4(buffer, faceBox = null) {
     .toBuffer();
 }
 
+// Verifica daca numele persoanei apare in URL-ul imaginii (ex:
+// "Portret_George_Simion.jpg"). Cand modelul de viziune respinge o poza DAR
+// numele e chiar in fisier, cel mai probabil e o respingere falsa a unui
+// model slab (Gemma) si o acceptam cu avertisment.
+function urlMentionsPerson(imgUrl, personName) {
+  try {
+    const decoded = decodeURIComponent(imgUrl).toLowerCase();
+    return personName
+      .toLowerCase()
+      .split(/\s+/)
+      .some((tok) => tok.length > 3 && decoded.includes(tok));
+  } catch {
+    return false;
+  }
+}
+
 // Descarca, verifica si decupeaza un candidat.
 // referenceBuffer: poza oficiala a vorbitorului (Wikipedia). Daca exista,
 // candidatul e acceptat DOAR daca Gemini confirma aceeasi persoana.
@@ -176,11 +192,12 @@ async function buildCandidate(imgUrl, personName, referenceBuffer) {
 
   if (referenceBuffer) {
     const verdict = await samePerson(referenceBuffer, dims.buffer);
-    if (verdict === false) {
+    if (verdict === false && urlMentionsPerson(imgUrl, personName)) {
+      console.log(`[image] Model a zis NU DAR numele apare in URL - accept (${personName}): ${imgUrl}`);
+    } else if (verdict === false) {
       console.log(`[image] Respins (NU e ${personName}): ${imgUrl}`);
       return null;
-    }
-    if (verdict === null) {
+    } else if (verdict === null) {
       // Analiza nedisponibila: acceptam, dar logam - mai bine o poza plauzibila
       // decat deloc (numele era deja cel al vorbitorului in cautare).
       console.log(`[image] Verificare faciala indisponibila, accept oricum: ${imgUrl}`);
