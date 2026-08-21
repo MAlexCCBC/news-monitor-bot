@@ -271,23 +271,29 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
       embedding: simResult?.embedding ?? null,
     });
 
-    // 6. Sistemul inteligent de imagini. Vorbitorul se determina in 2 pasi:
-    //    a) regex rapid pe titlu (detectSpeaker);
-    //    b) daca regex-ul nu gaseste un nume plauzibil, AI-ul CITESTE stirea
-    //       si extrage numele persoanei care declara. Daca nici AI-ul nu
-    //       gaseste o persoana (stiri despre legi/institutii/evenimente),
-    //       NU mai cautam poze de persoana deloc - trecem direct la imaginea
-    //       articolului, fara sa ardem apeluri de verificare faciala.
-    let speaker = detectSpeaker(article.title, matchedKeywords);
-    if (!isPlausiblePersonName(speaker)) {
-      speaker = await extractSpeakerFromArticle(
-        article.title,
-        (article.content || "").slice(0, 1500)
-      );
-    }
+    // 6. Sistemul inteligent de imagini. Vorbitorul se determina AI-PRIMAR:
+    //    Gemini citeste titlul+textul si extrage persoana care declara,
+    //    indiferent de formatul titlului (robust la neasteptari). Regex-ul pe
+    //    titlu (detectSpeaker) e doar INDICIU pentru AI si rezerva daca AI-ul
+    //    nu e disponibil. Ambele trec prin isPlausiblePersonName; AI-ul are
+    //    in plus garda anti-halucinatie (numele trebuie sa existe in text).
+    //    Daca niciun vorbitor (stiri despre legi/institutii/evenimente), NU
+    //    cautam portret deloc - trecem direct la imaginea articolului.
+    const regexSpeaker = detectSpeaker(article.title, matchedKeywords);
+    const aiSpeaker = await extractSpeakerFromArticle(
+      article.title,
+      (article.content || "").slice(0, 1500),
+      [regexSpeaker, ...matchedKeywords].filter(Boolean).join(", ")
+    );
+    const speaker = isPlausiblePersonName(aiSpeaker)
+      ? aiSpeaker
+      : isPlausiblePersonName(regexSpeaker)
+        ? regexSpeaker
+        : null;
+    if (speaker) console.log(`[speaker] Vorbitor final: ${speaker}`);
 
     let imageResult = null;
-    if (speaker && isPlausiblePersonName(speaker)) {
+    if (speaker) {
       try {
         imageResult = await findImage(speaker, article.title);
       } catch (e) {

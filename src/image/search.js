@@ -286,9 +286,21 @@ export async function findImage(personOrTopic, articleTitle) {
   const usedUrls = new Set(recentImages.map((i) => i.image_url));
   const usedMeta = new Map(recentImages.map((i) => [i.image_url, i]));
 
-  // 1. Referinta faciala
+  // 1. Referinta faciala + sanity-check: portretul trebuie sa contina o FATA.
+  //    Pentru institutii/partide Wikipedia intoarce steme/logo-uri - fara fata
+  //    nu are sens sa verificam candidati contra lor si nici sa postam asa ceva
+  //    ca "portret". In acest caz renuntam la referinta (candidatii vor fi
+  //    acceptati pe contextul numelui) si la fallback-ul cu portretul.
   const reference = await fetchWikipediaReference(personOrTopic);
-  const referenceBuffer = reference?.buffer || null;
+  let referenceBuffer = reference?.buffer || null;
+  let referenceFaceBox = null;
+  if (referenceBuffer) {
+    referenceFaceBox = await getFaceBox(referenceBuffer);
+    if (!referenceFaceBox) {
+      console.log("[image] Referinta Wikipedia fara fata detectabila - nu o folosesc");
+      referenceBuffer = null;
+    }
+  }
 
   // 2. Candidati din motoare
   const queries = [
@@ -348,9 +360,8 @@ export async function findImage(personOrTopic, articleTitle) {
     reusePool.sort((a, b) => a.lastUsed - b.lastUsed || a.usedCount - b.usedCount);
 
     if (referenceBuffer && !wikiRecentlyUsed) {
-      const faceBox = await getFaceBox(referenceBuffer);
       const processed = {
-        buffer: await cropPortrait3x4(referenceBuffer, faceBox),
+        buffer: await cropPortrait3x4(referenceBuffer, referenceFaceBox),
         sourceUrl: reference.url || null,
         note: "Portret oficial (Wikipedia) - nu am gasit poze noi verificate facial.",
       };
@@ -368,9 +379,8 @@ export async function findImage(personOrTopic, articleTitle) {
     }
 
     if (referenceBuffer && wikiRecentlyUsed) {
-      const faceBox = await getFaceBox(referenceBuffer);
       const processed = {
-        buffer: await cropPortrait3x4(referenceBuffer, faceBox),
+        buffer: await cropPortrait3x4(referenceBuffer, referenceFaceBox),
         sourceUrl: reference.url || null,
         note: "Portret oficial (Wikipedia) - reutilizat; nu am gasit alta poza verificata.",
       };

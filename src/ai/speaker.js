@@ -47,9 +47,24 @@ STIRE:
 ${excerpt}
 `;
 
+// Garda anti-halucinatie: numele returnat de AI TREBUIE sa existe in textul
+// articolului (normalizat, fara diacritice). Fara asta, modelul putea intoarce
+// persoane inventate sau din contextul general al modelului (ex: "Maria
+// Mihăescu" pentru o stire care doar MENtiona povestea Mitei Bicicliste).
+function nameAppearsInText(name, title, excerpt) {
+  const norm = (s) =>
+    (s || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const haystack = norm(`${title} ${excerpt}`);
+  const words = norm(name).split(/\s+/).filter(Boolean);
+  // Toate cuvintele numelui trebuie sa apara in text (ca substring e ok:
+  // "Bolojan" in "Bolojanului"). Verificam fiecare cuvant individual ca sa
+  // toleram ordinea diferita (titlu: "Fritz Dominic" vs AI: "Dominic Fritz").
+  return words.every((w) => w.length >= 3 && haystack.includes(w));
+}
+
 // Intoarce numele persoanei (string) sau null daca nu exista / a esuat tot.
-// keywordHint: cuvintele-cheie gasite deja in text (nume de personalitati) -
-// ancoreaza extractia ca sa nu confunde personaje istorice cu vorbitorul real.
+// keywordHint: cuvintele-cheie gasite deja in text + rezultatul regex-ului
+// rapide - doar INDICII, decizia finala apartine mereu AI-ului + validarii.
 export async function extractSpeakerFromArticle(title, excerpt, keywordHint = "") {
   const models = await filterModels(SPEAKER_MODELS);
   for (const model of models) {
@@ -85,6 +100,11 @@ export async function extractSpeakerFromArticle(title, excerpt, keywordHint = ""
         /^[A-Za-zĂÂÎȘȚăâîșț.\- ]+$/.test(answer);
       if (!looksLikeName) {
         console.log(`[speaker] ${model}: raspuns neconformant pentru un nume: "${answer}"`);
+        return null;
+      }
+      // Garda anti-halucinatie: numele trebuie sa existe in articol.
+      if (!nameAppearsInText(answer, title, excerpt)) {
+        console.log(`[speaker] ${model}: "${answer}" nu apare in text - respins ca hallucinatie`);
         return null;
       }
       console.log(`[speaker] ${model}: persoana care declara -> ${answer}`);
