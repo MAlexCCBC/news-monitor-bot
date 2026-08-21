@@ -1,4 +1,5 @@
 import axios from "axios";
+import { filterModels } from "./models.js";
 
 // Extrage DINAMIC numele persoanei care declara, CITIND articolul (titlu +
 // fragment). Nu depinde de liste predefinite si NU intoarce institutii sau
@@ -8,10 +9,16 @@ import axios from "axios";
 // apeluri de verificare faciala pe un "nume" inexistent.
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
+// Lite-urile primele: extragerea vorbitorului e o clasificare simpla pe care
+// le fac la fel de bine, iar cotele lor (500/zi) sunt mult mai mari decat ale
+// flash-urilor (20/zi) - asa pastram cota modelelor bune pentru rescriere si
+// verificarea faciala. Aliasul -latest si Gemma 4 = rezerve.
 const SPEAKER_MODELS = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
-  "gemini-2.5-flash-lite",
+  "gemini-flash-lite-latest",
+  "gemini-3.7-flash",
+  "gemma-4-31b-it",
 ];
 
 const PROMPT_TEMPLATE = (title, excerpt) => `
@@ -35,7 +42,8 @@ ${excerpt}
 
 // Intoarce numele persoanei (string) sau null daca nu exista / a esuat tot.
 export async function extractSpeakerFromArticle(title, excerpt) {
-  for (const model of SPEAKER_MODELS) {
+  const models = await filterModels(SPEAKER_MODELS);
+  for (const model of models) {
     try {
       const res = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,

@@ -1,16 +1,19 @@
 import axios from "axios";
+import { filterModels } from "./models.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting).
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
-// Cascade de modele pt. clasificare: incepem cu variantele "lite" (cote zilnice
-// mari) ca sa nu consumam cota modelelor bune folosite la rescrierea stirilor.
+// Cascade de modele pt. clasificare: lite-urile primele - clasificarea binara
+// DA/NU e simpla si lite-urile o fac la fel de bine, cu cote mult mai mari
+// (500/zi fata de 20 pe flash-uri). Aliasul -latest si Gemma 4 = rezerve.
 const CLASSIFY_MODELS = [
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
-  "gemini-2.5-flash-lite",
-  "gemini-2.5-flash",
+  "gemini-flash-lite-latest",
+  "gemini-3.7-flash",
+  "gemma-4-31b-it",
 ];
 
 const PROMPT_TEMPLATE = (title, excerpt) => `
@@ -51,8 +54,9 @@ Linia 2: motiv scurt (maxim 15 cuvinte)
 //   null  -> AI-ul nu a putut decide (toate modelele au esuat) => apelantul
 //            decide ce fallback foloseste.
 export async function isRelevantToRomania(title, excerpt) {
+  const models = await filterModels(CLASSIFY_MODELS);
   let lastError;
-  for (const model of CLASSIFY_MODELS) {
+  for (const model of models) {
     try {
       const res = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,

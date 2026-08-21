@@ -1,25 +1,24 @@
 import axios from "axios";
+import { filterModels } from "./models.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
 // nivel de modul GEMINI_API_KEY ar fi inca undefined.
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
-// Cascada de fallback: incepe cu cel mai bun, cand da eroare/rate-limit
-// trece la urmatorul, pana la cel mai slab. Doar modele text-out care au
-// cote disponibile pe planul de fata (RPD > 0), in ordinea preferintei.
-// 3.1/3.5 flash-lite au cele mai mari cote zilnice (500), deci sunt ultimele
-// care raman fara limita.
+// Cascada de fallback, de la CEL MAI BUN model la cel mai slab. 3.7 flash e
+// varful; lite-urile au cele mai mari cote zilnice (500/zi) deci preiau volumul
+// dupa ce flash-urile (20/zi) se epuizeaza. gemini-flash-latest e alias care
+// indica mereu cel mai nou flash - plasă de siguranță dacă o versiune dispare.
+// Modelele care dau 404 pe acest cont (gemini-3-flash, 2.5-flash, 2.5-lite)
+// sunt scoase; filterModels le exclude oricum dinamic, la pornire.
 const TEXT_MODELS = [
-  "gemini-3.6-flash",
   "gemini-3.7-flash",
+  "gemini-3.6-flash",
   "gemini-3.5-flash",
-  "gemini-3-flash",
-  "gemini-2.5-flash",
-  "gemini-2.5-flash-lite",
-  "gemini-3.1-flash-lite",
   "gemini-3.5-flash-lite",
-  // Gemma 4 - ultima rezerva, cote imense (14.4K/zi fiecare), dar mai lente
+  "gemini-3.1-flash-lite",
+  "gemini-flash-latest",
   "gemma-4-31b-it",
   "gemma-4-26b-a4b-it",
 ];
@@ -68,8 +67,9 @@ Raspunde DOAR cu postarea finala, fara alte comentarii sau explicatii.
 `;
 
 export async function rewriteArticle(articleText) {
+  const models = await filterModels(TEXT_MODELS);
   let lastError;
-  for (const model of TEXT_MODELS) {
+  for (const model of models) {
     try {
       const res = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,

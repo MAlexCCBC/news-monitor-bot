@@ -1,5 +1,6 @@
 import axios from "axios";
 import sharp from "sharp";
+import { filterModels } from "../ai/models.js";
 
 // Analiza faciala prin Gemini Vision (multimodal). Folosim Gemini ca motor de:
 //  1. detectie fata -> bounding box pentru crop centrat corect;
@@ -8,17 +9,19 @@ import sharp from "sharp";
 // dupa importurile modulelor).
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
-// Modele vision, in cascada de fallback. Lite-urile primele: cele mai mari
-// cote zilnice si NU intra in conflict cu modelele folosite la rescrierea
-// stirilor. Scoatem din lista modelele care dau 404 constant pe acest cont
-// (gemini-2.5-flash-lite, gemini-3-flash) - fiecare incercare pe ele inseamna
-// doar timp irosit si cascada aluneca pana la Gemma (mult mai slab la comparat
-// fețe -> respinsere false, ex. portretul corect primit verdict "NU e persoana").
+// Modele vision, de la CEL MAI BUN la cel mai slab. 3.7 flash primul: la
+// comparat fețe calitatea modelului e critica (modelele slabe resping portrete
+// corecte). Apoi lite-urile - au 500 cereri/zi fata de 20 pe flash-uri, deci
+// preiau volumul fara sa moara de 429. gemini-flash-latest = alias mereu
+// actual, Gemma 4 = ultima linie (14.4K/zi). Modelele care dau 404 (3-flash,
+// 2.5-*) sunt scoase; filterModels le exclude oricum dinamic.
 const VISION_MODELS = [
+  "gemini-3.7-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
-  "gemini-3.5-flash",
   "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-flash-latest",
   "gemma-4-31b-it",
   "gemma-4-26b-a4b-it",
 ];
@@ -36,8 +39,9 @@ export async function toInlineJpeg(buffer, maxSize = 512) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function geminiVision(parts) {
+  const models = await filterModels(VISION_MODELS);
   let lastError;
-  for (const model of VISION_MODELS) {
+  for (const model of models) {
     try {
       const res = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
