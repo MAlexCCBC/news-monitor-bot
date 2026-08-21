@@ -16,31 +16,71 @@ export function matchesKeywords(text, keywords) {
 }
 
 // Indicatori ca stirea are subiectul in ALTA tara (fara implicare romaneasca).
-// Matching pe text normalizat (fara diacritice).
+// Matching pe text normalizat (fara diacritice), pe LIMITE DE CUVINTE — altfel
+// token-uri scurte ca "sua" s-ar potrivi si in cuvinte precum "insua".
 const FOREIGN_INDICATORS = [
+  // Rusia / spatiul post-sovietic
   "rusia", "rusiei", "rusii", "ruseasca", "rusesc", "putin", "kremlin", "moscova",
   "ucraina", "ucrainei", "ucrainean", "zelenski", "cernobil", "cernobyl", "chernobyl",
-  "belarus", "bielorus",
-  "sua", "america", "americii", "american", "trump", "biden",
-  "china", "chinez", "israel", "israelian", "iran", "iranian",
+  "belarus", "bielorus", "lucasenko",
+  // Vest / America de Nord
+  "sua", "america", "americii", "american", "trump", "biden", "vance", "washington",
+  "canada", "mexic",
+  // Asia
+  "china", "chinez", "beijing", "xi jinping", "japonia", "japonez", "coreea",
+  "india", "indian", "pakistan", "indonezia", "tailanda", "vietnam",
+  // Orientul Mijlociu
+  "israel", "israelian", "netanyahu", "iran", "iranian", "teheran", "irak",
+  "arabia", "saudit", "emirate", "qatar", "turcia", "turc", "erdogan", "ankara",
+  "syria", "siria", "damasc", "liban", "yemen",
+  // Europa
   "bulgaria", "bulgar", "ungaria", "unguresc", "ungar",
-  "germania", "german", "frant", "france", "polonia", "polonez",
-  "marea britanie", "britanic", "spania", "italia", "italian", "nato",
+  "germania", "german", "merz", "franta", "francez", "macron", "paris",
+  "polonia", "polonez", "marea britanie", "britanic", "starmer", "londra",
+  "spania", "spaniol", "italia", "italian", "meloni", "olanda", "olandez",
+  "austria", "austriac", "elvetia", "elvetian", "suedia", "suedez", "norvegia",
+  "finlanda", "danemarca", "irlanda", "portugalia", "cehia", "ceh", "slovacia",
+  "slovac", "fico", "croatia", "croat", "serbia", "sarb", "vucic", "bosnia",
+  "albania", "albanez", "macedonia", "grecia", "grec", "atena",
+  "nato", "bruxelles", "comisia europeana",
 ];
 
-// Indicatori ca stirea e legata de Romania (tara, popor, Bucuresti)
-const ROMANIA_INDICATORS = ["roman", "bucuresti"];
+// Indicatori ca stirea e legata de Romania (tara, popor, orase mari, institutii)
+const ROMANIA_INDICATORS = [
+  "roman", "romania", "romaniei", "romanesc", "romaneasca", "bucuresti", "diaspora",
+  "cluj", "timisoara", "iasi", "brasov", "sibiu", "constanta", "craiova",
+  "galati", "oradea", "bacau", "arad", "suceava", "pitesti", "targu mures",
+  "transilvania", "moldova", "dobrogea", "banat", "olt", "mures", "prut",
+  "guvernul roman", "parlamentul roman", "presedintele roman",
+];
 
-// Returneaza true daca stirea e despre un subiect strain fara nicio legatura
-// cu Romania sau cu personalitati politice romanesti reale.
+// Potrivire pe limite de cuvinte: \b in JS e ASCII-based, dar textul e deja
+// normalizat (diacriticele scoase), deci functioneaza corect.
+function hasWord(normText, phrase) {
+  const escaped = phrase.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`\\b${escaped}\\b`).test(normText);
+}
+
+// Pre-check IEFTIN (fara AI): daca textul are context romanesc clar, nu mai
+// cheltuim un apel Gemini la clasificarea de relevanta. Returneaza true doar
+// cand e evident ca stirea priveste Romania (indicator RO sau personalitate).
+export function hasStrongRomanianContext(text, personalities) {
+  const norm = normalize(text);
+  if (ROMANIA_INDICATORS.some((w) => hasWord(norm, w))) return true;
+  return personalities.some((kw) => norm.includes(normalize(kw)));
+}
+
+// FALLBACK (doar cand AI-ul de relevanta nu e disponibil): returneaza true daca
+// stirea e despre un subiect strain fara nicio legatura cu Romania sau cu
+// personalitati politice romanesti reale.
 // `personalities` = DOAR numele reale (ex. "Bolojan", "Fritz"), NU cuvinte
 // generice precum "ministrul" sau "premierul" (ele apar si in stiri straine,
 // ex. "ministrul federal Carsten Schneider" si ar lasa stiri straine sa treaca).
 export function isForeignOnly(text, personalities) {
   const norm = normalize(text);
-  const hasForeign = FOREIGN_INDICATORS.some((w) => norm.includes(w));
+  const hasForeign = FOREIGN_INDICATORS.some((w) => hasWord(norm, w));
   if (!hasForeign) return false;
-  const hasRomanianContext = ROMANIA_INDICATORS.some((w) => norm.includes(w));
+  const hasRomanianContext = ROMANIA_INDICATORS.some((w) => hasWord(norm, w));
   const hasRomanianPerson = personalities.some((kw) => norm.includes(normalize(kw)));
   return !hasRomanianContext && !hasRomanianPerson;
 }

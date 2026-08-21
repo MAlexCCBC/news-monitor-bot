@@ -41,9 +41,10 @@ import { NewMessage } from "telegram/events/index.js";
 import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
-import { matchesKeywords, isPublishedToday, isForeignOnly, detectSpeaker } from "./filter/keywords.js";
+import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker } from "./filter/keywords.js";
 import { checkSimilarity } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
+import { isRelevantToRomania } from "./ai/relevance.js";
 import { findImage, processCandidate } from "./image/search.js";
 import { saveNews, getRecentNews, isUrlSeen, cleanupOld } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
@@ -182,13 +183,25 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
       console.log(`[match] Keywords gasite: ${matchedKeywords.join(", ")}`);
     }
 
-    // 2b. Filtru stiri straine: Rusia/Ucraina/etc. fara implicare romaneasca.
-    // O stire straina trece DOAR daca mentioneaza o personalitate romaneasca
-    // reala (ex. Bolojan, Fritz) - cuvinte generice ca "ministrul" nu conteaza.
-    // Canalele bypass trec si peste asta.
-    if (!bypassFilters && isForeignOnly(essentialText, romanianPersonalities)) {
-      console.log("[skip] Stire straina fara implicare romaneasca");
-      return;
+    // 2b. Filtru stiri straine (DINAMIC, cu AI): daca textul nu are context
+    // romanesc clar (tara, orase, personalitati), intrebam Gemini daca subiectul
+    // principal priveste Romania. Astfel prindem ORICE tara straina (Austria,
+    // Serbia, Grecia, India...), nu doar cele aflate pe o lista fixa. Daca
+    // AI-ul nu e disponibil, cadem pe vechiul filtru pe cuvinte cheie.
+    // Canalele bypass trec si peste acest filtru.
+    if (!bypassFilters && !hasStrongRomanianContext(essentialText, romanianPersonalities)) {
+      const relevant = await isRelevantToRomania(
+        article.title,
+        (article.content || "").slice(0, 1500)
+      );
+      const foreign =
+        relevant === null
+          ? isForeignOnly(essentialText, romanianPersonalities) // fallback fara AI
+          : !relevant;
+      if (foreign) {
+        console.log("[skip] Stire straina fara implicare romaneasca");
+        return;
+      }
     }
 
     // 3. Verificare similaritate cu ultimele 72h, pe titlu + primul paragraf.
