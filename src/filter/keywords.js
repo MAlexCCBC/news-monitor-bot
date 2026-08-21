@@ -46,24 +46,85 @@ export function isForeignOnly(text, personalities) {
 }
 
 // Detecteaza CINE face declaratia (vorbitorul), nu despre cine se vorbeste.
-// Ex: "Dragoș Pîslaru despre Nicușor Dan" -> "Dragoș Pîslaru".
-// Regula: cuvintele cheie care apar INAINTE de "despre" in titlu sunt
-// vorbitorul (cel mai apropiat de "despre"); fara "despre", vorbitorul e
-// keyword-ul care apare PRIMUL in titlu.
+// Functioneaza cu ORICE persoana, nu doar cele din lista KEYWORDS.
+// Ex: "Dragoș Pîslaru despre Nicușor Dan" → "Dragoș Pîslaru"
+//     "Ciprian Ciucu a declarat că..." → "Ciprian Ciucu"
+//     "Primarul sectorului 6 a anunțat..." → null (nu e nume propriu)
+//
+// Algoritm: extragem toate secventele de cuvinte cu litera mare din titlu
+// (potential nume proprii), apoi folosim "despre" / "a declarat" / "a spus"
+// pentru a afla CINE vorbeste.
 export function detectSpeaker(title, matchedKeywords) {
-  const normTitle = normalize(title || "");
-  const positions = matchedKeywords
-    .map((kw) => ({ kw, pos: normTitle.indexOf(normalize(kw)) }))
-    .filter((p) => p.pos !== -1)
-    .sort((a, b) => a.pos - b.pos);
-  if (positions.length === 0) return null;
+  const t = title || "";
 
-  const desprePos = normTitle.indexOf("despre");
-  if (desprePos !== -1) {
-    const before = positions.filter((p) => p.pos < desprePos);
-    if (before.length > 0) return before[before.length - 1].kw; // cel mai apropiat de "despre"
+  // 1. Gasim "despre" — tot ce e INAINTE de "despre" e vorbitorul
+  const despreIdx = t.toLowerCase().indexOf("despre");
+  if (despreIdx !== -1) {
+    const before = t.slice(0, despreIdx).trim();
+    const name = extractLastName(before);
+    if (name) return name;
   }
-  return positions[0].kw; // fara "despre": primul nume din titlu e vorbitorul
+
+  // 2. Pattern-uri comune: "X a declarat", "X a spus", "X a anunțat",
+  //    "X transmite", "X consideră", "X susține"
+  const verbPatterns = /\b(a declarat|a spus|a anunțat|a precizat|a subliniat|a menționat|transmite|consideră|susține|critică|reactionează|reactioneaza|critică la adresa|iese la atac|vine cu)/i;
+  const verbMatch = t.match(verbPatterns);
+  if (verbMatch && verbMatch.index > 0) {
+    const before = t.slice(0, verbMatch.index).trim();
+    const name = extractLastName(before);
+    if (name) return name;
+  }
+
+  // 3. Titlu care incepe cu nume: "Nume Nume, ..." sau "Nume Nume:" 
+  const firstName = extractLastName(t);
+  if (firstName) return firstName;
+
+  // 4. Fallback: primul keyword potrivit (metoda veche, pentru compatibilitate)
+  if (matchedKeywords && matchedKeywords.length > 0) {
+    return matchedKeywords[0];
+  }
+
+  return null;
+}
+
+// Extrage ultimul nume propriu (2-3 cuvinte cu litera mare) dintr-un text.
+// Ex: "Ministrul interimar Dragoș Pîslaru" → "Dragoș Pîslaru"
+//     "Premierul interimar Ilie Bolojan:" → "Ilie Bolojan"
+function extractLastName(text) {
+  // Pattern: 2-3 cuvinte care incep cu litera mare (cu sau fara diacritice)
+  // Ignoram cuvinte comune care NU sunt parte din nume
+  const SKIP = new Set([
+    "ministrul", "ministra", "premierul", "premiera", "presedintele", "presedintia",
+    "primarul", "primara", "deputatul", "deputata", "senatorul", "senatoarea",
+    "domnul", "doamna", "directorul", "directoarea", "secretarul", "secretara",
+    "interimar", "interimara", " interim", "general", "generalul",
+    "a", "al", "ale", "ai", "la", "de", "din", "pe", "cu", "si", "sau",
+    "că", "ca", "dar", "iar", "unei", "unui", "un", "o", "the", "for",
+    "sectorului", "bucurestiului", "romaniei", "guvernului",
+    "video", "foto", "live", "breaking", "urgent",
+  ]);
+
+  const words = text.split(/[\s,;:!?]+/).filter(Boolean);
+  const candidates = [];
+  let current = [];
+
+  for (const w of words) {
+    const clean = w.replace(/[.:;,!?]+$/, "");
+    if (!clean) continue;
+    const isCapitalized = /^[A-ZĂÂÎȘȚ]/.test(clean) && !/^[A-ZĂÂÎȘȚ]{2,}$/.test(clean);
+    const isLowerSkip = SKIP.has(clean.toLowerCase());
+
+    if (isCapitalized && !isLowerSkip) {
+      current.push(clean);
+    } else {
+      if (current.length >= 2) candidates.push(current.join(" "));
+      current = [];
+    }
+  }
+  if (current.length >= 2) candidates.push(current.join(" "));
+
+  // Returnam ULTIMUL nume gasit (de obicei e vorbitorul, nu titlul functional)
+  return candidates.length > 0 ? candidates[candidates.length - 1] : null;
 }
 
 // Verifica daca data articolului (ISO, din meta tags: article:published_time)

@@ -44,7 +44,7 @@ import { fetchArticle } from "./scraper/article.js";
 import { matchesKeywords, isPublishedToday, isForeignOnly, detectSpeaker } from "./filter/keywords.js";
 import { checkSimilarity } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
-import { findImage } from "./image/search.js";
+import { findImage, processCandidate } from "./image/search.js";
 import { saveNews, getRecentNews, isUrlSeen, cleanupOld } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
 
@@ -237,13 +237,28 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
       embedding: simResult?.embedding ?? null,
     });
 
-    // 6. Cautare imagine - cautam imaginea CELUI CARE DECLARA (vorbitorul), nu
-    // a persoanei despre care se vorbeste. Ex: "Dragoș Pîslaru despre Nicușor
-    // Dan" -> se cauta poza cu Dragoș Pîslaru. "despre" din titlu desparte
-    // vorbitorul de subiect.
+    // 6. Imagine — PRIMA OPTIUNE: imaginea articolului insusi (cea mai fiabila,
+    // e deja persoana corecta despre care se scrie). Daca articolul nu are
+    // imagine, cautam pe motoare dupa numele vorbitorului.
     const speaker = detectSpeaker(article.title, matchedKeywords) || article.title;
 
-    const imageResult = await findImage(speaker, article.title);
+    let imageResult = null;
+
+    // a) Imaginea articolului (og:image sau prima imagine din continut)
+    if (article.imageUrl) {
+      try {
+        imageResult = await processCandidate(article.imageUrl);
+        if (imageResult) {
+          saveImage({ imageUrl: article.imageUrl, personOrTopic: speaker });
+          console.log("[image] Imaginea articolului: " + article.imageUrl);
+        }
+      } catch {}
+    }
+
+    // b) Fallback: cautare pe motoare (Wikipedia, Tavily, DuckDuckGo, Bing)
+    if (!imageResult) {
+      imageResult = await findImage(speaker, article.title);
+    }
 
     // 7. Trimitem TIE rezultatul, gata pregatit, pentru aprobare + postare MANUALA.
     // Postarea finala e doar textul curat (fara header, fara nota imagine,

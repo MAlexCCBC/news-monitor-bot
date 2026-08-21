@@ -51,7 +51,13 @@ Reguli STRICTE:
    postarii este exact: 👇 Așteptăm opinia ta în comentarii!
 8. NU inventa informatii care nu apar in text. NU adauga detalii, cifre, nume
    sau citate care nu reies din articol.
-9. Scrie in romana, ton neutru-jurnalistic dar cu impact, cu fraze curgatoare.
+9. CRITICAL: Pastreaza EXACT titlurile si functiile asa cum apar in articol.
+   Daca articolul zice "ministrul Muncii" — scrie "ministrul Muncii", NU
+   "prim-ministrul" sau alta functie inventata. Daca articolul zice "primarul
+   Sectorului 6" — scrie "primarul Sectorului 6", NU "primarul Bucurestiului".
+   NU folosi cunostinte externe despre cine ce functie are in prezent — foloseste
+   DOAR informatiile din articolul primit.
+10. Scrie in romana, ton neutru-jurnalistic dar cu impact, cu fraze curgatoare.
 
 Text articol brut:
 """

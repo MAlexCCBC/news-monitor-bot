@@ -78,6 +78,27 @@ export async function fetchArticle(url) {
   const title = $("h1").first().text().trim() || $('meta[property="og:title"]').attr("content") || "";
   const isoDate = extractPublishDate($);
 
+  // Extragem imaginea principala a articolului (og:image sau prima imagine din continut).
+  // Aceasta e CELE MAI FIABILE sursa pentru imagine — articolul contine deja
+  // persoana/corectă despre care se scrie.
+  const ogImage = $('meta[property="og:image"]').attr("content") || $('meta[name="og:image"]').attr("content");
+  let imageUrl = null;
+  if (ogImage && /^https?:\/\//.test(ogImage)) {
+    imageUrl = ogImage;
+  } else {
+    // Prima imagine din continutul articolului (excluzand icon-uri, logo-uri mici)
+    $content.find("img").each((_, el) => {
+      if (imageUrl) return;
+      const src = $(el).attr("src") || $(el).attr("data-src") || "";
+      if (!/^https?:\/\//.test(src)) return;
+      const w = parseInt($(el).attr("width") || "0", 10);
+      const h = parseInt($(el).attr("height") || "0", 10);
+      // Ignoram imagini mici (logo, icon, avatar) — vrem poza de articol
+      if (w > 0 && w < 150 && h > 0 && h < 150) return;
+      imageUrl = src;
+    });
+  }
+
   const paragraphs = [];
   let stopped = false;
 
@@ -99,8 +120,9 @@ export async function fetchArticle(url) {
   return {
     url,
     title,
-    isoDate, // format ISO, ex: "2026-08-19T14:43:12+00:00" sau null
+    isoDate,
     content: contentText,
+    imageUrl,
     fullTextForKeywordCheck: `${title}\n${contentText}`,
   };
 }

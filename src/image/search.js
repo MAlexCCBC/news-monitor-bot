@@ -152,7 +152,7 @@ function isAcceptableRatio(width, height) {
 
 // Descarca o imagine, o decupeaza la 3:4 si intoarce bufferul.
 // Returneaza null daca imaginea nu se poate descarca sau e prea mica (sub 100px).
-async function processCandidate(imgUrl) {
+export async function processCandidate(imgUrl) {
   const dims = await getImageDimensions(imgUrl);
   if (!dims) return null;
   if (!dims.width || !dims.height || dims.width < 100 || dims.height < 100) return null;
