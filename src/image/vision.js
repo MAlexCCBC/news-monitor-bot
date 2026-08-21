@@ -8,13 +8,14 @@ import sharp from "sharp";
 // dupa importurile modulelor).
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
-// Modele vision, in ordinea preferintei: cele care raspund pe acest cont
-// primele (2.5-flash da 404 pe planul actual, e doar rezerva ultimă).
+// Modele vision, lite-urile primele: au cele mai mari cote zilnice si NU
+// intra in conflict cu modelul folosit la rescrierea stirilor (gemini-3.5-flash),
+// care altfel ajunge la 429 cand imaginea si textul ruleaza simultan.
 const VISION_MODELS = [
-  "gemini-3.5-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
-  "gemini-2.5-flash",
+  "gemini-2.5-flash-lite",
+  "gemini-3.5-flash",
 ];
 
 // Pregatim imaginea pt. Gemini: JPEG mic (512px max), calitate 80 - requesturi

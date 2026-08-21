@@ -41,10 +41,11 @@ import { NewMessage } from "telegram/events/index.js";
 import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
-import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker } from "./filter/keywords.js";
+import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker, isPlausiblePersonName } from "./filter/keywords.js";
 import { checkSimilarity } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
+import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage, processArticleImage } from "./image/search.js";
 import { saveNews, getRecentNews, isUrlSeen, cleanupOld } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
@@ -250,17 +251,30 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
       embedding: simResult?.embedding ?? null,
     });
 
-    // 6. Sistemul inteligent de imagini: ia numele vorbitorului, analizeaza
-    // fata din portretul sau Wikipedia (REFERINTA), cauta poze NOI pe net cu
-    // numele lui si le verifica facial contra referintei; le decupeaza centrat
-    // pe fata. Daca nu gaseste nimic verificat, fallback la imaginea articolului.
-    const speaker = detectSpeaker(article.title, matchedKeywords) || article.title;
+    // 6. Sistemul inteligent de imagini. Vorbitorul se determina in 2 pasi:
+    //    a) regex rapid pe titlu (detectSpeaker);
+    //    b) daca regex-ul nu gaseste un nume plauzibil, AI-ul CITESTE stirea
+    //       si extrage numele persoanei care declara. Daca nici AI-ul nu
+    //       gaseste o persoana (stiri despre legi/institutii/evenimente),
+    //       NU mai cautam poze de persoana deloc - trecem direct la imaginea
+    //       articolului, fara sa ardem apeluri de verificare faciala.
+    let speaker = detectSpeaker(article.title, matchedKeywords);
+    if (!isPlausiblePersonName(speaker)) {
+      speaker = await extractSpeakerFromArticle(
+        article.title,
+        (article.content || "").slice(0, 1500)
+      );
+    }
 
     let imageResult = null;
-    try {
-      imageResult = await findImage(speaker, article.title);
-    } catch (e) {
-      console.warn("[image] findImage esuat:", e.message);
+    if (speaker && isPlausiblePersonName(speaker)) {
+      try {
+        imageResult = await findImage(speaker, article.title);
+      } catch (e) {
+        console.warn("[image] findImage esuat:", e.message);
+      }
+    } else {
+      console.log("[image] Fara persoana care declara - sarim cautarea de portret");
     }
 
     if (!imageResult && article.imageUrl) {

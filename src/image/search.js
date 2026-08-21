@@ -242,6 +242,13 @@ export async function findImage(personOrTopic, articleTitle) {
   const seen = new Set();
   let winner = null;
 
+  // Plafon de verificari faciale per cautare: fiecare candidat consuma 1-2
+  // apeluri Gemini (samePerson + getFaceBox). Fara plafon, o lista lunga de
+  // candidati respinsi arde toata cota zilnica (s-a vazut: 15+ verificari ->
+  // 429 rate limit). Dupa 6 verificari neconcludente, oprim cautarea.
+  const MAX_FACE_CHECKS = 6;
+  let faceChecks = 0;
+
   searchLoop: for (const q of queries) {
     for (const engine of engines) {
       const imgs = await engine(q);
@@ -249,7 +256,9 @@ export async function findImage(personOrTopic, articleTitle) {
         if (seen.has(imgUrl)) continue;
         seen.add(imgUrl);
         if (usedUrls.has(imgUrl)) continue;
+        if (faceChecks >= MAX_FACE_CHECKS) break searchLoop;
 
+        faceChecks++;
         const candidate = await buildCandidate(imgUrl, personOrTopic, referenceBuffer);
         if (candidate) {
           saveImage({ imageUrl: imgUrl, personOrTopic });

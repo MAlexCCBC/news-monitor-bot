@@ -85,6 +85,19 @@ export function isForeignOnly(text, personalities) {
   return !hasRomanianContext && !hasRomanianPerson;
 }
 
+// Verifica daca un sir arata ca nume de persoana (2-5 cuvinte, lungime mica,
+// fara cuvinte institutionale). Protejeaza impotriva cazurilor in care
+// detectSpeaker sau AI-ul returneaza titluri/institutii in loc de nume.
+export function isPlausiblePersonName(name) {
+  if (!name || typeof name !== "string") return false;
+  const t = name.trim();
+  const words = t.split(/\s+/);
+  if (words.length < 2 || words.length > 5) return false;
+  if (t.length > 60) return false;
+  const INSTITUTION = /\b(legea|legii|parlament|senat|senatului|guvern|guvernul|partid|alegeri|campanie|sesiune|sedinta|hidrogen|buget|pensii|criza|accident|cutremur|incendiu)\b/i;
+  return !INSTITUTION.test(t);
+}
+
 // Detecteaza CINE face declaratia (vorbitorul), nu despre cine se vorbeste.
 // Functioneaza cu ORICE persoana, nu doar cele din lista KEYWORDS.
 // Ex: "Dragoș Pîslaru despre Nicușor Dan" → "Dragoș Pîslaru"
