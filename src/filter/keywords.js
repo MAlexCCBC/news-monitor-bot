@@ -86,8 +86,9 @@ export function isForeignOnly(text, personalities) {
 }
 
 // Verifica daca un sir arata ca nume de persoana (2-5 cuvinte, lungime mica,
-// fara cuvinte institutionale). Protejeaza impotriva cazurilor in care
-// detectSpeaker sau AI-ul returneaza titluri/institutii in loc de nume.
+// fara cuvinte institutionale, fara acronime). Protejeaza impotriva cazurilor
+// in care detectSpeaker sau AI-ul returneaza titluri/institutii/partide in loc
+// de nume.
 export function isPlausiblePersonName(name) {
   if (!name || typeof name !== "string") return false;
   const t = name.trim();
@@ -95,7 +96,14 @@ export function isPlausiblePersonName(name) {
   if (words.length < 2 || words.length > 5) return false;
   if (t.length > 60) return false;
   const INSTITUTION = /\b(legea|legii|parlament|senat|senatului|guvern|guvernul|partid|alegeri|campanie|sesiune|sedinta|hidrogen|buget|pensii|criza|accident|cutremur|incendiu)\b/i;
-  return !INSTITUTION.test(t);
+  if (INSTITUTION.test(t)) return false;
+  // Acronime/partide (USR, CCR, PSD...) = toate literele mari, fara nimic mic.
+  // Numele reale contin cel putin o litera mica undeva in cuvant.
+  const hasAcronym = words.some(
+    (w) => w.replace(/[^A-Za-zĂÂÎȘȚăâîșț]/g, "").length >= 2 &&
+           w.replace(/[^A-Za-zĂÂÎȘȚăâîșț]/g, "") === w.replace(/[^A-Za-zĂÂÎȘȚăâîșț]/g, "").toUpperCase()
+  );
+  return !hasAcronym;
 }
 
 // Detecteaza CINE face declaratia (vorbitorul), nu despre cine se vorbeste.
@@ -107,78 +115,70 @@ export function isPlausiblePersonName(name) {
 // Algoritm: extragem toate secventele de cuvinte cu litera mare din titlu
 // (potential nume proprii), apoi folosim "despre" / "a declarat" / "a spus"
 // pentru a afla CINE vorbeste.
+// Gaseste PRIMUL candidat viabil la statutul de "nume de vorbitor" intr-un
+// text: secventa de 2-3 cuvinte cu initiale mari, aflata LA INCEPUTUL textului
+// sau urmată imediat de ":" / "," (tipare clasice de titlu de stire). Strict
+// intentionat: regulile permisive produceau nume false ("Fritz Putem",
+// "Constituției Fritz", "Mița Biciclista").
+function firstSpeakerCandidate(text) {
+  if (!text) return null;
+  const seqRe = /[A-ZĂÂÎȘȚ][a-zăâîșț]+(?:\s+[A-ZĂÂÎȘȚ][a-zăâîșț]+){1,2}/g;
+  const TITLES = /^(?:ministrul|ministra|premierul|premiera|presedintele|presedintia|primarul|primara|deputatul|deputata|senatorul|senatoarea)\s+/i;
+  let m;
+  while ((m = seqRe.exec(text)) !== null) {
+    let name = m[0];
+    // Scoatem functia de la inceput ("Primarul Ciprian Ciucu" -> "Ciprian
+    // Ciucu") - cautarea Wikipedia nu gaseste pagini cu titluri in nume.
+    if (TITLES.test(name)) {
+      name = name.replace(TITLES, "");
+      if (name.split(/\s+/).length < 2) continue;
+    }
+    if (!isPlausiblePersonName(name)) continue;
+    const after = text.slice(m.index + m[0].length);
+    if (m.index === 0 || /^[:,]/.test(after)) return name;
+  }
+  return null;
+}
+
 export function detectSpeaker(title, matchedKeywords) {
   const t = title || "";
 
-  // 1. Gasim "despre" — tot ce e INAINTE de "despre" e vorbitorul
+  // 1. "X despre Y" -> X e vorbitorul (doar daca X contine un nume clar)
   const despreIdx = t.toLowerCase().indexOf("despre");
   if (despreIdx !== -1) {
-    const before = t.slice(0, despreIdx).trim();
-    const name = extractLastName(before);
+    const name = firstSpeakerCandidate(t.slice(0, despreIdx).trim());
     if (name) return name;
   }
 
-  // 2. Pattern-uri comune: "X a declarat", "X a spus", "X a anunțat",
-  //    "X transmite", "X consideră", "X susține"
-  const verbPatterns = /\b(a declarat|a spus|a anunțat|a precizat|a subliniat|a menționat|transmite|consideră|susține|critică|reactionează|reactioneaza|critică la adresa|iese la atac|vine cu)/i;
+  // 2. Pattern-uri de verbe de declaratie: "X a declarat", "X a spus" etc.
+  const verbPatterns = /\b(a declarat|a spus|a anunțat|a anunțа|a precizat|a subliniat|a menționat|transmite|consideră|susține|critică|reactionează|reactioneaza|iese la atac|vine cu)/i;
   const verbMatch = t.match(verbPatterns);
   if (verbMatch && verbMatch.index > 0) {
-    const before = t.slice(0, verbMatch.index).trim();
-    const name = extractLastName(before);
+    const name = firstSpeakerCandidate(t.slice(0, verbMatch.index).trim());
     if (name) return name;
   }
 
-  // 3. Titlu care incepe cu nume: "Nume Nume, ..." sau "Nume Nume:" 
-  const firstName = extractLastName(t);
-  if (firstName) return firstName;
+  // 3. Nume la începutul titlului sau urmat de ":" / ","
+  const direct = firstSpeakerCandidate(t);
+  if (direct) return direct;
 
-  // 4. Fallback: primul keyword potrivit (metoda veche, pentru compatibilitate)
+  // 4. Fallback: cel mai LUNG keyword potrivit care arata a nume de persoana.
+  //    "Dominic Fritz" bate "Fritz"; acronimele de partid (USR, CCR) sunt
+  //    respinse de isPlausiblePersonName. Un simplu nume de familie e ambiguu
+  //    pe Wikipedia (ex: cautarea "Fritz" returna portretul lui Fritz Bauer!).
   if (matchedKeywords && matchedKeywords.length > 0) {
-    return matchedKeywords[0];
+    const sorted = [...matchedKeywords].sort(
+      (a, b) => b.split(/\s+/).length - a.split(/\s+/).length
+    );
+    for (const kw of sorted) {
+      if (isPlausiblePersonName(kw)) return kw;
+    }
   }
 
   return null;
 }
 
-// Extrage ultimul nume propriu (2-3 cuvinte cu litera mare) dintr-un text.
-// Ex: "Ministrul interimar Dragoș Pîslaru" → "Dragoș Pîslaru"
-//     "Premierul interimar Ilie Bolojan:" → "Ilie Bolojan"
-function extractLastName(text) {
-  // Pattern: 2-3 cuvinte care incep cu litera mare (cu sau fara diacritice)
-  // Ignoram cuvinte comune care NU sunt parte din nume
-  const SKIP = new Set([
-    "ministrul", "ministra", "premierul", "premiera", "presedintele", "presedintia",
-    "primarul", "primara", "deputatul", "deputata", "senatorul", "senatoarea",
-    "domnul", "doamna", "directorul", "directoarea", "secretarul", "secretara",
-    "interimar", "interimara", " interim", "general", "generalul",
-    "a", "al", "ale", "ai", "la", "de", "din", "pe", "cu", "si", "sau",
-    "că", "ca", "dar", "iar", "unei", "unui", "un", "o", "the", "for",
-    "sectorului", "bucurestiului", "romaniei", "guvernului",
-    "video", "foto", "live", "breaking", "urgent",
-  ]);
-
-  const words = text.split(/[\s,;:!?]+/).filter(Boolean);
-  const candidates = [];
-  let current = [];
-
-  for (const w of words) {
-    const clean = w.replace(/[.:;,!?]+$/, "");
-    if (!clean) continue;
-    const isCapitalized = /^[A-ZĂÂÎȘȚ]/.test(clean) && !/^[A-ZĂÂÎȘȚ]{2,}$/.test(clean);
-    const isLowerSkip = SKIP.has(clean.toLowerCase());
-
-    if (isCapitalized && !isLowerSkip) {
-      current.push(clean);
-    } else {
-      if (current.length >= 2) candidates.push(current.join(" "));
-      current = [];
-    }
-  }
-  if (current.length >= 2) candidates.push(current.join(" "));
-
-  // Returnam ULTIMUL nume gasit (de obicei e vorbitorul, nu titlul functional)
-  return candidates.length > 0 ? candidates[candidates.length - 1] : null;
-}
+// Verifica daca data articolului (ISO, din meta tags: article:published_time)
 
 // Verifica daca data articolului (ISO, din meta tags: article:published_time)
 // e din ziua curenta, comparat in ora Romaniei (Europe/Bucharest).

@@ -12,6 +12,22 @@ const IMAGE_HISTORY_DAYS = () => Number(process.env.IMAGE_HISTORY_DAYS || 7);
 // Wikipedia cere User-Agent valid (altfel 403 Forbidden).
 const WIKI_UA = "NewsMonitorBot/1.0 (https://github.com/MAlexCCBC/news-monitor-bot)";
 
+// Verifica ca titlul paginii Wikipedia corespunde persoanei cautate.
+// Nume compuse ("Dominic Fritz"): TOATE cuvintele trebuie sa apara in titlu
+// ca cuvinte intregi. Nume simple ("Fritz", fallback pe nume de familie):
+// doar egalitate EXACTA - altfel cautarea "Fritz" returna portretul lui
+// Fritz Bauer (vânătorul de naziști), nu al politicianului nostru.
+function pageTitleMatches(pageTitle, personName) {
+  const norm = (s) =>
+    s.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  const titleNorm = norm(pageTitle);
+  const nameWords = norm(personName).split(/\s+/).filter(Boolean);
+  if (nameWords.length === 0) return false;
+  if (nameWords.length === 1) return titleNorm === nameWords[0];
+  const titleWords = new Set(titleNorm.split(/[\s\-–—]+/));
+  return nameWords.every((w) => titleWords.has(w));
+}
+
 async function fetchWikipediaReference(personName) {
   const names = [personName];
   const parts = personName.split(/\s+/);
@@ -22,14 +38,24 @@ async function fetchWikipediaReference(personName) {
       try {
         const base = "https://" + lang + ".wikipedia.org/w/api.php";
         const sr = await axios.get(base, {
-          params: { action: "query", list: "search", srsearch: name, srlimit: 1, format: "json" },
+          params: { action: "query", list: "search", srsearch: name, srlimit: 3, format: "json" },
           headers: { "User-Agent": WIKI_UA },
           timeout: 8000,
         });
         const results = sr.data?.query?.search;
         if (!results || results.length === 0) continue;
 
-        const pageTitle = results[0].title;
+        // Luam PRIMA pagina al carei titlu se potriveste cu numele persoanei
+        // (toate cuvintele numelui prezente in titlu), nu orice prim rezultat.
+        let pageTitle = null;
+        for (const r of results) {
+          if (pageTitleMatches(r.title, name)) {
+            pageTitle = r.title;
+            break;
+          }
+        }
+        if (!pageTitle) continue; // nicio potrivire credibila => nu ghicim
+
         const ir = await axios.get(base, {
           params: { action: "query", titles: pageTitle, prop: "pageimages", piprop: "original", pithumbsize: 800, format: "json" },
           headers: { "User-Agent": WIKI_UA },
@@ -170,13 +196,21 @@ export async function cropPortrait3x4(buffer, faceBox = null) {
 // "Portret_George_Simion.jpg"). Cand modelul de viziune respinge o poza DAR
 // numele e chiar in fisier, cel mai probabil e o respingere falsa a unui
 // model slab (Gemma) si o acceptam cu avertisment.
+// Strict: TOATE cuvintele semnificative ale numelui trebuie prezente, iar
+// URL-ul sa nu indice continut non-persona (cladiri, galerii, monumente) -
+// altfel o poza cu "casa-mita-biciclista" trecea ca portret.
 function urlMentionsPerson(imgUrl, personName) {
   try {
-    const decoded = decodeURIComponent(imgUrl).toLowerCase();
-    return personName
+    const decoded = decodeURIComponent(imgUrl).toLowerCase().replace(/[-_]/g, " ");
+    const tokens = personName
       .toLowerCase()
       .split(/\s+/)
-      .some((tok) => tok.length > 3 && decoded.includes(tok));
+      .filter((tok) => tok.length > 3);
+    if (tokens.length === 0) return false;
+    if (!tokens.every((tok) => decoded.includes(tok))) return false;
+
+    const NON_PERSON = /\b(cladire|cladiri|casa|caselor|monument|statuie|galerie|galerie foto|arhitectura|strada|bulevard|cartier|oras|localitate|harta)\b/;
+    return !NON_PERSON.test(decoded);
   } catch {
     return false;
   }

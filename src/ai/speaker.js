@@ -21,18 +21,25 @@ const SPEAKER_MODELS = [
   "gemma-4-31b-it",
 ];
 
-const PROMPT_TEMPLATE = (title, excerpt) => `
+const PROMPT_TEMPLATE = (title, excerpt, keywordHint) => `
 Citeste stirea de mai jos si identifica PERSOANA care face declaratiile sau
 este figura centrala citata (politician, oficial, ministru, primar etc.).
 
 REGULI:
 - Raspunde DOAR cu numele complet al persoanei (ex: "Ilie Bolojan").
-- Daca sunt mai multe persoane, alege-o pe cea care DECLARA / este autorul
-  afirmatiilor principale (nu persoana despre care se vorbeste).
+- Alege persoana care DECLARA ACUM, in aceasta stire (autorul afirmatiilor
+  dintre ghilimele sau al comentariilor raportate), nu persoana despre care
+  se vorbeste.
+- IGNORA complet personajele istorice sau anecdotele din trecut mentionate
+  ca context (ex: o stire despre un primar care comenteaza o poveste istorica
+  despre "Mita Biciclista" are ca vorbitor PRIMARUL, nu personajul istoric).
+- Daca in text apar numele de mai jos (identificate automat), vorbitorul este
+  foarte probabil unul dintre ele - alege-l pe cel care declara:
+  ${keywordHint || "(niciun indiciu)"}
 - Daca stirea NU are nicio persoana clara care declara (subiectul e o lege,
-  o institutie, un eveniment, o institutie ca Senatul/Parlamentul/Guvernul
-  ca institutie, un raport, un accident), raspunde EXACT: NONE
-- NU inventa nume. NU returna functii fara nume ("ministrul", "puricatorul").
+  o institutie, un eveniment, un raport, un accident), raspunde EXACT: NONE
+- NU inventa nume. NU returna functii fara nume ("ministrul", "purtatorul de
+  cuvant") si NU returna nume de partide sau institutii.
 
 TITLU: ${title}
 
@@ -41,14 +48,16 @@ ${excerpt}
 `;
 
 // Intoarce numele persoanei (string) sau null daca nu exista / a esuat tot.
-export async function extractSpeakerFromArticle(title, excerpt) {
+// keywordHint: cuvintele-cheie gasite deja in text (nume de personalitati) -
+// ancoreaza extractia ca sa nu confunde personaje istorice cu vorbitorul real.
+export async function extractSpeakerFromArticle(title, excerpt, keywordHint = "") {
   const models = await filterModels(SPEAKER_MODELS);
   for (const model of models) {
     try {
       const res = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
-          contents: [{ parts: [{ text: PROMPT_TEMPLATE(title, excerpt) }] }],
+          contents: [{ parts: [{ text: PROMPT_TEMPLATE(title, excerpt, keywordHint) }] }],
           generationConfig: { temperature: 0 },
         },
         {
