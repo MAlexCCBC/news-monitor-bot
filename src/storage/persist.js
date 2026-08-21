@@ -15,7 +15,7 @@ const DB_REL = "data.sqlite";
 function runGit(args) {
   return new Promise((resolve, reject) => {
     execFile("git", args, { cwd: REPO_ROOT, timeout: 60000 }, (err, stdout, stderr) => {
-      if (err) reject(new Error(stderr || err.message));
+      if (err) reject(new Error([stdout, stderr].filter(Boolean).join("\n") || err.message));
       else resolve(stdout);
     });
   });
@@ -29,18 +29,15 @@ export async function persistNow(branch) {
     try {
       checkpointDb();
       await runGit(["add", "-f", DB_REL]);
-      try {
-        await runGit([
-          "-c", "user.name=news-bot",
-          "-c", "user.email=news-bot@users.noreply.github.com",
-          "commit", "-m", `autosave baza de date ${new Date().toISOString()}`,
-        ]);
-      } catch (e) {
-        if (/nothing to commit|no changes added to commit|unable to create|empty ident/i.test(e.message)) {
-          return; // nimic de salvat inca, nu e o eroare
-        }
-        throw e;
-      }
+      // Verificam daca e ceva nou inainte de a rula commit (evitam eroarea
+      // "nothing to commit" care pe Windows nu e capturata corect in stderr).
+      const hasChanges = await runGit(["diff", "--cached", "--quiet"]).then(() => false).catch(() => true);
+      if (!hasChanges) return;
+      await runGit([
+        "-c", "user.name=news-bot",
+        "-c", "user.email=news-bot@users.noreply.github.com",
+        "commit", "-m", `autosave baza de date ${new Date().toISOString()}`,
+      ]);
       await runGit(["push", "--force", "origin", `HEAD:${branch}`]);
       console.log(`[persist] Baza de date salvata in branch '${branch}' (${new Date().toLocaleTimeString("ro-RO")})`);
     } catch (e) {

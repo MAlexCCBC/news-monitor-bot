@@ -8,6 +8,46 @@ import { getRecentImages, saveImage } from "../storage/db.js";
 const TAVILY_KEY = () => process.env.TAVILY_API_KEY;
 const IMAGE_HISTORY_DAYS = () => Number(process.env.IMAGE_HISTORY_DAYS || 7);
 
+// Portret de Wikipedia — cea mai sigura sursa pentru persoana CORECTA.
+// Pentru politicieni romani, pagina Wikipedia are intotdeauna o poza oficiala.
+// Incercam intai romana, apoi engleza.
+// ATENTIE: Wikipedia cere User-Agent valid (altfel 403 Forbidden).
+const WIKI_UA = "NewsMonitorBot/1.0 (https://github.com/MAlexCCBC/news-monitor-bot)";
+
+async function searchWikipediaPortrait(personName) {
+  const names = [personName];
+  const parts = personName.split(/\s+/);
+  if (parts.length >= 2) names.push(parts[parts.length - 1]); // doar "Bolojan"
+
+  for (const name of names) {
+    for (const lang of ["ro", "en"]) {
+      try {
+        const base = "https://" + lang + ".wikipedia.org/w/api.php";
+        const sr = await axios.get(base, {
+          params: { action: "query", list: "search", srsearch: name, srlimit: 1, format: "json" },
+          headers: { "User-Agent": WIKI_UA },
+          timeout: 8000,
+        });
+        const results = sr.data && sr.data.query && sr.data.query.search;
+        if (!results || results.length === 0) continue;
+
+        const pageTitle = results[0].title;
+        const ir = await axios.get(base, {
+          params: { action: "query", titles: pageTitle, prop: "pageimages", piprop: "original", pithumbsize: 800, format: "json" },
+          headers: { "User-Agent": WIKI_UA },
+          timeout: 8000,
+        });
+        const pages = ir.data && ir.data.query && ir.data.query.pages;
+        const page = pages && Object.values(pages)[0];
+        if (page && page.original && page.original.source) {
+          return { url: page.original.source, lang: lang, title: pageTitle };
+        }
+      } catch {}
+    }
+  }
+  return null;
+}
+
 async function searchTavily(query) {
   const res = await axios.post(
     "https://api.tavily.com/search",
@@ -132,16 +172,29 @@ async function processCandidate(imgUrl) {
 // articleTitle: folosit ca interogare suplimentara cand numele nu da rezultate.
 //
 // Strategie "mereu imagine":
-// 1. Cauta in Tavily -> DuckDuckGo -> Bing, cu mai multe interogari
-//    (nume + "Romania politica", doar numele, si titlul stirii).
-// 2. Prima imagine NOUA care se descarca OK e folosita.
-// 3. Daca toate esueaza, reutilizeaza o imagine folosita recent (ultima
+// 1. PRIMUL pas: cautam portretul de Wikipedia (cea mai sigura sursa pentru
+//    persoana corecta — politicienii au poze oficiale pe Wikipedia).
+// 2. Daca Wikipedia nu are portret, cautam in Tavily -> DuckDuckGo -> Bing.
+// 3. Prima imagine NOUA care se descarca OK e folosita.
+// 4. Daca toate esueaza, reutilizeaza o imagine folosita recent (ultima
 //    varianta, mai bine o poza repetata decat deloc).
 export async function findImage(personOrTopic, articleTitle) {
   const recentImages = getRecentImages(IMAGE_HISTORY_DAYS());
   const usedUrls = new Set(recentImages.map((i) => i.image_url));
   const usedMeta = new Map(recentImages.map((i) => [i.image_url, i]));
 
+  // 1. Portret de Wikipedia — persoana corecta garantat
+  const wiki = await searchWikipediaPortrait(personOrTopic);
+  if (wiki) {
+    const processed = await processCandidate(wiki.url);
+    if (processed) {
+      saveImage({ imageUrl: wiki.url, personOrTopic });
+      console.log("[image] Portret de Wikipedia (" + wiki.lang + "): " + wiki.title);
+      return processed;
+    }
+  }
+
+  // 2. Cautare in motoare (Tavily, DuckDuckGo, Bing)
   const queries = [
     `${personOrTopic} Romania politica`,
     personOrTopic,
@@ -168,7 +221,7 @@ export async function findImage(personOrTopic, articleTitle) {
     }
   }
 
-  // Ultima varianta: reutilizam o imagine folosita recent, daca apare din nou
+  // 3. Ultima varianta: reutilizam o imagine folosita recent, daca apare din nou
   // in rezultate. Alegem imaginea folosita CEL MAI DEMULT (si mai rar), ca sa
   // fie cat mai mult timp intre repetari - nu prima gasita, care s-ar repeta
   // des.
