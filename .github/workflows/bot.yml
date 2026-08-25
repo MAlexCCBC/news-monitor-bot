@@ -5,13 +5,11 @@ on:
   workflow_dispatch:
   push:
     branches: [master]
-  # AUTO-RESTART: GitHub limiteaza UN JOB la max 6 ore (limita hard, nedeschimbabila
-  # pe runner-ele lor). Deci botul se reporneste SINGUR la fiecare 5 ore: la
-  # momentul cron, grupul de concurenta opreste instanta veche curat (isi
-  # persista baza de date) si cea noua preia cu istoricul restaurat din
-  # branch-ul data. Rezultat: botul ruleaza CONTINUU, fara interventie.
-  # Nota: GitHub dezactiveaza schedule-urile dupa 60 de zile de inactivitate
-  # completa a repo-ului - commiturile periodice pe branch-ul data tin repo-ul viu.
+  # PLASA DE SIGURANTA: relansarea principala e facuta DINAMIC de instanta
+  # anterioara (vezi pasul "Relanseaza instant urmatoarea instanta" - porneste
+  # in secunde, fara intarzierile cron-ului). Cron-ul de aici prinde doar
+  # cazurile in care lanțul s-a rupt (crash, GitHub incident) - botul revine
+  # cel tarziu la urmatoarea granița de 5h.
   schedule:
     - cron: "0 */5 * * *"
 
@@ -28,25 +26,23 @@ jobs:
       - name: Verifica sintaxa
         run: node --check src/index.js && echo "sintax OK"
 
-  # Ruleaza botul: manual (Run workflow), la fiecare push pe master SI
-  # programat la fiecare 5 ore (auto-restart - vezi comentariul de la schedule).
+  # Ruleaza botul: la push pe master (auto-deploy), programat (plasă de
+  # siguranță) si manual din tab-ul Actions -> "Run workflow".
   run:
     runs-on: ubuntu-latest
     needs: validate
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'push'
-    # CICLU STRICT DE 5 ORE: jobul se opreste singur dupa 4h50m (graceful -
-    # isi salveaza baza de date prin handler-ele SIGINT/SIGTERM), lasand loc
-    # ca cron-ul de la granița de 5h sa porneasca instanta urmatoare. Asa
-    # ritmul e FIX 5h intre porniri, chiar daca GitHub intarzie uneori
-    # rulările programate; concurența rămâne plasă de siguranță la suprapuneri.
-    timeout-minutes: 290
+    # Failsafe extern: watchdog-ul intern (pasul de pornire bot) opreste
+    # botul la 4h50m; daca acela esueaza vreodata, acest timeout prinde jobul
+    # inainte de limita hard de 6h a runner-elor GitHub-hosted.
+    timeout-minutes: 295
     permissions:
       contents: write
+      actions: write
     # O SINGURA instanta de bot: daca dai Run din nou cat timp botul ruleaza,
     # instanta veche e oprita curat (isi persista baza de date la oprire) si
     # cea noua preia. Fara asta, doua rulari simultan pe acelasi TG_SESSION
-    # sunt respinse de Telegram cu 406 AUTH_KEY_DUPLICATED. Push-urile obisnuite
-    # NU ating acest grup (jobul lor "run" e sarit), deci nu opresc botul activ.
+    # sunt respinse de Telegram cu 406 AUTH_KEY_DUPLICATED.
     concurrency:
       group: news-bot-run
       cancel-in-progress: true
@@ -87,5 +83,29 @@ jobs:
           node-version: 22
       - run: npm ci
 
-      - name: Porneste botul
-        run: npm start
+      - name: Porneste botul (watchdog 4h50m)
+        run: |
+          # GNU timeout trimite SIGTERM la 4h50m -> handler-ul din index.js
+          # salveaza baza de date grațios si iese. Codul 124 = watchdog-ul a
+          # actionat = sfarsit NORMAL de ciclu => pasul urmator relanseaza.
+          timeout --signal=TERM --kill-after=60s 17400s node src/index.js
+          code=$?
+          echo "bot exit code: $code"
+          if [ "$code" -eq "124" ]; then
+            echo "WATCHDOG_END=true" >> "$GITHUB_ENV"
+          fi
+
+      # CICLU DINAMIC DE EXACT ~5H: instanta care tocmai s-a terminat normal
+      # (watchdog) declanseaza IMEDIAT instanta urmatoare prin workflow_dispatch.
+      # Spre deosebire de cron (care poate intarzia 10-40 min), dispatch-ul
+      # porneste in secunde, iar ritmul e relativ la momentul real de pornire,
+      # nu la granițe de ceas => fara derivă, fara goluri lungi.
+      # NU se relanseaza la crash sau Cancel manual: acolo preia cron-ul
+      # (plasă de siguranță) sau tu decizi ce faci.
+      - name: Relanseaza instant urmatoarea instanta
+        if: env.WATCHDOG_END == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh workflow run bot.yml --ref "${{ github.ref_name }}"
+          echo "Instanta urmatoare a fost declansata (ciclu dinamic ~5h)"
