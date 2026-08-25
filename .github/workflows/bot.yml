@@ -5,6 +5,15 @@ on:
   workflow_dispatch:
   push:
     branches: [master]
+  # AUTO-RESTART: GitHub limiteaza UN JOB la max 6 ore (limita hard, nedeschimbabila
+  # pe runner-ele lor). Deci botul se reporneste SINGUR la fiecare 5 ore: la
+  # momentul cron, grupul de concurenta opreste instanta veche curat (isi
+  # persista baza de date) si cea noua preia cu istoricul restaurat din
+  # branch-ul data. Rezultat: botul ruleaza CONTINUU, fara interventie.
+  # Nota: GitHub dezactiveaza schedule-urile dupa 60 de zile de inactivitate
+  # completa a repo-ului - commiturile periodice pe branch-ul data tin repo-ul viu.
+  schedule:
+    - cron: "0 */5 * * *"
 
 jobs:
   # Validare rapida la fiecare push (fara secrete, merge si fara ele)
@@ -19,13 +28,12 @@ jobs:
       - name: Verifica sintaxa
         run: node --check src/index.js && echo "sintax OK"
 
-  # Ruleaza botul, doar manual. TOATE valorile vin din GitHub Secrets
-  # (tab-ul Settings -> Secrets and variables -> Actions) - nimic nu e in cod.
-  # ATENTIE: un job GitHub Actions se opreste automat dupa 6 ore (timeout-max).
+  # Ruleaza botul: manual (Run workflow), la fiecare push pe master SI
+  # programat la fiecare 5 ore (auto-restart - vezi comentariul de la schedule).
   run:
     runs-on: ubuntu-latest
     needs: validate
-    if: github.event_name == 'workflow_dispatch'
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule' || github.event_name == 'push'
     timeout-minutes: 300
     permissions:
       contents: write
