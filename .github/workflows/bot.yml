@@ -1,13 +1,5 @@
 name: Bot
 
-# O SINGURA rulare activa: daca dai Run din nou in timp ce botul ruleaza,
-# cea veche e oprita curat (persista baza de date) si cea noua porneste.
-# Fara asta, doua rulari simultan folosesc aceeasi sesiune Telegram =>
-# Telegram le respinge cu 406 AUTH_KEY_DUPLICATED.
-concurrency:
-  group: news-bot-run
-  cancel-in-progress: true
-
 on:
   # Rulezi botul manual din tab-ul Actions -> "Run workflow"
   workflow_dispatch:
@@ -37,6 +29,14 @@ jobs:
     timeout-minutes: 300
     permissions:
       contents: write
+    # O SINGURA instanta de bot: daca dai Run din nou cat timp botul ruleaza,
+    # instanta veche e oprita curat (isi persista baza de date la oprire) si
+    # cea noua preia. Fara asta, doua rulari simultan pe acelasi TG_SESSION
+    # sunt respinse de Telegram cu 406 AUTH_KEY_DUPLICATED. Push-urile obisnuite
+    # NU ating acest grup (jobul lor "run" e sarit), deci nu opresc botul activ.
+    concurrency:
+      group: news-bot-run
+      cancel-in-progress: true
     env:
       TG_API_ID: ${{ secrets.TG_API_ID }}
       TG_API_HASH: ${{ secrets.TG_API_HASH }}
