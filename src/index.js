@@ -393,5 +393,18 @@ async function main() {
 
 main().catch((err) => {
   console.error("Eroare fatala:", err);
+  // AUTH_KEY_DUPLICATED = aceeasi sesiune Telegram (TG_SESSION) e folosita
+  // SIMULTAN de doua locatii (ex: bot local + bot pe GitHub Actions, sau doua
+  // rulari Actions suprapuse). Telegram respinge conexiunea. Solutia: opreste
+  // cealalta instanta si reporneste; daca persista, regenereaza TG_SESSION.
+  if (String(err?.message || err).includes("AUTH_KEY_DUPLICATED")) {
+    console.error(
+      "\n" +
+        "!! SESIUNE TELEGRAM FOLOSITA SIMULTAN IN DOUA LOCAZII !!\n" +
+        "!! Opreste botul local (sau cealalta rulare Actions) si reporneste.\n" +
+        "!! Nu rula niciodata botul local si cel din GitHub Actions in acelasi timp\n" +
+        "!! cu acelasi TG_SESSION - Telegram blocheaza conexiunile duplicate.\n"
+    );
+  }
   process.exit(1);
 });
