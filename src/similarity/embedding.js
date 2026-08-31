@@ -85,7 +85,7 @@ function computeOverlapMetrics(textA, textB) {
   const stemsA = getStems(textA);
   const stemsB = getStems(textB);
   if (stemsA.length === 0 || stemsB.length === 0) {
-    return { meanContainment: 0.5, jaccard: 0.5, minContainment: 0.5, maxContainment: 0.5 };
+    return { meanContainment: 0.5, jaccard: 0.5, minContainment: 0.5, maxContainment: 0.5, lenRatio: 1 };
   }
 
   const setA = new Set(stemsA);
@@ -100,12 +100,14 @@ function computeOverlapMetrics(textA, textB) {
   const jaccard = union > 0 ? common / union : 0;
   const cA = setA.size > 0 ? common / setA.size : 0;
   const cB = setB.size > 0 ? common / setB.size : 0;
+  const lenRatio = Math.min(stemsA.length, stemsB.length) / Math.max(stemsA.length, stemsB.length);
 
   return {
     jaccard,
     minContainment: Math.min(cA, cB),
     maxContainment: Math.max(cA, cB),
     meanContainment: (cA + cB) / 2,
+    lenRatio,
   };
 }
 
@@ -115,14 +117,38 @@ function calculateCalibratedSimilarity(textNew, textOld, embNew, embOld) {
 
   const ov = computeOverlapMetrics(textNew, textOld);
 
-  // Calibrare hibrida:
-  // 1. Embedding-ul semantic (embSim) masoara apropierea de topic general.
-  // 2. Containment-ul si Jaccard-ul masoara daca textul nou este doar o preluare/reformulare
-  //    sau aduce sectiuni/rezolutii/fapte complet noi.
-  // Daca textul nou aduce 60-80% idei/fapte noi (containment mediu mic ~30%), scorul scade la ~35-45%.
-  // Daca textul nou este duplicat fidel (aceleasi fapte), scorul ajunge la >= 85%.
-  const coverageFactor = Math.min(1, Math.max(0.15, 0.20 + 0.80 * (ov.meanContainment * 0.7 + ov.jaccard * 0.6)));
-  return embSim * coverageFactor;
+  // Daca semantic embedding-ul este mic (< 0.70), textele sunt clar despre subiecte diferite
+  if (embSim < 0.70) {
+    return embSim * 0.3;
+  }
+
+  // Cand semantic embedding-ul este mare (>= 0.70):
+  // 1. DUPLICATE REALE DOCUMENT COMPLET (ex. Text A vs Text B cu cele 10 prioritati):
+  //    Ambii au continut partajat masiv (minContainment >= 45% sau meanContainment >= 50%) -> scor 90% - 97%.
+  // 2. DUPLICATE SCURTE REFORMULATE (ex. CCR Pensii Klaus Iohannis):
+  //    Lungimi comparabile (lenRatio >= 0.70) si semantica aproape identica (embSim >= 0.94) -> scor ~88% - 94%.
+  // 3. STIRE NOUA / DEZVOLTARE (ex. Sinaia 1 vs Sinaia 2):
+  //    Textul nou aduce mult continut inedit (minContainment <= 35% si lenRatio < 0.70) -> scor redus la ~40% - 50%.
+  let finalScore;
+  const isHighCoverage = ov.minContainment >= 0.45 || ov.meanContainment >= 0.50;
+  const isComparableShortDuplicate = ov.lenRatio >= 0.70 && embSim >= 0.94 && ov.maxContainment >= 0.35;
+
+  if (isHighCoverage) {
+    const base = Math.max(ov.minContainment, ov.meanContainment);
+    const coverageFactor = 0.90 + 0.10 * Math.min(1, (base - 0.45) / 0.35);
+    finalScore = embSim * coverageFactor;
+  } else if (isComparableShortDuplicate) {
+    finalScore = embSim * 0.92;
+  } else if (ov.minContainment <= 0.35) {
+    const coverageFactor = 0.25 + 0.30 * (ov.minContainment / 0.35);
+    finalScore = embSim * coverageFactor;
+  } else {
+    const t = (ov.minContainment - 0.35) / 0.10;
+    const coverageFactor = 0.55 + 0.35 * t;
+    finalScore = embSim * coverageFactor;
+  }
+
+  return Math.max(0, Math.min(1, finalScore));
 }
 
 // Verifica daca articolul nou e duplicat real (semantic + acoperire continut)
