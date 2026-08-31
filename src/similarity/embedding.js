@@ -20,7 +20,7 @@ async function getEmbedding(text) {
           content: { parts: [{ text: text.slice(0, 8000) }] },
         },
         {
-          timeout: 15000,
+          timeout: 30000,
           headers: {
             "x-goog-api-key": GEMINI_KEY(),
             "Content-Type": "application/json",
@@ -52,7 +52,7 @@ function cosineSimilarity(a, b) {
 // Verifica daca articolul nou e prea similar (inclusiv sinonime/rescrieri,
 // pentru ca embeddings capteaza sensul, nu doar cuvinte identice)
 // cu vreo stire din ultimele N ore.
-export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.4) {
+export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.85) {
   const newEmbedding = await getEmbedding(newText);
 
   let maxSimilarity = 0;

@@ -80,17 +80,101 @@ async function fetchWikipediaReference(personName) {
 }
 
 async function searchTavily(query) {
-  const res = await axios.post(
-    "https://api.tavily.com/search",
-    {
-      api_key: TAVILY_KEY(),
-      query: `${query} Romania foto stiri`,
-      include_images: true,
-      max_results: 15,
-    },
-    { timeout: 15000 }
-  );
-  return res.data.images || [];
+  const key = TAVILY_KEY();
+  if (!key) return [];
+  try {
+    const res = await axios.post(
+      "https://api.tavily.com/search",
+      {
+        api_key: key,
+        query: `${query} Romania foto stiri`,
+        include_images: true,
+        max_results: 15,
+      },
+      { timeout: 15000 }
+    );
+    return (res.data?.images || []).filter((u) => typeof u === "string" && /^https?:\/\//.test(u));
+  } catch (err) {
+    console.warn(`[image] Tavily search indisponibil (${err.response?.status || err.message}), trecem la urmatorul motor...`);
+    return [];
+  }
+}
+
+async function searchBingHtml(query) {
+  try {
+    const res = await axios.get("https://www.bing.com/images/search", {
+      params: { q: `${query} Romania`, qft: "+filterui:photo-photo" },
+      headers: {
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+      },
+      timeout: 15000,
+    });
+    const urls = [];
+    const matches = res.data.matchAll(/murl&quot;:&quot;(https?:\/\/[^&"]+)&quot;/g);
+    for (const m of matches) {
+      if (!urls.includes(m[1])) urls.push(m[1]);
+    }
+    return urls;
+  } catch (err) {
+    console.warn(`[image] Bing HTML search esuat: ${err.message}`);
+    return [];
+  }
+}
+
+async function searchWikimediaCommons(query) {
+  try {
+    const res = await axios.get("https://commons.wikimedia.org/w/api.php", {
+      params: {
+        action: "query",
+        generator: "search",
+        gsrsearch: query,
+        gsrnamespace: 6,
+        prop: "imageinfo",
+        iiprop: "url|size",
+        iiurlwidth: 800,
+        format: "json",
+      },
+      headers: { "User-Agent": WIKI_UA },
+      timeout: 15000,
+    });
+    const pages = Object.values(res.data?.query?.pages || {});
+    return pages
+      .map((p) => p.imageinfo?.[0]?.thumburl || p.imageinfo?.[0]?.url)
+      .filter((u) => u && /^https?:\/\//.test(u) && /\.(jpe?g|png|webp)/i.test(u));
+  } catch (err) {
+    console.warn(`[image] Wikimedia Commons search esuat: ${err.message}`);
+    return [];
+  }
+}
+
+async function searchWikipediaImages(personName) {
+  const names = [personName];
+  const parts = personName.split(/\s+/);
+  if (parts.length >= 2) names.push(parts[parts.length - 1]);
+
+  const foundUrls = [];
+  for (const name of names) {
+    for (const lang of ["ro", "en"]) {
+      try {
+        const base = `https://${lang}.wikipedia.org/w/api.php`;
+        const sr = await axios.get(base, {
+          params: { action: "query", titles: name, prop: "pageimages", piprop: "original|thumbnail", pithumbsize: 800, format: "json" },
+          headers: { "User-Agent": WIKI_UA },
+          timeout: 10000,
+        });
+        const pages = Object.values(sr.data?.query?.pages || {});
+        for (const p of pages) {
+          const img = p.original?.source || p.thumbnail?.source;
+          if (img && /^https?:\/\//.test(img) && !foundUrls.includes(img)) {
+            foundUrls.push(img);
+          }
+        }
+      } catch {}
+    }
+  }
+  return foundUrls;
 }
 
 async function searchDuckDuckGo(query) {
@@ -100,7 +184,7 @@ async function searchDuckDuckGo(query) {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
       timeout: 15000,
     });
-    return (res.data.results || []).map((r) => r.image);
+    return (res.data.results || []).map((r) => r.image).filter((u) => typeof u === "string" && /^https?:\/\//.test(u));
   } catch {
     return [];
   }
@@ -309,7 +393,14 @@ export async function findImage(personOrTopic, articleTitle) {
     articleTitle ? articleTitle.slice(0, 80) : null,
   ].filter((q) => q && q.trim());
 
-  const engines = [searchTavily, searchDuckDuckGo, searchBingRss];
+  const engines = [
+    searchTavily,
+    searchBingHtml,
+    searchWikimediaCommons,
+    searchWikipediaImages,
+    searchDuckDuckGo,
+    searchBingRss,
+  ];
   const seen = new Set();
   let winner = null;
 
@@ -322,8 +413,15 @@ export async function findImage(personOrTopic, articleTitle) {
 
   searchLoop: for (const q of queries) {
     for (const engine of engines) {
-      const imgs = await engine(q);
+      let imgs = [];
+      try {
+        imgs = await engine(q);
+      } catch (err) {
+        console.warn(`[image] Eroare la apel motor imagini: ${err.message}`);
+        continue;
+      }
       for (const imgUrl of imgs) {
+        if (!imgUrl || typeof imgUrl !== "string") continue;
         if (seen.has(imgUrl)) continue;
         seen.add(imgUrl);
         if (usedUrls.has(imgUrl)) continue;

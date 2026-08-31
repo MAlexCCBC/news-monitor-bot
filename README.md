@@ -99,11 +99,12 @@ real e mai potrivit Railway/VPS, nu Actions.
 3. Verifică dacă data e azi
 4. Caută keywords (lista completă e în `.env`, o poți edita oricând)
 5. Calculează embedding cu Gemini pe **titlu + primul paragraf** și compară cu
-   ultimele 72h — dacă similaritatea trece de 80%, ignoră (sau te anunță scurt,
+   ultimele 72h — dacă similaritatea trece de 85%, ignoră duplicatul (sau te anunță scurt,
    ca să știi de ce a sărit)
-6. Reformatează cu Gemini text (cascadă automată de modele dacă unul dă rate-limit)
-7. Caută o imagine (Tavily, fallback DuckDuckGo), verifică raportul (3:4/9:16),
-   decupează dacă e nevoie, verifică să nu fi fost folosită în ultimele 30 zile
+6. Reformatează cu Gemini text (cascadă automată de modele dacă unul dă rate-limit sau timeout)
+7. Caută o imagine (Tavily -> Bing HTML -> Wikimedia Commons -> Wikipedia -> DuckDuckGo),
+   verifică facial + anti-text cu AI, decupează la format portret 3:4 centrat pe față,
+   evită refolosirea recentă
 8. Îți trimite ție privat, pe Telegram, tot pachetul: text formatat + imagine
 9. **Tu decizi și postezi manual** pe canalul tău
 
@@ -111,7 +112,7 @@ real e mai potrivit Railway/VPS, nu Actions.
 
 - **Keywords**: `.env` -> `CHANNELS` / `KEYWORDS`
 - **Stilul postării**: `src/ai/rewrite.js` -> `PROMPT_TEMPLATE`
-- **Pragul de similaritate**: `.env` -> `SIMILARITY_THRESHOLD` (0.80 = 80%)
+- **Pragul de similaritate**: `.env` -> `SIMILARITY_THRESHOLD` (0.85 = 85%)
 - **Selectoare HTML per site** (dacă un site își schimbă structura):
   `src/scraper/article.js` -> `SITE_CONFIG`
 

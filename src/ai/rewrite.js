@@ -77,7 +77,7 @@ export async function rewriteArticle(articleText) {
           contents: [{ parts: [{ text: PROMPT_TEMPLATE(articleText) }] }],
         },
         {
-          timeout: 30000,
+          timeout: 60000,
           headers: {
             "x-goog-api-key": GEMINI_KEY(),
             "Content-Type": "application/json",
@@ -91,7 +91,15 @@ export async function rewriteArticle(articleText) {
     } catch (err) {
       lastError = err;
       const status = err.response?.status;
-      console.warn(`[ai] ${model} a esuat (status ${status}), incerc urmatorul model...`);
+      const isTimeout = err.code === "ECONNABORTED" || /timeout/i.test(err.message);
+      if (isTimeout) {
+        console.warn(`[ai] ${model} a dat timeout (>60s), incerc urmatorul model...`);
+      } else {
+        console.warn(`[ai] ${model} a esuat (status ${status || err.message}), incerc urmatorul model...`);
+      }
+      if (status === 429) {
+        await new Promise((r) => setTimeout(r, 2000));
+      }
       continue;
     }
   }

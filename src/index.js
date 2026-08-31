@@ -46,7 +46,6 @@ import { checkSimilarity } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
-import { isNewDevelopment } from "./ai/duplicate.js";
 import { findImage, processArticleImage } from "./image/search.js";
 import { saveNews, getRecentNews, isUrlSeen, cleanupOld } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
@@ -76,7 +75,7 @@ const romanianPersonalities = (
   .split(",")
   .map((k) => k.trim());
 const channelsList = CHANNELS.split(",").map((c) => c.trim().toLowerCase());
-const threshold = Number(SIMILARITY_THRESHOLD || 0.4);
+const threshold = Number(SIMILARITY_THRESHOLD || 0.85);
 const historyHours = Number(HISTORY_HOURS || 72);
 // Canalele care OCOLESC toate filtrele de continut (similaritate, keywords,
 // stiri straine) - ex: canalul tau de rezerva, unde vrei sa pui orice daca da
@@ -228,32 +227,13 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
             `[pas] Similar ${(simResult.similarity * 100).toFixed(0)}% dar e ACELASI site (${normalizeHost(url)}) - articol diferit, continuam`
           );
         } else {
-          // Arbitraj AI: similaritate mare != mereu duplicat. Ex: stirea 1 e
-          // "decizia CCR care il vizeaza pe Fritz", stirea 2 e "Fritz comenteaza
-          // decizia CCR" - embedding-ul le vede ~85% similare, dar a doua are o
-          // DECLARATIE noua => nu e duplicat. Intrebam Gemini daca stirea aduce
-          // ceva nou (declaratie, citat, detalii) sau doar reformuleaza.
-          const prevRow = recentNews.find((r) => r.url === simResult.similarUrl);
-          const verdict = prevRow
-            ? await isNewDevelopment(
-                `${prevRow.title || ""}\n${(prevRow.content || "").slice(0, 1200)}`,
-                `${article.title}\n${(article.content || "").slice(0, 1200)}`
-              )
-            : null;
-
-          if (verdict === "NOU") {
-            console.log(
-              `[pas] Similar ${(simResult.similarity * 100).toFixed(0)}% DAR aduce elemente noi (declaratie/detalii) - continuam`
-            );
-          } else {
-            console.log(
-              `[skip] Prea similar (${(simResult.similarity * 100).toFixed(1)}%) cu ${simResult.similarUrl}${verdict === "DUBLURA" ? " - confirmat DUBLURA de AI" : ""}`
-            );
-            await notify(
-              `⏭️ <b>Stire ignorata (similaritate ${(simResult.similarity * 100).toFixed(0)}%)</b>\n${article.title}\n${url}\n\nSimilara cu: ${simResult.similarUrl}`
-            );
-            return;
-          }
+          console.log(
+            `[skip] Prea similar (${(simResult.similarity * 100).toFixed(1)}%) cu ${simResult.similarUrl}`
+          );
+          await notify(
+            `⏭️ <b>Stire ignorata (similaritate ${(simResult.similarity * 100).toFixed(0)}%)</b>\n${article.title}\n${url}\n\nSimilara cu: ${simResult.similarUrl}`
+          );
+          return;
         }
       }
     } else {
@@ -389,6 +369,15 @@ async function main() {
 
   console.log(`👀 Monitorizez canalele: ${channelsList.join(", ")}`);
   await notify("🤖 Bot pornit. Monitorizez canalele și îți trimit stiri filtrate pentru aprobare.");
+
+  const maxRuntimeMin = Number(process.env.BOT_MAX_RUNTIME_MIN || 0);
+  if (maxRuntimeMin > 0) {
+    console.log(`⏱️ [watchdog] Oprire automata programata peste ${maxRuntimeMin} minute`);
+    setTimeout(() => {
+      console.log(`⏱️ [watchdog] Timp maxim de rulare atins (${maxRuntimeMin} min) - salvare si oprire gratioasa...`);
+      gracefulExit();
+    }, maxRuntimeMin * 60 * 1000);
+  }
 }
 
 main().catch((err) => {

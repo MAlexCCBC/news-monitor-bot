@@ -76,7 +76,7 @@ export async function extractSpeakerFromArticle(title, excerpt, keywordHint = ""
           generationConfig: { temperature: 0 },
         },
         {
-          timeout: 20000,
+          timeout: 30000,
           headers: {
             "x-goog-api-key": GEMINI_KEY(),
             "Content-Type": "application/json",

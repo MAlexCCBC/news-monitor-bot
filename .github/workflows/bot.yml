@@ -6,12 +6,11 @@ on:
   push:
     branches: [master]
   # PLASA DE SIGURANTA: relansarea principala e facuta DINAMIC de instanta
-  # anterioara (vezi pasul "Relanseaza instant urmatoarea instanta" - porneste
-  # in secunde, fara intarzierile cron-ului). Cron-ul de aici prinde doar
-  # cazurile in care lanțul s-a rupt (crash, GitHub incident) - botul revine
-  # cel tarziu la urmatoarea granița de 5h.
+  # anterioara prin workflow_dispatch (porneste in cateva secunde).
+  # Cron-ul orar prinde cazurile in care GitHub a avut o cadere temporara
+  # sau lantul a fost intrerupt.
   schedule:
-    - cron: "0 */5 * * *"
+    - cron: "0 * * * *"
 
 jobs:
   # Validare rapida la fiecare push (fara secrete, merge si fara ele)
@@ -62,6 +61,7 @@ jobs:
       BYPASS_CHANNELS: ${{ secrets.BYPASS_CHANNELS }}
       ROMANIAN_PERSONALITIES: ${{ secrets.ROMANIAN_PERSONALITIES }}
       DB_PERSIST_BRANCH: data
+      BOT_MAX_RUNTIME_MIN: 290
     steps:
       - uses: actions/checkout@v5
 
@@ -85,27 +85,20 @@ jobs:
 
       - name: Porneste botul (watchdog 4h50m)
         run: |
-          # GNU timeout trimite SIGTERM la 4h50m -> handler-ul din index.js
-          # salveaza baza de date grațios si iese. Codul 124 = watchdog-ul a
-          # actionat = sfarsit NORMAL de ciclu => pasul urmator relanseaza.
+          set +e
+          # Node se opreste singur dupa 290 minute (BOT_MAX_RUNTIME_MIN), salvand baza de date.
+          # timeout GNU este pastrat ca dubla siguranta.
           timeout --signal=TERM --kill-after=60s 17400s node src/index.js
           code=$?
-          echo "bot exit code: $code"
-          if [ "$code" -eq "124" ]; then
-            echo "WATCHDOG_END=true" >> "$GITHUB_ENV"
-          fi
+          echo "Botul s-a oprit cu codul de iesire: $code"
 
-      # CICLU DINAMIC DE EXACT ~5H: instanta care tocmai s-a terminat normal
-      # (watchdog) declanseaza IMEDIAT instanta urmatoare prin workflow_dispatch.
-      # Spre deosebire de cron (care poate intarzia 10-40 min), dispatch-ul
-      # porneste in secunde, iar ritmul e relativ la momentul real de pornire,
-      # nu la granițe de ceas => fara derivă, fara goluri lungi.
-      # NU se relanseaza la crash sau Cancel manual: acolo preia cron-ul
-      # (plasă de siguranță) sau tu decizi ce faci.
+      # CICLU CONTINUU DINAMIC: instanta care tocmai s-a terminat
+      # declanseaza IMEDIAT instanta urmatoare prin workflow_dispatch.
+      # Nu se relanseaza doar daca rularea a fost anulata manual (cancel).
       - name: Relanseaza instant urmatoarea instanta
-        if: env.WATCHDOG_END == 'true'
+        if: always() && !cancelled()
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh workflow run bot.yml --ref "${{ github.ref_name }}"
-          echo "Instanta urmatoare a fost declansata (ciclu dinamic ~5h)"
+          echo "Instanta urmatoare a fost declansata (ciclu continuu)"
