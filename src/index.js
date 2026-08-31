@@ -205,7 +205,7 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
       }
     }
 
-    // 3. Verificare similaritate cu ultimele 72h, pe titlu + primul paragraf.
+    // 3. Verificare similaritate cu ultimele 72h pe textul complet al articolului.
     // Canalele din BYPASS_CHANNELS (ex: canalul tau de rezerva) ocolesc complet
     // acest filtru - nu se compara si nu se blocheaza nimic, ca sa poti pune
     // orice acolo daca da prost.
@@ -217,7 +217,8 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
     let simResult = null;
     if (!bypassFilters) {
       const recentNews = getRecentNews(historyHours);
-      simResult = await checkSimilarity(essentialText, recentNews, threshold);
+      const fullArticleText = `${article.title}\n${(article.content || "").slice(0, 4000)}`;
+      simResult = await checkSimilarity(fullArticleText, recentNews, threshold);
 
       if (simResult.isDuplicate) {
         const sameSite =
