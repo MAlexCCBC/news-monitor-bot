@@ -205,10 +205,9 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
       }
     }
 
-    // 3. Verificare similaritate cu ultimele 72h pe textul complet al articolului.
-    // Canalele din BYPASS_CHANNELS (ex: canalul tau de rezerva) ocolesc complet
-    // acest filtru - nu se compara si nu se blocheaza nimic, ca sa poti pune
-    // orice acolo daca da prost.
+    // 3. Verificare similaritate cu ultimele 72h pe amprenta concentrata (Titlu + Lead 300 caractere).
+    // Foloseste arhitectura pe 3 zone (Verde >= 0.80, Gri 0.74-0.79 cu arbitraj entitati, Alba < 0.74).
+    // Canalele din BYPASS_CHANNELS (ex: canalul tau de rezerva) ocolesc complet acest filtru.
     // Regula de site: daca match-ul cel mai apropiat e de pe ACELASI site,
     // nu-l consideram duplicat - un site nu isi republiceaza singur aceeasi
     // stire cu alt URL, deci e un articol diferit (chiar daca similar ca subiect,
@@ -217,8 +216,8 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
     let simResult = null;
     if (!bypassFilters) {
       const recentNews = getRecentNews(historyHours);
-      const fullArticleText = `${article.title}\n${(article.content || "").slice(0, 4000)}`;
-      simResult = await checkSimilarity(fullArticleText, recentNews, threshold);
+      const textToEmbed = `${article.title}. ${(article.content || "").slice(0, 300)}`;
+      simResult = await checkSimilarity(textToEmbed, recentNews, threshold);
 
       if (simResult.isDuplicate) {
         const sameSite =

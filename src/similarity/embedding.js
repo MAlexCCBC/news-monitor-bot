@@ -81,113 +81,129 @@ function getStems(text) {
     .map(stemRo);
 }
 
-function computeOverlapMetrics(textA, textB) {
-  const stemsA = getStems(textA);
-  const stemsB = getStems(textB);
-  if (stemsA.length === 0 || stemsB.length === 0) {
-    return { meanContainment: 0.5, jaccard: 0.5, minContainment: 0.5, maxContainment: 0.5, lenRatio: 1 };
+function extractEntities(text) {
+  if (!text) return { properNouns: new Set(), numbers: new Set() };
+  const properMatches = text.match(/\b[A-ZĂÎÂȘȚ][a-zăîâșțA-ZĂÎÂȘȚ0-9_-]+\b/g) || [];
+  const properNouns = new Set(
+    properMatches
+      .map((w) => w.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""))
+      .filter((w) => w.length >= 3 && !STOP_WORDS.has(w))
+  );
+
+  const numMatches = text.match(/\b\d+([.,]\d+)?\b/g) || [];
+  const numbers = new Set(numMatches);
+
+  return { properNouns, numbers };
+}
+
+function checkKeyEntitiesMatch(textA, textB) {
+  const entA = extractEntities(textA);
+  const entB = extractEntities(textB);
+
+  let commonProper = 0;
+  for (const p of entA.properNouns) {
+    if (entB.properNouns.has(p)) commonProper++;
   }
 
-  const setA = new Set(stemsA);
-  const setB = new Set(stemsB);
-
-  let common = 0;
-  for (const s of setA) {
-    if (setB.has(s)) common++;
+  let commonNumbers = 0;
+  for (const n of entA.numbers) {
+    if (entB.numbers.has(n)) commonNumbers++;
   }
 
-  const union = new Set([...setA, ...setB]).size;
-  const jaccard = union > 0 ? common / union : 0;
-  const cA = setA.size > 0 ? common / setA.size : 0;
-  const cB = setB.size > 0 ? common / setB.size : 0;
-  const lenRatio = Math.min(stemsA.length, stemsB.length) / Math.max(stemsA.length, stemsB.length);
+  const titleA = textA.split("\n")[0] || "";
+  const titleB = textB.split("\n")[0] || "";
+  const stemsA = new Set(getStems(titleA));
+  const stemsB = new Set(getStems(titleB));
+
+  let commonTitleStems = 0;
+  for (const s of stemsA) {
+    if (stemsB.has(s)) commonTitleStems++;
+  }
+
+  const hasMatchingEntities =
+    commonProper >= 2 ||
+    (commonProper >= 1 && commonNumbers >= 1) ||
+    commonTitleStems >= 3 ||
+    (commonProper >= 1 && commonTitleStems >= 2);
 
   return {
-    jaccard,
-    minContainment: Math.min(cA, cB),
-    maxContainment: Math.max(cA, cB),
-    meanContainment: (cA + cB) / 2,
-    lenRatio,
+    hasMatchingEntities,
+    commonProper,
+    commonNumbers,
+    commonTitleStems,
   };
 }
 
-function titleWordJaccard(titleA, titleB) {
-  const sA = new Set(getStems(titleA));
-  const sB = new Set(getStems(titleB));
-  if (sA.size === 0 || sB.size === 0) return 0;
-  let common = 0;
-  for (const s of sA) if (sB.has(s)) common++;
-  const union = new Set([...sA, ...sB]).size;
-  return union > 0 ? common / union : 0;
-}
-
-function calculateCalibratedSimilarity(textNew, textOld, embNew, embOld) {
-  const embSim = cosineSimilarity(embNew, embOld);
-  if (!textNew || !textOld) return embSim;
-
-  const ov = computeOverlapMetrics(textNew, textOld);
-  const titleNew = textNew.split("\n")[0] || "";
-  const titleOld = textOld.split("\n")[0] || "";
-  const titleOverlap = titleWordJaccard(titleNew, titleOld);
-
-  // Daca semantic embedding-ul este mic (< 0.70), textele sunt clar despre subiecte diferite
-  if (embSim < 0.70) {
-    return embSim * 0.3;
+/**
+ * Arhitectura pe 3 Zone de Decizie:
+ * 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
+ * 2. ZONA GRI (Score in [0.74, 0.79]) -> Arbitraj pe entitati si cuvinte cheie din titlu/lead
+ *    Daca exista entitati comune -> scorul urca la 0.82 (duplicat)
+ * 3. ZONA ALBA (Score < 0.74) -> Stire noua / permis direct
+ */
+export function evaluate3ZoneSimilarity(embSim, textNew, textOld, threshold = 0.80) {
+  // 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
+  if (embSim >= threshold) {
+    return {
+      isDuplicate: true,
+      score: embSim,
+      zone: "VERDE",
+      reason: "Semantic embedding >= 0.80",
+    };
   }
 
-  // Cand semantic embedding-ul este mare (>= 0.70):
-  // 1. TITLU APROAPE IDENTIC + TOPIC APROPIAT (ex. Digi24 vs Hotnews cu acelasi subiect):
-  //    Daca ambele au acelasi titlu (titleOverlap >= 50%) si semantica >= 85%, este duplicat clar -> scor >= 90%.
-  // 2. DUPLICATE REALE DOCUMENT COMPLET (ex. cele 10 prioritati):
-  //    Continut partajat masiv (minContainment >= 45% sau meanContainment >= 50%) -> scor 90% - 97%.
-  // 3. DUPLICATE SCURTE REFORMULATE (ex. CCR Pensii Klaus Iohannis):
-  //    Lungimi comparabile (lenRatio >= 0.70) si semantica aproape identica (embSim >= 0.94) -> scor ~88% - 94%.
-  // 4. STIRE NOUA / DEZVOLTARE (ex. Sinaia 1 vs Sinaia 2 cu 3 rezolutii noi):
-  //    Textul nou aduce mult continut inedit (minContainment <= 35% si lenRatio < 0.70) -> scor redus la ~40% - 50%.
-  let finalScore;
-  const isHighCoverage = ov.minContainment >= 0.45 || ov.meanContainment >= 0.50;
-  const isComparableShortDuplicate = ov.lenRatio >= 0.70 && embSim >= 0.94 && ov.maxContainment >= 0.35;
-  const isStrongTitleAndTopicMatch = titleOverlap >= 0.50 && embSim >= 0.85;
-
-  if (isStrongTitleAndTopicMatch || isHighCoverage) {
-    const boost = isStrongTitleAndTopicMatch ? 0.92 : 0.90;
-    const base = Math.max(ov.minContainment, ov.meanContainment, titleOverlap);
-    const coverageFactor = boost + (1 - boost) * Math.min(1, base);
-    finalScore = embSim * coverageFactor;
-  } else if (isComparableShortDuplicate) {
-    finalScore = embSim * 0.92;
-  } else if (ov.minContainment <= 0.35) {
-    const coverageFactor = 0.25 + 0.30 * (ov.minContainment / 0.35);
-    finalScore = embSim * coverageFactor;
-  } else {
-    const t = (ov.minContainment - 0.35) / 0.10;
-    const coverageFactor = 0.55 + 0.35 * t;
-    finalScore = embSim * coverageFactor;
+  // 2. ZONA GRI (Score intre 0.74 si 0.79) -> Arbitraj pe entitati / cuvinte cheie
+  if (embSim >= 0.74 && embSim < threshold) {
+    const match = checkKeyEntitiesMatch(textNew, textOld);
+    if (match.hasMatchingEntities) {
+      return {
+        isDuplicate: true,
+        score: Math.max(embSim, 0.82),
+        zone: "GRI (Duplicat confirmat)",
+        reason: `Entitati comune (${match.commonProper} nume, ${match.commonNumbers} numere, ${match.commonTitleStems} titlu)`,
+      };
+    } else {
+      return {
+        isDuplicate: false,
+        score: embSim,
+        zone: "GRI (Permis)",
+        reason: "Entitati diferite, stire distincta din acelasi domeniu",
+      };
+    }
   }
 
-  return Math.max(0, Math.min(1, finalScore));
+  // 3. ZONA ALBA (Score < 0.74) -> Stire noua
+  return {
+    isDuplicate: false,
+    score: embSim,
+    zone: "ALBA",
+    reason: "Semantic embedding < 0.74",
+  };
 }
 
-// Verifica daca articolul nou e duplicat real (semantic + acoperire continut + titlu)
-// cu vreo stire din ultimele N ore.
+// Verifica daca articolul nou e duplicat (amprenta concentrata Titlu + Lead pe 3 zone)
 export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80) {
   const newEmbedding = await getEmbedding(newText);
 
   let maxSimilarity = 0;
+  let isDuplicateFinal = false;
   let mostSimilarUrl = null;
 
   for (const item of recentNewsWithEmbeddings) {
     if (!item.embedding || item.embedding.length === 0) continue;
     const oldText = `${item.title || ""}\n${item.content || ""}`;
-    const sim = calculateCalibratedSimilarity(newText, oldText, newEmbedding, item.embedding);
-    if (sim > maxSimilarity) {
-      maxSimilarity = sim;
+    const rawSim = cosineSimilarity(newEmbedding, item.embedding);
+    const evalRes = evaluate3ZoneSimilarity(rawSim, newText, oldText, threshold);
+
+    if (evalRes.score > maxSimilarity) {
+      maxSimilarity = evalRes.score;
+      isDuplicateFinal = evalRes.isDuplicate;
       mostSimilarUrl = item.url;
     }
   }
 
   return {
-    isDuplicate: maxSimilarity >= threshold,
+    isDuplicate: isDuplicateFinal,
     similarity: maxSimilarity,
     similarUrl: mostSimilarUrl,
     embedding: newEmbedding, // o salvam ca sa n-o mai calculam a doua oara
