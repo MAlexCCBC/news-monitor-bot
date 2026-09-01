@@ -28,6 +28,18 @@ if (fs.existsSync(LOCK_FILE)) {
 fs.writeFileSync(LOCK_FILE, String(process.pid));
 process.on("exit", () => { try { fs.unlinkSync(LOCK_FILE); } catch {} });
 function gracefulExit() {
+  try {
+    if (typeof notifyBot !== "undefined" && notifyBot.isPolling()) {
+      notifyBot.stopPolling();
+    }
+  } catch {}
+  try {
+    if (typeof pendingSimilarArticles !== "undefined") {
+      for (const item of pendingSimilarArticles.values()) {
+        if (item.timeoutId) clearTimeout(item.timeoutId);
+      }
+    }
+  } catch {}
   persistNow(dbPersistBranch)
     .catch(() => {})
     .finally(() => process.exit(0));
@@ -103,8 +115,24 @@ console.log(`[config] TG_SESSION: ${process.env.TG_SESSION ? "setat" : "LIPSESTE
 console.log(`[config] NOTIFY_BOT_TOKEN: ${process.env.NOTIFY_BOT_TOKEN ? "setat" : "LIPSESTE"}`);
 console.log(`[config] NOTIFY_CHAT_ID: ${process.env.NOTIFY_CHAT_ID ? "setat" : "LIPSESTE"}`);
 
-// Bot-ul care iti trimite TIE mesaje private (separat de contul tau personal)
-const notifyBot = new TelegramBot(NOTIFY_BOT_TOKEN, { polling: false });
+// Bot-ul care iti trimite TIE mesaje private si asculta interactiuni (butoane)
+const notifyBot = new TelegramBot(NOTIFY_BOT_TOKEN, { polling: true });
+notifyBot.on("polling_error", (err) => {
+  if (!err?.message?.includes("ETELEGRAM: 409")) {
+    console.warn("[notifyBot polling]", err.message);
+  }
+});
+
+function escapeHtml(str) {
+  if (!str) return "";
+  return String(str)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;");
+}
+
+// Harta pentru stiri similare in asteptare de aprobare manuala
+const pendingSimilarArticles = new Map();
 
 async function notify(text) {
   await notifyBot.sendMessage(NOTIFY_CHAT_ID, text, { parse_mode: "HTML" });
@@ -118,6 +146,79 @@ async function notifyPlain(text) {
 async function notifyWithImage(caption, imageBuffer) {
   await notifyBot.sendPhoto(NOTIFY_CHAT_ID, imageBuffer, { caption }, { filename: "imagine.jpg" });
 }
+
+// Handler pentru butoanele inline (✅ Proceseaza stirea / ❌ Ignora)
+notifyBot.on("callback_query", async (callbackQuery) => {
+  const data = callbackQuery.data || "";
+  const msgId = callbackQuery.message?.message_id;
+
+  if (data.startsWith("proc_")) {
+    const pendingId = data.replace("proc_", "");
+    const item = pendingSimilarArticles.get(pendingId);
+
+    if (!item) {
+      await notifyBot.answerCallbackQuery(callbackQuery.id, {
+        text: "Această cerere a expirat sau a fost deja procesată.",
+        show_alert: true,
+      });
+      return;
+    }
+
+    clearTimeout(item.timeoutId);
+    pendingSimilarArticles.delete(pendingId);
+
+    await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Se procesează știrea..." });
+
+    try {
+      await notifyBot.editMessageText(
+        `⚙️ <b>Se procesează știrea aprobată...</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${item.url}`,
+        {
+          chat_id: NOTIFY_CHAT_ID,
+          message_id: msgId,
+          parse_mode: "HTML",
+        }
+      );
+    } catch {}
+
+    await enqueueProcess(async () => {
+      try {
+        await finalizeAndSendArticle(item.article, item.url, item.simResult, item.matchedKeywords);
+        try {
+          await notifyBot.editMessageText(
+            `✅ <b>Știre procesată și trimisă cu succes!</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${item.url}`,
+            {
+              chat_id: NOTIFY_CHAT_ID,
+              message_id: msgId,
+              parse_mode: "HTML",
+            }
+          );
+        } catch {}
+      } catch (err) {
+        console.error("[callback proc eroare]", err);
+        await notify(`❌ Eroare la procesarea știrii aprobate:\n${item.url}\n${err.message}`);
+      }
+    });
+  } else if (data.startsWith("ign_")) {
+    const pendingId = data.replace("ign_", "");
+    const item = pendingSimilarArticles.get(pendingId);
+    if (item) {
+      clearTimeout(item.timeoutId);
+      pendingSimilarArticles.delete(pendingId);
+    }
+
+    await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Știre ignorată." });
+    try {
+      await notifyBot.editMessageText(
+        `❌ <b>Știre ignorată manual.</b>\n\n<b>Titlu:</b> ${item ? escapeHtml(item.article.title) : ""}\n<b>Sursă:</b> ${item ? item.url : ""}`,
+        {
+          chat_id: NOTIFY_CHAT_ID,
+          message_id: msgId,
+          parse_mode: "HTML",
+        }
+      );
+    } catch {}
+  }
+});
 
 // Extrage domeniul unui URL, normalizat (fara www.): ex. "www.mediafax.ro" -> "mediafax.ro"
 function normalizeHost(url) {
@@ -139,6 +240,67 @@ function extractLink(message) {
   }
   const urlMatch = message.message?.match(/https?:\/\/[^\s]+/);
   return urlMatch ? urlMatch[0] : null;
+}
+
+// Finalizeaza generarea postarii, cautarea imaginii si trimiterea notificarii
+async function finalizeAndSendArticle(article, url, simResult, matchedKeywords = []) {
+  // 4. Reformatare cu AI (cascada de modele)
+  const { text: formattedPost } = await rewriteArticle(article.fullTextForKeywordCheck);
+
+  // 5. Salvam in istoric ACUM (ca sa nu se re-proceseze si sa prindem embedding-ul deja calculat)
+  saveNews({
+    url,
+    title: article.title,
+    content: article.content,
+    embedding: simResult?.embedding ?? null,
+  });
+
+  // 6. Sistemul inteligent de imagini. Vorbitorul se determina AI-PRIMAR
+  const regexSpeaker = detectSpeaker(article.title, matchedKeywords);
+  const aiSpeaker = await extractSpeakerFromArticle(
+    article.title,
+    (article.content || "").slice(0, 1500),
+    [regexSpeaker, ...matchedKeywords].filter(Boolean).join(", ")
+  );
+  const speaker = isPlausiblePersonName(aiSpeaker)
+    ? aiSpeaker
+    : isPlausiblePersonName(regexSpeaker)
+      ? regexSpeaker
+      : null;
+  if (speaker) console.log(`[speaker] Vorbitor final: ${speaker}`);
+
+  let imageResult = null;
+  if (speaker) {
+    try {
+      imageResult = await findImage(speaker, article.title);
+    } catch (e) {
+      console.warn("[image] findImage esuat:", e.message);
+    }
+  } else {
+    console.log("[image] Fara persoana care declara - sarim cautarea de portret");
+  }
+
+  if (!imageResult && article.imageUrl) {
+    try {
+      imageResult = await processArticleImage(article.imageUrl);
+      console.log("[image] Fallback: imaginea articolului " + article.imageUrl);
+    } catch {}
+  }
+
+  // 7. Trimitem TIE rezultatul, gata pregatit, pentru aprobare + postare MANUALA.
+  const cleanPost = formattedPost.replace(/\*\*/g, "").trim();
+
+  if (imageResult) {
+    await notifyWithImage(url, imageResult.buffer);
+    if (cleanPost) await notifyPlain(cleanPost);
+  } else {
+    if (cleanPost) await notifyPlain(cleanPost);
+    await notifyPlain(
+      `Sursa: ${url}\n\n⚠️ Nu am gasit imagine noua automat, cauta manual pentru: ${speaker || "eveniment"}`
+    );
+  }
+
+  console.log("[ok] Trimis pentru aprobare");
 }
 
 async function processArticleUrl(url, { bypassFilters = false } = {}) {
@@ -164,14 +326,10 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
       return;
     }
 
-    // Textul esential al stirii = titlul + primul paragraf. Il folosim pentru
-    // keywords, filtru straine si similaritate (nu tot textul, care include
-    // nume din sidebar/recomandari si provoaca false pozitive).
+    // Textul esential al stirii = titlul + primul paragraf.
     const essentialText = `${article.title}\n${(article.content || "").slice(0, 500)}`;
 
     // 2. Verificare keywords (pe titlu + primul paragraf).
-    // Canalele din BYPASS_CHANNELS (ex: canalul tau de rezerva) nu sunt blocate
-    // de lipsa keywords, dar LOGAM daca sunt sau nu gasite.
     const { matched, matchedKeywords } = matchesKeywords(essentialText, keywordsList);
     if (!matched) {
       if (bypassFilters) {
@@ -184,12 +342,7 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
       console.log(`[match] Keywords gasite: ${matchedKeywords.join(", ")}`);
     }
 
-    // 2b. Filtru stiri straine (DINAMIC, cu AI): daca textul nu are context
-    // romanesc clar (tara, orase, personalitati), intrebam Gemini daca subiectul
-    // principal priveste Romania. Astfel prindem ORICE tara straina (Austria,
-    // Serbia, Grecia, India...), nu doar cele aflate pe o lista fixa. Daca
-    // AI-ul nu e disponibil, cadem pe vechiul filtru pe cuvinte cheie.
-    // Canalele bypass trec si peste acest filtru.
+    // 2b. Filtru stiri straine (DINAMIC, cu AI)
     if (!bypassFilters && !hasStrongRomanianContext(essentialText, romanianPersonalities)) {
       const relevant = await isRelevantToRomania(
         article.title,
@@ -197,7 +350,7 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
       );
       const foreign =
         relevant === null
-          ? isForeignOnly(essentialText, romanianPersonalities) // fallback fara AI
+          ? isForeignOnly(essentialText, romanianPersonalities)
           : !relevant;
       if (foreign) {
         console.log("[skip] Stire straina fara implicare romaneasca");
@@ -206,13 +359,6 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
     }
 
     // 3. Verificare similaritate cu ultimele 72h pe amprenta concentrata (Titlu + Lead 300 caractere).
-    // Foloseste arhitectura pe 3 zone (Verde >= 0.80, Gri 0.74-0.79 cu arbitraj entitati, Alba < 0.74).
-    // Canalele din BYPASS_CHANNELS (ex: canalul tau de rezerva) ocolesc complet acest filtru.
-    // Regula de site: daca match-ul cel mai apropiat e de pe ACELASI site,
-    // nu-l consideram duplicat - un site nu isi republiceaza singur aceeasi
-    // stire cu alt URL, deci e un articol diferit (chiar daca similar ca subiect,
-    // ex. doua declaratii Bolojan in aceeasi zi). Duplicatele reale apar pe
-    // SITE-URI DIFERITE (aceeasi stire preluata in toate canalele).
     let simResult = null;
     if (!bypassFilters) {
       const recentNews = getRecentNews(historyHours);
@@ -228,11 +374,60 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
           );
         } else {
           console.log(
-            `[skip] Prea similar (${(simResult.similarity * 100).toFixed(1)}%) cu ${simResult.similarUrl}`
+            `[similar] Similaritate ${(simResult.similarity * 100).toFixed(1)}% cu ${simResult.similarUrl} - trimit cerere interactiva cu butoane`
           );
-          await notify(
-            `⏭️ <b>Stire ignorata (similaritate ${(simResult.similarity * 100).toFixed(0)}%)</b>\n${article.title}\n${url}\n\nSimilara cu: ${simResult.similarUrl}`
-          );
+          
+          const pendingId = `sim_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+          const escapedTitle = escapeHtml(article.title);
+
+          const msgText = `⏭️ <b>Știre similară (${(simResult.similarity * 100).toFixed(0)}%)</b>\n\n` +
+            `<b>Titlu:</b> ${escapedTitle}\n` +
+            `<b>Sursă:</b> ${url}\n\n` +
+            `<b>Similară cu:</b> ${simResult.similarUrl}\n\n` +
+            `<i>Dorești să fie procesată și trimisă oricum? (Apasă un buton sau va expira automat într-o oră)</i>`;
+
+          try {
+            const sentMsg = await notifyBot.sendMessage(NOTIFY_CHAT_ID, msgText, {
+              parse_mode: "HTML",
+              reply_markup: {
+                inline_keyboard: [
+                  [
+                    { text: "✅ Procesează știrea", callback_data: `proc_${pendingId}` },
+                    { text: "❌ Ignoră", callback_data: `ign_${pendingId}` },
+                  ],
+                ],
+              },
+            });
+
+            const timeoutId = setTimeout(async () => {
+              if (pendingSimilarArticles.has(pendingId)) {
+                pendingSimilarArticles.delete(pendingId);
+                try {
+                  await notifyBot.editMessageText(
+                    `⌛ <b>Știre similară (${(simResult.similarity * 100).toFixed(0)}%) - Expirată automat (1 oră)</b>\n\n<b>Titlu:</b> ${escapedTitle}\n<b>Sursă:</b> ${url}`,
+                    {
+                      chat_id: NOTIFY_CHAT_ID,
+                      message_id: sentMsg.message_id,
+                      parse_mode: "HTML",
+                    }
+                  );
+                } catch {}
+              }
+            }, 60 * 60 * 1000); // 1 ora expirare automata
+
+            pendingSimilarArticles.set(pendingId, {
+              article,
+              url,
+              simResult,
+              matchedKeywords,
+              timeoutId,
+              messageId: sentMsg.message_id,
+            });
+          } catch (e) {
+            console.error("[similar notify eroare]", e.message);
+          }
+
+          // Continuam procesarea altor stiri fara blocaj
           return;
         }
       }
@@ -240,77 +435,8 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
       console.log("[pas] Canal bypass - sarim peste filtrul de similaritate");
     }
 
-    // 4. Reformatare cu AI (cascada de modele)
-    const { text: formattedPost } = await rewriteArticle(article.fullTextForKeywordCheck);
-
-    // 5. Salvam in istoric ACUM (ca sa nu se re-proceseze si sa prindem embedding-ul deja calculat)
-    saveNews({
-      url,
-      title: article.title,
-      content: article.content,
-      embedding: simResult?.embedding ?? null,
-    });
-
-    // 6. Sistemul inteligent de imagini. Vorbitorul se determina AI-PRIMAR:
-    //    Gemini citeste titlul+textul si extrage persoana care declara,
-    //    indiferent de formatul titlului (robust la neasteptari). Regex-ul pe
-    //    titlu (detectSpeaker) e doar INDICIU pentru AI si rezerva daca AI-ul
-    //    nu e disponibil. Ambele trec prin isPlausiblePersonName; AI-ul are
-    //    in plus garda anti-halucinatie (numele trebuie sa existe in text).
-    //    Daca niciun vorbitor (stiri despre legi/institutii/evenimente), NU
-    //    cautam portret deloc - trecem direct la imaginea articolului.
-    const regexSpeaker = detectSpeaker(article.title, matchedKeywords);
-    const aiSpeaker = await extractSpeakerFromArticle(
-      article.title,
-      (article.content || "").slice(0, 1500),
-      [regexSpeaker, ...matchedKeywords].filter(Boolean).join(", ")
-    );
-    const speaker = isPlausiblePersonName(aiSpeaker)
-      ? aiSpeaker
-      : isPlausiblePersonName(regexSpeaker)
-        ? regexSpeaker
-        : null;
-    if (speaker) console.log(`[speaker] Vorbitor final: ${speaker}`);
-
-    let imageResult = null;
-    if (speaker) {
-      try {
-        imageResult = await findImage(speaker, article.title);
-      } catch (e) {
-        console.warn("[image] findImage esuat:", e.message);
-      }
-    } else {
-      console.log("[image] Fara persoana care declara - sarim cautarea de portret");
-    }
-
-    if (!imageResult && article.imageUrl) {
-      try {
-        imageResult = await processArticleImage(article.imageUrl);
-        console.log("[image] Fallback: imaginea articolului " + article.imageUrl);
-      } catch {}
-    }
-
-    // 7. Trimitem TIE rezultatul, gata pregatit, pentru aprobare + postare MANUALA.
-    // Postarea finala e doar textul curat (fara header, fara nota imagine,
-    // fara asteriscuri markdown) - exact ce se poate posta asa cum e.
-    // Link-ul sursei sta CAPTION sub imagine (ca sa stii care stire e preluata),
-    // NU in textul rescris.
-    const cleanPost = formattedPost.replace(/\*\*/g, "").trim();
-
-    if (imageResult) {
-      // Poza cu link-ul articolului sub ea, textul rescris ca mesaj separat.
-      await notifyWithImage(url, imageResult.buffer);
-      if (cleanPost) await notifyPlain(cleanPost);
-    } else {
-      // Fara imagine: textul intai, apoi SEPARAT sursa + avertismentul,
-      // ca sa nu se amestece cu postarea.
-      if (cleanPost) await notifyPlain(cleanPost);
-      await notifyPlain(
-        `Sursa: ${url}\n\n⚠️ Nu am gasit imagine noua automat, cauta manual pentru: ${speaker}`
-      );
-    }
-
-    console.log("[ok] Trimis pentru aprobare");
+    // Daca a trecut toate filtrele sau e pe acelasi site / bypass, finalizam
+    await finalizeAndSendArticle(article, url, simResult, matchedKeywords);
   } catch (err) {
     console.error(`[eroare] la procesarea ${url}:`, err.message);
     await notify(`❌ Eroare la procesarea unui articol:\n${url}\n${err.message}`).catch(() => {});
