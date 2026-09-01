@@ -75,7 +75,7 @@ const romanianPersonalities = (
   .split(",")
   .map((k) => k.trim());
 const channelsList = CHANNELS.split(",").map((c) => c.trim().toLowerCase());
-const threshold = Number(SIMILARITY_THRESHOLD || 0.85);
+const threshold = Number(SIMILARITY_THRESHOLD || 0.80);
 const historyHours = Number(HISTORY_HOURS || 72);
 // Canalele care OCOLESC toate filtrele de continut (similaritate, keywords,
 // stiri straine) - ex: canalul tau de rezerva, unde vrei sa pui orice daca da

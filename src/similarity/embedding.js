@@ -111,11 +111,24 @@ function computeOverlapMetrics(textA, textB) {
   };
 }
 
+function titleWordJaccard(titleA, titleB) {
+  const sA = new Set(getStems(titleA));
+  const sB = new Set(getStems(titleB));
+  if (sA.size === 0 || sB.size === 0) return 0;
+  let common = 0;
+  for (const s of sA) if (sB.has(s)) common++;
+  const union = new Set([...sA, ...sB]).size;
+  return union > 0 ? common / union : 0;
+}
+
 function calculateCalibratedSimilarity(textNew, textOld, embNew, embOld) {
   const embSim = cosineSimilarity(embNew, embOld);
   if (!textNew || !textOld) return embSim;
 
   const ov = computeOverlapMetrics(textNew, textOld);
+  const titleNew = textNew.split("\n")[0] || "";
+  const titleOld = textOld.split("\n")[0] || "";
+  const titleOverlap = titleWordJaccard(titleNew, titleOld);
 
   // Daca semantic embedding-ul este mic (< 0.70), textele sunt clar despre subiecte diferite
   if (embSim < 0.70) {
@@ -123,19 +136,23 @@ function calculateCalibratedSimilarity(textNew, textOld, embNew, embOld) {
   }
 
   // Cand semantic embedding-ul este mare (>= 0.70):
-  // 1. DUPLICATE REALE DOCUMENT COMPLET (ex. Text A vs Text B cu cele 10 prioritati):
-  //    Ambii au continut partajat masiv (minContainment >= 45% sau meanContainment >= 50%) -> scor 90% - 97%.
-  // 2. DUPLICATE SCURTE REFORMULATE (ex. CCR Pensii Klaus Iohannis):
+  // 1. TITLU APROAPE IDENTIC + TOPIC APROPIAT (ex. Digi24 vs Hotnews cu acelasi subiect):
+  //    Daca ambele au acelasi titlu (titleOverlap >= 50%) si semantica >= 85%, este duplicat clar -> scor >= 90%.
+  // 2. DUPLICATE REALE DOCUMENT COMPLET (ex. cele 10 prioritati):
+  //    Continut partajat masiv (minContainment >= 45% sau meanContainment >= 50%) -> scor 90% - 97%.
+  // 3. DUPLICATE SCURTE REFORMULATE (ex. CCR Pensii Klaus Iohannis):
   //    Lungimi comparabile (lenRatio >= 0.70) si semantica aproape identica (embSim >= 0.94) -> scor ~88% - 94%.
-  // 3. STIRE NOUA / DEZVOLTARE (ex. Sinaia 1 vs Sinaia 2):
+  // 4. STIRE NOUA / DEZVOLTARE (ex. Sinaia 1 vs Sinaia 2 cu 3 rezolutii noi):
   //    Textul nou aduce mult continut inedit (minContainment <= 35% si lenRatio < 0.70) -> scor redus la ~40% - 50%.
   let finalScore;
   const isHighCoverage = ov.minContainment >= 0.45 || ov.meanContainment >= 0.50;
   const isComparableShortDuplicate = ov.lenRatio >= 0.70 && embSim >= 0.94 && ov.maxContainment >= 0.35;
+  const isStrongTitleAndTopicMatch = titleOverlap >= 0.50 && embSim >= 0.85;
 
-  if (isHighCoverage) {
-    const base = Math.max(ov.minContainment, ov.meanContainment);
-    const coverageFactor = 0.90 + 0.10 * Math.min(1, (base - 0.45) / 0.35);
+  if (isStrongTitleAndTopicMatch || isHighCoverage) {
+    const boost = isStrongTitleAndTopicMatch ? 0.92 : 0.90;
+    const base = Math.max(ov.minContainment, ov.meanContainment, titleOverlap);
+    const coverageFactor = boost + (1 - boost) * Math.min(1, base);
     finalScore = embSim * coverageFactor;
   } else if (isComparableShortDuplicate) {
     finalScore = embSim * 0.92;
@@ -151,9 +168,9 @@ function calculateCalibratedSimilarity(textNew, textOld, embNew, embOld) {
   return Math.max(0, Math.min(1, finalScore));
 }
 
-// Verifica daca articolul nou e duplicat real (semantic + acoperire continut)
+// Verifica daca articolul nou e duplicat real (semantic + acoperire continut + titlu)
 // cu vreo stire din ultimele N ore.
-export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.85) {
+export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80) {
   const newEmbedding = await getEmbedding(newText);
 
   let maxSimilarity = 0;
