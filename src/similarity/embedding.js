@@ -81,13 +81,19 @@ function getStems(text) {
     .map(stemRo);
 }
 
+const GENERIC_PROPER_NOUNS = new Set([
+  "romania", "romaniei", "guvern", "guvernul", "premier", "premierul", "interimar",
+  "bucuresti", "oficial", "declarat", "potrivit", "agerpres", "foto", "sursa",
+  "ministru", "minister", "parlament", "senat", "camera", "deputatilor", "ziua", "marti", "miercuri", "joi", "vineri"
+]);
+
 function extractEntities(text) {
   if (!text) return { properNouns: new Set(), numbers: new Set() };
   const properMatches = text.match(/\b[A-ZĂÎÂȘȚ][a-zăîâșțA-ZĂÎÂȘȚ0-9_-]+\b/g) || [];
   const properNouns = new Set(
     properMatches
       .map((w) => w.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, ""))
-      .filter((w) => w.length >= 3 && !STOP_WORDS.has(w))
+      .filter((w) => w.length >= 3 && !STOP_WORDS.has(w) && !GENERIC_PROPER_NOUNS.has(w))
   );
 
   const numMatches = text.match(/\b\d+([.,]\d+)?\b/g) || [];
@@ -96,9 +102,21 @@ function extractEntities(text) {
   return { properNouns, numbers };
 }
 
-function checkKeyEntitiesMatch(textA, textB) {
-  const entA = extractEntities(textA);
-  const entB = extractEntities(textB);
+function titleWordOverlap(titleA, titleB) {
+  const stemsA = getStems(titleA);
+  const stemsB = getStems(titleB);
+  if (stemsA.length === 0 || stemsB.length === 0) return 0;
+  const setA = new Set(stemsA);
+  const setB = new Set(stemsB);
+  let common = 0;
+  for (const s of setA) if (setB.has(s)) common++;
+  const minSize = Math.min(setA.size, setB.size);
+  return minSize > 0 ? common / minSize : 0;
+}
+
+function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
+  const entA = extractEntities(`${titleA}. ${leadA}`);
+  const entB = extractEntities(`${titleOld}. ${leadOld}`);
 
   let commonProper = 0;
   for (const p of entA.properNouns) {
@@ -110,27 +128,21 @@ function checkKeyEntitiesMatch(textA, textB) {
     if (entB.numbers.has(n)) commonNumbers++;
   }
 
-  const titleA = textA.split("\n")[0] || "";
-  const titleB = textB.split("\n")[0] || "";
-  const stemsA = new Set(getStems(titleA));
-  const stemsB = new Set(getStems(titleB));
+  const titleOverlap = titleWordOverlap(titleA, titleOld);
 
-  let commonTitleStems = 0;
-  for (const s of stemsA) {
-    if (stemsB.has(s)) commonTitleStems++;
-  }
-
+  // Exista potrivire de entitati cheie daca:
+  // 1. Titlurile au cuvinte/subiecte comune (titleOverlap >= 35%)
+  // 2. Sau exista entitati specifice comune (ex: Rutte, CCR, 770, PNRR) plus overlap minim pe titlu
   const hasMatchingEntities =
-    commonProper >= 2 ||
-    (commonProper >= 1 && commonNumbers >= 1) ||
-    commonTitleStems >= 3 ||
-    (commonProper >= 1 && commonTitleStems >= 2);
+    titleOverlap >= 0.35 ||
+    (titleOverlap >= 0.20 && (commonProper >= 1 || commonNumbers >= 1)) ||
+    (commonProper >= 2 && commonNumbers >= 1);
 
   return {
     hasMatchingEntities,
+    titleOverlap,
     commonProper,
     commonNumbers,
-    commonTitleStems,
   };
 }
 
@@ -138,12 +150,25 @@ function checkKeyEntitiesMatch(textA, textB) {
  * Arhitectura pe 3 Zone de Decizie:
  * 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
  * 2. ZONA GRI (Score in [0.74, 0.79]) -> Arbitraj pe entitati si cuvinte cheie din titlu/lead
- *    Daca exista entitati comune -> scorul urca la 0.82 (duplicat)
+ *    Daca exista entitati / subiecte comune -> scorul urca la 0.82 (duplicat)
+ *    Daca titlurile si actiunile sunt complet diferite -> permis direct ca stire noua
  * 3. ZONA ALBA (Score < 0.74) -> Stire noua / permis direct
  */
-export function evaluate3ZoneSimilarity(embSim, textNew, textOld, threshold = 0.80) {
+export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, leadOld, threshold = 0.80) {
+  const match = checkKeyEntitiesMatch(titleNew, leadNew, titleOld, leadOld);
+
   // 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
   if (embSim >= threshold) {
+    // Protectie de siguranta: daca titlurile au 0% cuvinte comune si nicio entitate comuna,
+    // semantica generica pe domeniu nu poate bloca o stire complet diferita.
+    if (match.titleOverlap < 0.15 && match.commonProper === 0 && match.commonNumbers === 0) {
+      return {
+        isDuplicate: false,
+        score: embSim * 0.75,
+        zone: "VERDE (Permis - Subiecte complet diferite)",
+        reason: "Zero potrivire pe titlu si entitati specifice",
+      };
+    }
     return {
       isDuplicate: true,
       score: embSim,
@@ -154,20 +179,19 @@ export function evaluate3ZoneSimilarity(embSim, textNew, textOld, threshold = 0.
 
   // 2. ZONA GRI (Score intre 0.74 si 0.79) -> Arbitraj pe entitati / cuvinte cheie
   if (embSim >= 0.74 && embSim < threshold) {
-    const match = checkKeyEntitiesMatch(textNew, textOld);
     if (match.hasMatchingEntities) {
       return {
         isDuplicate: true,
         score: Math.max(embSim, 0.82),
         zone: "GRI (Duplicat confirmat)",
-        reason: `Entitati comune (${match.commonProper} nume, ${match.commonNumbers} numere, ${match.commonTitleStems} titlu)`,
+        reason: `Subiect/entitati comune (overlap titlu ${(match.titleOverlap * 100).toFixed(0)}%, ${match.commonProper} nume, ${match.commonNumbers} numere)`,
       };
     } else {
       return {
         isDuplicate: false,
         score: embSim,
         zone: "GRI (Permis)",
-        reason: "Entitati diferite, stire distincta din acelasi domeniu",
+        reason: "Subiecte si entitati diferite, stire distincta din acelasi domeniu",
       };
     }
   }
@@ -189,11 +213,19 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
   let isDuplicateFinal = false;
   let mostSimilarUrl = null;
 
+  // Extragem titlul si lead-ul din textul nou
+  const partsNew = newText.split("\n");
+  const titleNew = partsNew[0] || "";
+  const leadNew = partsNew.slice(1).join(" ") || "";
+
   for (const item of recentNewsWithEmbeddings) {
     if (!item.embedding || item.embedding.length === 0) continue;
-    const oldText = `${item.title || ""}\n${item.content || ""}`;
+    // Comparam Lead-to-Lead (primele 300 de caractere din stirea veche, nu tot corpul de 3000)
+    const titleOld = item.title || "";
+    const leadOld = (item.content || "").slice(0, 300);
+
     const rawSim = cosineSimilarity(newEmbedding, item.embedding);
-    const evalRes = evaluate3ZoneSimilarity(rawSim, newText, oldText, threshold);
+    const evalRes = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, titleOld, leadOld, threshold);
 
     if (evalRes.score > maxSimilarity) {
       maxSimilarity = evalRes.score;
