@@ -108,6 +108,18 @@ real e mai potrivit Railway/VPS, nu Actions.
 8. Îți trimite ție privat, pe Telegram, tot pachetul: text formatat + imagine
 9. **Tu decizi și postezi manual** pe canalul tău
 
+### Procesare manuală a unui link (fără filtrul de similaritate)
+
+Trimite linkul articolului direct în chatul privat cu botul configurat la
+`NOTIFY_CHAT_ID`. Botul îl procesează fără comparația cu știrile similare,
+util pentru articole pe care filtrul le-ar putea marca greșit. Verificarea
+URL-urilor deja procesate, data publicării, keywords și relevanța pentru
+România rămân active. Această cale nu publică automat articolul.
+
+Pentru cererile text Gemini încearcă mai întâi `gemini-3.8-flash`, apoi
+modelele fallback configurate; modelele indisponibile pe cheia API curentă
+sunt filtrate dinamic.
+
 ## Ce poți edita ușor
 
 - **Keywords**: `.env` -> `CHANNELS` / `KEYWORDS`

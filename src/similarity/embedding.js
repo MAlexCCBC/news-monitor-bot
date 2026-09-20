@@ -39,6 +39,12 @@ async function getEmbedding(text) {
   throw new Error(`Toate modelele de embedding au esuat: ${lastError?.message}`);
 }
 
+// Folosit pentru a păstra articolele procesate manual în istoricul comparabil,
+// fără a rula sau aplica un verdict de similaritate în procesarea curentă.
+export async function createNewsEmbedding(text) {
+  return getEmbedding(text);
+}
+
 function cosineSimilarity(a, b) {
   if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0) return 0;
   const len = Math.min(a.length, b.length);
@@ -60,6 +66,15 @@ const STOP_WORDS = new Set([
   "intr", "dintr", "printr", "intr-un", "intr-o", "dintr-un", "dintr-o", "sau"
 ]);
 
+// Termeni editoriali foarte frecvenți care creează suprapuneri artificiale
+// între titluri despre subiecte diferite.
+const GENERIC_TITLE_WORDS = new Set([
+  "romania", "romaniei", "roman", "romani", "politica", "politic", "politice",
+  "guvern", "guvernul", "ministru", "ministrul", "presedinte", "presedintele",
+  "parlament", "parlamentul", "declaratie", "declaratii", "anunta", "anuntat",
+  "spune", "afirma", "dupa", "azi", "astazi", "nou", "noua", "oficial",
+]);
+
 function stemRo(word) {
   let w = word.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   if (w.length <= 3) return w;
@@ -77,7 +92,7 @@ function getStems(text) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length >= 3 && !STOP_WORDS.has(w))
+    .filter((w) => w.length >= 3 && !STOP_WORDS.has(w) && !GENERIC_TITLE_WORDS.has(w))
     .map(stemRo);
 }
 
@@ -130,17 +145,23 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
 
   const titleOverlap = titleWordOverlap(titleA, titleOld);
 
-  // Exista potrivire de entitati cheie daca:
-  // 1. Titlurile au cuvinte/subiecte comune (titleOverlap >= 35%)
-  // 2. Sau exista entitati specifice comune (ex: Rutte, CCR, 770, PNRR) plus overlap minim pe titlu
+  // Exista potrivire daca titlurile au cel putin 3 termeni distinctivi comuni
+  // si overlap ridicat, sau daca o entitate specifica comuna e sustinuta de
+  // overlap minim pe titlu. Termenii editoriali generici sunt deja eliminati.
+  const stemsA = new Set(getStems(titleA));
+  const stemsB = new Set(getStems(titleOld));
+  let commonTitleWords = 0;
+  for (const stem of stemsA) if (stemsB.has(stem)) commonTitleWords++;
+
   const hasMatchingEntities =
-    titleOverlap >= 0.35 ||
+    (titleOverlap >= 0.60 && commonTitleWords >= 3) ||
     (titleOverlap >= 0.20 && (commonProper >= 1 || commonNumbers >= 1)) ||
     (commonProper >= 2 && commonNumbers >= 1);
 
   return {
     hasMatchingEntities,
     titleOverlap,
+    commonTitleWords,
     commonProper,
     commonNumbers,
   };
@@ -177,7 +198,7 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
     };
   }
 
-  // 2. ZONA GRI (Score intre 0.74 si 0.79) -> Arbitraj pe entitati / cuvinte cheie
+  // 2. ZONA GRI (Score intre 0.74 si prag) -> Arbitraj pe entitati / cuvinte cheie
   if (embSim >= 0.74 && embSim < threshold) {
     if (match.hasMatchingEntities) {
       return {

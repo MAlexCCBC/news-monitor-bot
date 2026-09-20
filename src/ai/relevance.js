@@ -9,6 +9,7 @@ const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 // DA/NU e simpla si lite-urile o fac la fel de bine, cu cote mult mai mari
 // (500/zi fata de 20 pe flash-uri). Aliasul -latest si Gemma 4 = rezerve.
 const CLASSIFY_MODELS = [
+  "gemini-3.8-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
   "gemini-flash-lite-latest",

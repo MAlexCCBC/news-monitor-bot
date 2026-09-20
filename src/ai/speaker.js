@@ -14,6 +14,7 @@ const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 // flash-urilor (20/zi) - asa pastram cota modelelor bune pentru rescriere si
 // verificarea faciala. Aliasul -latest si Gemma 4 = rezerve.
 const SPEAKER_MODELS = [
+  "gemini-3.8-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
   "gemini-flash-lite-latest",

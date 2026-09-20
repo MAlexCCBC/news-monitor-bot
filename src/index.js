@@ -54,7 +54,7 @@ import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
 import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker, isPlausiblePersonName } from "./filter/keywords.js";
-import { checkSimilarity } from "./similarity/embedding.js";
+import { checkSimilarity, createNewsEmbedding } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
@@ -242,6 +242,23 @@ function extractLink(message) {
   return urlMatch ? urlMatch[0] : null;
 }
 
+// Bot API-ul folosit pentru chatul privat are entitati cu type/url, diferite
+// de entitatile GramJS folosite de mesajele canalelor.
+function extractBotMessageLink(message) {
+  const text = message.text || message.caption || "";
+  const entities = message.entities || message.caption_entities || [];
+  const linkedEntity = entities.find((entity) => entity.type === "text_link" && entity.url);
+  const rawUrl = linkedEntity?.url || text.match(/https?:\/\/[^\s<>]+/)?.[0];
+  if (!rawUrl) return null;
+  const cleanUrl = rawUrl.replace(/[),.!?;:\]]+$/g, "");
+  try {
+    const parsed = new URL(cleanUrl);
+    return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : null;
+  } catch {
+    return null;
+  }
+}
+
 // Finalizeaza generarea postarii, cautarea imaginii si trimiterea notificarii
 async function finalizeAndSendArticle(article, url, simResult, matchedKeywords = []) {
   // 4. Reformatare cu AI (cascada de modele)
@@ -303,7 +320,7 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
   console.log("[ok] Trimis pentru aprobare");
 }
 
-async function processArticleUrl(url, { bypassFilters = false } = {}) {
+async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity = false } = {}) {
   try {
     if (isUrlSeen(url)) {
       console.log(`[skip] URL deja procesat: ${url}`);
@@ -360,9 +377,11 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
 
     // 3. Verificare similaritate cu ultimele 72h pe amprenta concentrata (Titlu + Lead 300 caractere).
     let simResult = null;
-    if (!bypassFilters) {
+    if (!bypassFilters && !bypassSimilarity) {
       const recentNews = getRecentNews(historyHours);
-      const textToEmbed = `${article.title}. ${(article.content || "").slice(0, 300)}`;
+      // checkSimilarity separa titlul de lead folosind newline pentru
+      // arbitrajul pe titluri. Pastreaza delimitatorul in textul embed-uit.
+      const textToEmbed = `${article.title}\n${(article.content || "").slice(0, 300)}`;
       simResult = await checkSimilarity(textToEmbed, recentNews, threshold);
 
       if (simResult.isDuplicate) {
@@ -431,8 +450,17 @@ async function processArticleUrl(url, { bypassFilters = false } = {}) {
           return;
         }
       }
-    } else {
+    } else if (bypassFilters) {
       console.log("[pas] Canal bypass - sarim peste filtrul de similaritate");
+    } else {
+      console.log("[pas] Link trimis direct in chat - sarim peste filtrul de similaritate");
+      try {
+        const textToEmbed = `${article.title}\n${(article.content || "").slice(0, 300)}`;
+        simResult = { embedding: await createNewsEmbedding(textToEmbed) };
+      } catch (err) {
+        // Eșecul embeddingului nu trebuie să blocheze un link solicitat manual.
+        console.warn(`[manual] Nu am putut salva embeddingul pentru viitoarele comparații: ${err.message}`);
+      }
     }
 
     // Daca a trecut toate filtrele sau e pe acelasi site / bypass, finalizam
@@ -452,6 +480,16 @@ function enqueueProcess(fn) {
   processQueue = processQueue.then(fn, fn);
   return processQueue;
 }
+
+// Un link trimis botului în chatul privat configurat este procesat fără
+// comparația de similaritate; restul filtrelor normale rămân active.
+notifyBot.on("message", async (message) => {
+  if (String(message.chat?.id) !== String(NOTIFY_CHAT_ID)) return;
+  const link = extractBotMessageLink(message);
+  if (!link) return;
+  console.log(`[manual] Link primit în chatul privat: ${link}`);
+  await enqueueProcess(() => processArticleUrl(link, { bypassSimilarity: true }));
+});
 
 async function main() {
   const client = new TelegramClient(new StringSession(TG_SESSION), Number(TG_API_ID), TG_API_HASH, {

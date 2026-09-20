@@ -13,6 +13,7 @@ const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 // Modelele care dau 404 pe acest cont (gemini-3-flash, 2.5-flash, 2.5-lite)
 // sunt scoase; filterModels le exclude oricum dinamic, la pornire.
 const TEXT_MODELS = [
+  "gemini-3.8-flash",
   "gemini-3.7-flash",
   "gemini-3.6-flash",
   "gemini-3.5-flash",
