@@ -379,7 +379,7 @@ export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recent
 }
 
 // Verifica dacă articolul nou e duplicat pe baza amprentelor întregului articol.
-export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80, { onReembed } = {}) {
+export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80) {
   const [titleNew = "", ...leadParts] = newText.split("\n");
   const leadNew = leadParts.join("\n");
   // First compare full-article embeddings against every item in the history.
@@ -387,37 +387,18 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
   // select candidates here misses the same event when editors phrase headlines
   // differently.
   const comparableItems = recentNewsWithEmbeddings.filter((item) => item.embedding?.length);
-  const staleItems = comparableItems.filter((item) => item.embeddingVersion !== `${ARTICLE_EMBEDDING_VERSION_PREFIX}gemini-embedding-001`);
-  const documents = [{ title: titleNew, content: leadNew }, ...staleItems.map((item) => ({ title: item.title, content: item.content }))];
-  const embedded = await embedArticles(documents);
+  // Embed only the incoming story. Stored vectors are compared locally; never
+  // re-embed history in the hot path. Gemini embedding spaces differ by model,
+  // so use only vectors from the model that actually succeeded. Older records
+  // without model metadata predate the fallback and are treated as primary.
+  const embedded = await embedArticles([{ title: titleNew, content: leadNew }]);
   const newEmbedding = embedded.embeddings[0];
-  const staleByUrl = new Map(staleItems.map((item, index) => [item.url, embedded.embeddings[index + 1]]));
   const reembeddedNews = [];
-
-  // If the primary model had to fall back, refresh every stored
-  // vector in that same space before comparing; Gemini embedding spaces differ.
-  const needsFallbackRefresh = embedded.model !== "gemini-embedding-001"
-    ? comparableItems.filter((item) => item.embeddingVersion !== embedded.version && !staleByUrl.has(item.url))
-    : [];
-  if (needsFallbackRefresh.length) {
-    const refreshed = await embedArticles(
-      needsFallbackRefresh.map((item) => ({ title: item.title, content: item.content })),
-      embedded.model
-    );
-    if (refreshed.model === embedded.model) {
-      needsFallbackRefresh.forEach((item, index) => staleByUrl.set(item.url, refreshed.embeddings[index]));
-    }
-  }
-
-  const candidates = comparableItems.map((item) => {
-    const embedding = staleByUrl.get(item.url)
-      || (item.embeddingVersion === embedded.version ? item.embedding : null);
-    if (staleByUrl.has(item.url)) {
-      const updated = { url: item.url, embedding, embeddingModel: embedded.model, embeddingVersion: embedded.version };
-      reembeddedNews.push(updated);
-      onReembed?.(updated);
-    }
-    const rawSim = cosineSimilarity(newEmbedding, embedding);
+  const compatibleItems = comparableItems.filter((item) =>
+    item.embeddingModel === embedded.model || (!item.embeddingModel && embedded.model === "gemini-embedding-001")
+  );
+  const candidates = compatibleItems.map((item) => {
+    const rawSim = cosineSimilarity(newEmbedding, item.embedding);
     const result = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, item.title || "", item.content || "", threshold);
     return { ...result, url: item.url };
   });

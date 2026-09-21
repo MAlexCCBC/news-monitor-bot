@@ -13,7 +13,7 @@ test("article chunking covers the whole story instead of only its lead", () => {
   assert.ok(chunks.every((chunk) => chunk.length <= 1800));
 });
 
-test("legacy duplicate candidates are re-embedded from their complete stored article", async () => {
+test("legacy duplicate vectors are reused without another API embedding call", async () => {
   const originalPost = axios.post;
   let payload;
   axios.post = async (_url, requestBody) => {
@@ -21,23 +21,72 @@ test("legacy duplicate candidates are re-embedded from their complete stored art
     return { data: { embeddings: requestBody.requests.map(() => ({ values: [1, 0] })) } };
   };
   const longBody = `${"Detalii despre reforma pensiilor anunțată de Bolojan. ".repeat(80)}MARCAJ_FINAL_ARTICOL`;
-  const reembedded = [];
-
   try {
     const result = await checkSimilarity(
       `Bolojan anunță reforma pensiilor\n${longBody}`,
-      [{ url: "https://example.com/old", title: "Bolojan anunță reforma pensiilor", content: longBody, embedding: [1, 0] }],
-      0.8,
-      { onReembed: (item) => reembedded.push(item) }
+      [{
+        url: "https://example.com/old",
+        title: "Bolojan anunță reforma pensiilor",
+        content: longBody,
+        embedding: [1, 0],
+        embeddingModel: "gemini-embedding-001",
+        embeddingVersion: "legacy-title-lead-v0",
+      }],
+      0.8
     );
+    assert.equal(payload.requests.length, splitArticleContent(longBody).length);
     assert.ok(payload.requests.some((request) => request.content.parts[0].text.includes("MARCAJ_FINAL_ARTICOL")));
-    assert.equal(reembedded.length, 1);
-    assert.equal(reembedded[0].embeddingVersion, "article-full-v1:gemini-embedding-001");
     assert.equal(result.isDuplicate, true);
     assert.equal(result.similarity, 1);
     assert.equal(result.similarUrl, "https://example.com/old");
     assert.ok(result.similarityZone);
     assert.ok(result.similarityReason);
+    assert.deepEqual(result.reembeddedNews, []);
+  } finally {
+    axios.post = originalPost;
+  }
+});
+
+test("fallback embeddings reuse their own space and never re-embed the primary-model history", async () => {
+  const originalPost = axios.post;
+  const calls = [];
+  axios.post = async (url, requestBody) => {
+    calls.push({ url, requestBody });
+    if (url.includes("gemini-embedding-001")) {
+      const error = new Error("quota exhausted");
+      error.response = { status: 429, data: { error: { message: "quota exhausted" } } };
+      throw error;
+    }
+    return { data: { embeddings: requestBody.requests.map(() => ({ values: [1, 0] })) } };
+  };
+
+  const history = [
+    {
+      url: "https://example.com/primary",
+      title: "Articol din spațiul primar",
+      content: "Conținut vechi",
+      embedding: [1, 0],
+      embeddingModel: "gemini-embedding-001",
+      embeddingVersion: "article-full-v1:gemini-embedding-001",
+    },
+    {
+      url: "https://example.com/fallback",
+      title: "Articol din spațiul fallback",
+      content: "Conținut compatibil",
+      embedding: [1, 0],
+      embeddingModel: "gemini-embedding-2",
+      embeddingVersion: "article-full-v1:gemini-embedding-2",
+    },
+  ];
+
+  try {
+    const result = await checkSimilarity("Titlu nou\nConținut nou", history, 0.8);
+    const fallbackCalls = calls.filter((call) => call.url.includes("gemini-embedding-2"));
+
+    assert.equal(result.embeddingModel, "gemini-embedding-2");
+    assert.equal(result.reembeddedNews.length, 0);
+    assert.equal(result.similarUrl, "https://example.com/fallback");
+    assert.ok(fallbackCalls.every((call) => call.requestBody.requests.length === 1));
   } finally {
     axios.post = originalPost;
   }

@@ -174,12 +174,16 @@ test("approved AI outputs and embeddings remain available for similarity checks 
     title: "Titlu",
     content: "Postarea redactată cu AI",
     embedding: [0.25, 0.75],
+    embeddingModel: "gemini-embedding-001",
+    embeddingVersion: "article-full-v1:gemini-embedding-001",
     createdAt: Date.now() - 10 * 365 * 24 * 60 * 60 * 1000,
   });
   const rows = history.getAll();
   assert.equal(rows.length, 1);
   assert.equal(rows[0].content, "Postarea redactată cu AI");
   assert.deepEqual(rows[0].embedding, [0.25, 0.75]);
+  assert.equal(rows[0].embeddingModel, "gemini-embedding-001");
+  assert.equal(rows[0].embeddingVersion, "article-full-v1:gemini-embedding-001");
   assert.ok(rows[0].created_at < Date.now() - 9 * 365 * 24 * 60 * 60 * 1000);
   db.close();
 });

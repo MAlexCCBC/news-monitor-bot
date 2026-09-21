@@ -50,12 +50,12 @@ import TelegramBot from "node-telegram-bot-api";
 import { fetchArticle } from "./scraper/article.js";
 import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
 import { createArticleProcessingPolicy } from "./filter/processing-policy.js";
-import { checkSimilarity, checkSimilarityEmbedding, createArticleEmbedding, createNewsEmbedding } from "./similarity/embedding.js";
+import { checkSimilarity, checkSimilarityEmbedding, createArticleEmbedding } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage, processArticleImage } from "./image/search.js";
-import { saveNews, saveNewsEmbedding, saveAiPost, getRecentNews, getAllAiPosts, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
+import { saveNews, saveAiPost, getRecentNews, getAllAiPosts, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
 import { formatChannelAudit } from "./telegram/channel-audit.js";
@@ -394,7 +394,12 @@ async function handleApprovalCallback(callbackQuery) {
         item.url,
         item.simResult,
         item.matchedKeywords,
-        { approvedPost: item.formattedPost, aiEmbedding: item.aiEmbedding }
+        {
+          approvedPost: item.formattedPost,
+          aiEmbedding: item.aiEmbedding,
+          aiEmbeddingModel: item.simResult?.aiEmbeddingModel,
+          aiEmbeddingVersion: item.simResult?.aiEmbeddingVersion,
+        }
       );
       pendingApprovals.setState(id, "done");
       await persistPendingApprovals();
@@ -448,6 +453,8 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
   // 4. Rescriere AI și control al duplicatelor între texte AI aprobate anterior.
   let formattedPost = approval.approvedPost;
   let aiEmbedding = approval.aiEmbedding;
+  let aiEmbeddingModel = approval.aiEmbeddingModel || approval.simResult?.aiEmbeddingModel || null;
+  let aiEmbeddingVersion = approval.aiEmbeddingVersion || approval.simResult?.aiEmbeddingVersion || null;
   if (!formattedPost) {
     const rewritten = await timedStage("rewrite", () => rewriteArticle(article.fullTextForKeywordCheck));
     formattedPost = rewritten.text;
@@ -459,17 +466,23 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
       : await timedStage("ai_text_similarity", () => checkSimilarity(formattedPost, previousTexts, threshold));
     if (approval.bypassAiSimilarity) {
       try {
-        aiEmbedding = await createNewsEmbedding(formattedPost);
+        const [postTitle = "", ...postBody] = formattedPost.split(/\r?\n/);
+        const generated = await createArticleEmbedding(postTitle, postBody.join("\n"));
+        aiEmbedding = generated.embedding;
+        aiEmbeddingModel = generated.embeddingModel;
+        aiEmbeddingVersion = generated.embeddingVersion;
       } catch (err) {
         console.warn(`[manual] Nu am putut salva embeddingul textului AI pentru viitoarele comparații: ${err.message}`);
       }
     } else if (aiSimilarity.isDuplicate) {
       aiEmbedding = aiSimilarity.embedding;
+      aiEmbeddingModel = aiSimilarity.embeddingModel;
+      aiEmbeddingVersion = aiSimilarity.embeddingVersion;
       const pending = await createApprovalRequest({
         kind: "ai_text",
         url,
         article,
-        simResult,
+        simResult: { ...simResult, aiEmbeddingModel, aiEmbeddingVersion },
         matchedKeywords,
         formattedPost,
         aiEmbedding,
@@ -480,7 +493,11 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
       });
       console.log(`[similar AI] Text pus în așteptare fără expirare: ${pending.id}`);
       return { status: "pending", pendingId: pending.id, reason: aiSimilarity.similarityReason };
-    } else aiEmbedding = aiSimilarity.embedding;
+    } else {
+      aiEmbedding = aiSimilarity.embedding;
+      aiEmbeddingModel = aiSimilarity.embeddingModel;
+      aiEmbeddingVersion = aiSimilarity.embeddingVersion;
+    }
   }
 
   // 6. Sistemul inteligent de imagini. Vorbitorul se determina AI-PRIMAR
@@ -542,7 +559,14 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
     embeddingModel: simResult?.embeddingModel ?? null,
     embeddingVersion: simResult?.embeddingVersion ?? null,
   });
-  saveAiPost({ url, title: formattedPost.split(/\r?\n/, 1)[0] || article.title, content: formattedPost, embedding: aiEmbedding });
+  saveAiPost({
+    url,
+    title: formattedPost.split(/\r?\n/, 1)[0] || article.title,
+    content: formattedPost,
+    embedding: aiEmbedding,
+    embeddingModel: aiEmbeddingModel,
+    embeddingVersion: aiEmbeddingVersion,
+  });
   console.log("[ok] Trimis pentru aprobare");
   return { status: "done" };
 }
@@ -622,9 +646,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       const recentNews = getRecentNews(historyHours);
       // Păstrăm separatorul ca să delimităm titlul de corpul integral în arbitraj.
       const textToEmbed = `${article.title}\n${article.content || ""}`;
-      simResult = await timedStage("article_similarity", () => checkSimilarity(textToEmbed, recentNews, threshold, {
-        onReembed: saveNewsEmbedding,
-      }));
+      simResult = await timedStage("article_similarity", () => checkSimilarity(textToEmbed, recentNews, threshold));
 
       if (simResult.isDuplicate) {
         console.log(
