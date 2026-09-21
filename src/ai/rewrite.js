@@ -1,5 +1,5 @@
 import axios from "axios";
-import { filterModels, recordModelFailure } from "./models.js";
+import { filterModels, recordModelFailure, recordModelRequest } from "./models.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
@@ -80,6 +80,7 @@ export async function rewriteArticle(articleText) {
   let lastError;
   for (const model of models) {
     try {
+      recordModelRequest(model);
       const res = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {

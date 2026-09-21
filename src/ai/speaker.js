@@ -1,5 +1,5 @@
 import axios from "axios";
-import { filterModels, recordModelFailure } from "./models.js";
+import { filterModels, recordModelFailure, recordModelRequest } from "./models.js";
 
 // Extrage DINAMIC numele persoanei care declara, CITIND articolul (titlu +
 // fragment). Nu depinde de liste predefinite si NU intoarce institutii sau
@@ -70,6 +70,7 @@ export async function extractSpeakerFromArticle(title, excerpt, keywordHint = ""
   const models = await filterModels(SPEAKER_MODELS);
   for (const model of models) {
     try {
+      recordModelRequest(model);
       const res = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {

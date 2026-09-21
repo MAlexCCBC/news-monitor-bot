@@ -1,6 +1,6 @@
 import axios from "axios";
 import sharp from "sharp";
-import { filterModels, recordModelFailure } from "../ai/models.js";
+import { filterModels, recordModelFailure, recordModelRequest } from "../ai/models.js";
 
 // Analiza faciala prin Gemini Vision (multimodal). Folosim Gemini ca motor de:
 //  1. detectie fata -> bounding box pentru crop centrat corect;
@@ -42,6 +42,7 @@ async function geminiVision(parts) {
   let lastError;
   for (const model of models) {
     try {
+      recordModelRequest(model);
       const res = await axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         { contents: [{ parts }], generationConfig: { temperature: 0 } },
