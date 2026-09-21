@@ -56,7 +56,7 @@ import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage, processArticleImage } from "./image/search.js";
 import { saveNews, saveAiPost, getRecentNews, getRecentAiPosts, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
-import { extractBotMessageLink } from "./telegram/manual-links.js";
+import { createManualMessageHandler } from "./telegram/manual-links.js";
 import { parseApprovalCallback } from "./telegram/approval-callback.js";
 
 const {
@@ -561,59 +561,12 @@ function enqueueProcess(fn) {
 
 // Un link trimis botului în chatul privat configurat este procesat fără
 // comparația de similaritate; restul filtrelor normale rămân active.
-notifyBot.on("message", async (message) => {
-  if (message.from?.is_bot) return;
-  if (message.chat?.type !== "private") {
-    console.log(`[notifyBot] Update message primit (chatType=${message.chat?.type || "necunoscut"}); ignorat deoarece nu este chat privat.`);
-    return;
-  }
-  const authorizedChat = String(message.chat?.id) === String(NOTIFY_CHAT_ID);
-  console.log(`[notifyBot] Mesaj privat primit; chat configurat: ${authorizedChat ? "da" : "nu"}; link detectabil: ${Boolean(extractBotMessageLink(message)) ? "da" : "nu"}.`);
-  if (!authorizedChat) {
-    await notifyBot.sendMessage(
-      message.chat.id,
-      "Am primit mesajul, dar acest bot procesează linkuri doar din chatul privat autorizat. Verifică valoarea secretului NOTIFY_CHAT_ID din configurația botului."
-    ).catch((err) => console.warn("[notifyBot] Nu am putut răspunde chatului neautorizat:", err.message));
-    return;
-  }
-  if (message.text?.trim().split(/\s+/)[0]?.split("@")[0] === "/start" || message.text?.trim().split(/\s+/)[0]?.split("@")[0] === "/help") {
-    await notifyBot.sendMessage(message.chat.id, "Trimite-mi linkul complet al unei știri. O voi procesa și îți voi confirma aici dacă a fost filtrată sau dacă necesită aprobare.");
-    return;
-  }
-  const link = extractBotMessageLink(message);
-  if (!link) {
-    await notifyBot.sendMessage(message.chat.id, "Am primit mesajul, dar nu am găsit un link http:// sau https://. Trimite URL-ul direct sau ca text-link/caption.", {
-      reply_to_message_id: message.message_id,
-      allow_sending_without_reply: true,
-    }).catch((err) => console.warn("[notifyBot] Nu am putut confirma mesajul fără link:", err.message));
-    return;
-  }
-  console.log("[notifyBot] Link primit din chatul privat configurat; încep procesarea.");
-  let acknowledgement;
-  try {
-    acknowledgement = await notifyBot.sendMessage(message.chat.id, "⏳ Am primit linkul; îl verific și îl procesez acum…", {
-      reply_to_message_id: message.message_id,
-      allow_sending_without_reply: true,
-    });
-    const result = await enqueueProcess(() => processArticleUrl(link, { bypassSimilarity: true }));
-    const response = result?.status === "done"
-      ? "✅ Gata — ți-am trimis rezultatul mai sus în chat."
-      : result?.status === "pending"
-        ? "⏭️ Am găsit o posibilă similaritate. Uită-te la mesajul cu butoane de aprobare; cererea rămâne salvată și după restart."
-        : result?.status === "error"
-          ? `❌ Nu am putut procesa linkul: ${result.reason}`
-          : `ℹ️ Linkul a fost primit, dar nu a fost procesat: ${result?.reason || "motiv necunoscut"}`;
-    await notifyBot.editMessageText(response, { chat_id: message.chat.id, message_id: acknowledgement.message_id });
-  } catch (err) {
-    console.error("[notifyBot manual-link error]", err);
-    if (acknowledgement) {
-      await notifyBot.editMessageText(`❌ Eroare la procesarea linkului: ${err.message}`, {
-        chat_id: message.chat.id,
-        message_id: acknowledgement.message_id,
-      }).catch(() => {});
-    }
-  }
-});
+notifyBot.on("message", createManualMessageHandler({
+  bot: notifyBot,
+  authorizedChatId: NOTIFY_CHAT_ID,
+  enqueue: enqueueProcess,
+  processUrl: processArticleUrl,
+}));
 
 async function main() {
   try {
