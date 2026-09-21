@@ -55,6 +55,29 @@ export function createPendingApprovalStore(db) {
     LEGACY_ARTICLE_APPROVAL_TTL_MS + 60 * 1000
   );
 
+  // Mesajele de canal se pot repeta. Păstrăm cea mai veche cerere activă
+  // per URL și dezactivăm aprobările duplicate existente înainte să adăugăm
+  // indexul unic pentru protecție și în cazul unei curse.
+  const startupDuplicates = db.prepare(`
+    SELECT * FROM pending_approvals
+    WHERE kind = 'article'
+      AND state IN ('pending', 'processing')
+      AND rowid NOT IN (
+        SELECT MIN(rowid) FROM pending_approvals
+        WHERE kind = 'article' AND state IN ('pending', 'processing')
+        GROUP BY url
+      )
+    ORDER BY created_at, rowid
+  `).all().map(decode);
+  for (const duplicate of startupDuplicates) {
+    db.prepare(`UPDATE pending_approvals SET state = 'ignored' WHERE id = ?`).run(duplicate.id);
+  }
+  db.exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_pending_article_active_url
+    ON pending_approvals(url)
+    WHERE kind = 'article' AND state IN ('pending', 'processing');
+  `);
+
   const insert = db.prepare(`
     INSERT INTO pending_approvals (
       id, kind, url, article_json, sim_result_json, matched_keywords_json,
@@ -71,24 +94,59 @@ export function createPendingApprovalStore(db) {
     return decode(db.prepare("SELECT * FROM pending_approvals WHERE id = ?").get(id));
   }
 
+  const findActiveByUrl = db.prepare(`
+    SELECT * FROM pending_approvals
+    WHERE kind = 'article' AND url = ? AND state IN ('pending', 'processing')
+    ORDER BY created_at, rowid LIMIT 1
+  `);
+  const createTransaction = db.transaction((item) => {
+    if (item.kind === "article") {
+      db.prepare(`
+        UPDATE pending_approvals SET state = 'expired'
+        WHERE kind = 'article' AND url = ? AND state = 'pending'
+          AND expires_at IS NOT NULL AND expires_at <= ?
+      `).run(item.url, item.createdAt || Date.now());
+      const existing = findActiveByUrl.get(item.url);
+      if (existing) return { item: decode(existing), created: false };
+    }
+    insert.run({
+      id: item.id,
+      kind: item.kind,
+      url: item.url,
+      article_json: JSON.stringify(item.article),
+      sim_result_json: JSON.stringify(item.simResult || {}),
+      matched_keywords_json: JSON.stringify(item.matchedKeywords || []),
+      formatted_post: item.formattedPost || null,
+      ai_embedding_json: item.aiEmbedding ? JSON.stringify(item.aiEmbedding) : null,
+      comparison_url: item.comparisonUrl || null,
+      comparison_title: item.comparisonTitle || null,
+      similarity: Number(item.similarity || 0),
+      expires_at: item.expiresAt ?? null,
+      created_at: item.createdAt || Date.now(),
+    });
+    return { item: get(item.id), created: true };
+  });
+
   return {
     create(item) {
-      insert.run({
-        id: item.id,
-        kind: item.kind,
-        url: item.url,
-        article_json: JSON.stringify(item.article),
-        sim_result_json: JSON.stringify(item.simResult || {}),
-        matched_keywords_json: JSON.stringify(item.matchedKeywords || []),
-        formatted_post: item.formattedPost || null,
-        ai_embedding_json: item.aiEmbedding ? JSON.stringify(item.aiEmbedding) : null,
-        comparison_url: item.comparisonUrl || null,
-        comparison_title: item.comparisonTitle || null,
-        similarity: Number(item.similarity || 0),
-        expires_at: item.expiresAt ?? null,
-        created_at: item.createdAt || Date.now(),
-      });
-      return get(item.id);
+      return createTransaction(item).item;
+    },
+
+    createOrGet(item) {
+      return createTransaction(item);
+    },
+
+    findActiveByUrl(url, now = Date.now()) {
+      db.prepare(`
+        UPDATE pending_approvals SET state = 'expired'
+        WHERE kind = 'article' AND url = ? AND state = 'pending'
+          AND expires_at IS NOT NULL AND expires_at <= ?
+      `).run(url, now);
+      return decode(findActiveByUrl.get(url));
+    },
+
+    getStartupDuplicates() {
+      return startupDuplicates;
     },
 
     get,

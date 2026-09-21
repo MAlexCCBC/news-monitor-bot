@@ -52,7 +52,7 @@ test("link approval remains processable for 12 hours, while AI-text approval has
     matchedKeywords: [],
   };
   store.create({ ...base, id: "expires", kind: "article", expiresAt: now + ARTICLE_APPROVAL_TTL_MS, createdAt: now });
-  store.create({ ...base, id: "still-valid", kind: "article", expiresAt: now + ARTICLE_APPROVAL_TTL_MS, createdAt: now });
+  store.create({ ...base, id: "still-valid", url: "https://example.com/alta-stire", kind: "article", expiresAt: now + ARTICLE_APPROVAL_TTL_MS, createdAt: now });
   store.create({
     ...base,
     id: "unlimited-ai",
@@ -67,6 +67,52 @@ test("link approval remains processable for 12 hours, while AI-text approval has
   assert.equal(store.claim("expires", now + ARTICLE_APPROVAL_TTL_MS + 1), null);
   assert.equal(store.get("expires").state, "expired");
   assert.equal(store.claim("unlimited-ai", now + 30 * 24 * 3_600_000).formattedPost, "Text AI");
+  db.close();
+});
+
+test("only one active article approval can exist per URL", () => {
+  const db = new Database(":memory:");
+  const store = createPendingApprovalStore(db);
+  const base = {
+    kind: "article",
+    url: "https://example.com/duplicata",
+    article: { title: "Titlu", content: "Text" },
+    simResult: { similarity: 0.94 },
+    matchedKeywords: [],
+    expiresAt: Date.now() + ARTICLE_APPROVAL_TTL_MS,
+  };
+
+  const first = store.createOrGet({ ...base, id: "first" });
+  const second = store.createOrGet({ ...base, id: "second" });
+  assert.equal(first.created, true);
+  assert.equal(second.created, false);
+  assert.equal(second.item.id, "first");
+  assert.equal(store.listPending().filter((item) => item.url === base.url).length, 1);
+
+  store.claim("first");
+  const whileProcessing = store.createOrGet({ ...base, id: "third" });
+  assert.equal(whileProcessing.created, false, "processing approval must also block another prompt");
+  assert.equal(whileProcessing.item.id, "first");
+  db.close();
+});
+
+test("startup disables legacy duplicate article approvals and exposes them for Telegram cleanup", () => {
+  const db = new Database(":memory:");
+  createPendingApprovalStore(db);
+  db.exec("DROP INDEX idx_pending_article_active_url");
+  const insert = db.prepare(`
+    INSERT INTO pending_approvals (
+      id, kind, url, article_json, sim_result_json, matched_keywords_json,
+      state, created_at
+    ) VALUES (?, 'article', ?, ?, '{}', '[]', 'pending', ?)
+  `);
+  insert.run("older", "https://example.com/legacy-duplicate", JSON.stringify({ title: "Prima", content: "Text" }), 1);
+  insert.run("duplicate", "https://example.com/legacy-duplicate", JSON.stringify({ title: "Dublură", content: "Text" }), 2);
+
+  const restored = createPendingApprovalStore(db);
+  assert.equal(restored.get("older").state, "pending");
+  assert.equal(restored.get("duplicate").state, "ignored");
+  assert.deepEqual(restored.getStartupDuplicates().map((item) => item.id), ["duplicate"]);
   db.close();
 });
 

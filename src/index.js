@@ -210,7 +210,11 @@ function scheduleApprovalExpiry(item) {
 
 async function createApprovalRequest(item) {
   const id = `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 9)}`;
-  const stored = pendingApprovals.create({ ...item, id, createdAt: Date.now() });
+  const { item: stored, created } = pendingApprovals.createOrGet({ ...item, id, createdAt: Date.now() });
+  if (!created) {
+    console.log(`[approval] Nu trimit o a doua cerere activă pentru același URL: ${item.url}`);
+    return stored;
+  }
   // Persistăm înainte de Telegram send; dacă procesul cade aici, la pornire
   // restaurăm cererea și îi trimitem din nou mesajul cu butoane.
   await persistPendingApprovals();
@@ -230,6 +234,16 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
   try {
     if (recoverInterrupted) {
       pendingApprovals.recoverInterrupted();
+      const duplicates = pendingApprovals.getStartupDuplicates();
+      for (const duplicate of duplicates) {
+        console.warn(`[approval restore] Închid cererea duplicată ${duplicate.id} pentru ${duplicate.url}; se păstrează cererea ${pendingApprovals.findActiveByUrl(duplicate.url)?.id || "activă"}.`);
+        if (duplicate.message_id) {
+          await notifyBot.editMessageText(
+            `ℹ️ <b>Cerere duplicată închisă</b>\n\n<b>Titlu:</b> ${escapeHtml(duplicate.article.title)}\n<b>Sursă:</b> ${escapeHtml(duplicate.url)}\n\nExistă deja o cerere activă pentru acest link.`,
+            { chat_id: NOTIFY_CHAT_ID, message_id: duplicate.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
+          ).catch((err) => console.warn("[approval restore] Nu am putut închide mesajul duplicat:", err.message));
+        }
+      }
       await persistPendingApprovals();
     }
     const pendingItems = pendingApprovals.listPending();
@@ -538,6 +552,13 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     if (policy.checkSeenUrl && isUrlSeen(url)) {
       console.log(`[skip] URL deja procesat: ${url}`);
       return { status: "skipped", reason: "URL-ul a fost deja procesat." };
+    }
+    if (!forceManual) {
+      const pending = pendingApprovals.findActiveByUrl(url);
+      if (pending) {
+        console.log(`[skip] Există deja o cerere activă pentru URL: ${url} (approval=${pending.id})`);
+        return { status: "pending", reason: "Există deja o cerere de aprobare activă pentru acest link." };
+      }
     }
     if (forceManual) console.log("[manual] Link solicitat explicit: procesare forțată, fără filtre editoriale sau verificări de similaritate.");
     if (forceManual && isUrlSeen(url)) console.log(`[manual] Retrimitere forțată a URL-ului deja procesat: ${url}`);
