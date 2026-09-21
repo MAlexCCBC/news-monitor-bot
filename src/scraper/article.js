@@ -149,6 +149,7 @@ export async function fetchArticle(url) {
   });
 
   const contentText = paragraphs.join("\n\n");
+  console.log(`[scraper] Articol extras: ${contentText.length} caractere, ${paragraphs.length} paragrafe, ${stopped ? "oprit la marker de conținut recomandat" : "fără marker de oprire"} (${url})`);
 
   return {
     url,

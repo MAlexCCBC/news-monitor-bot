@@ -61,6 +61,7 @@ import { formatChannelAudit } from "./telegram/channel-audit.js";
 import { createPollingErrorHandler } from "./telegram/polling-health.js";
 import { answerCallbackSafely, parseApprovalCallback } from "./telegram/approval-callback.js";
 import { formatApprovalText } from "./telegram/approval-messages.js";
+import { splitTelegramText } from "./telegram/text-chunks.js";
 import { ARTICLE_APPROVAL_TTL_MS } from "./storage/pending-approvals.js";
 
 const {
@@ -141,7 +142,9 @@ async function notify(text) {
 
 // Mesaj text simplu, fara parse_mode (postarea finala nu contine HTML, doar text)
 async function notifyPlain(text) {
-  await notifyBot.sendMessage(NOTIFY_CHAT_ID, text);
+  for (const chunk of splitTelegramText(text)) {
+    await notifyBot.sendMessage(NOTIFY_CHAT_ID, chunk);
+  }
 }
 
 async function notifyWithImage(caption, imageBuffer) {
@@ -423,10 +426,18 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
     formattedPost = rewritten.text;
     // Comparația AI este separată de compararea link-urilor și nu are limită
     // de vechime: numai postări redactate/aprobate anterior prin AI intră aici.
-    const previousTexts = getAllAiPosts();
-    const aiSimilarity = await checkSimilarity(formattedPost, previousTexts, threshold);
-    aiEmbedding = aiSimilarity.embedding;
-    if (aiSimilarity.isDuplicate) {
+    const previousTexts = approval.bypassAiSimilarity ? [] : getAllAiPosts();
+    const aiSimilarity = approval.bypassAiSimilarity
+      ? null
+      : await checkSimilarity(formattedPost, previousTexts, threshold);
+    if (approval.bypassAiSimilarity) {
+      try {
+        aiEmbedding = await createNewsEmbedding(formattedPost);
+      } catch (err) {
+        console.warn(`[manual] Nu am putut salva embeddingul textului AI pentru viitoarele comparații: ${err.message}`);
+      }
+    } else if (aiSimilarity.isDuplicate) {
+      aiEmbedding = aiSimilarity.embedding;
       const pending = await createApprovalRequest({
         kind: "ai_text",
         url,
@@ -442,7 +453,7 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
       });
       console.log(`[similar AI] Text pus în așteptare fără expirare: ${pending.id}`);
       return { status: "pending", pendingId: pending.id, reason: aiSimilarity.similarityReason };
-    }
+    } else aiEmbedding = aiSimilarity.embedding;
   }
 
   // 6. Sistemul inteligent de imagini. Vorbitorul se determina AI-PRIMAR
@@ -503,12 +514,13 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
   return { status: "done" };
 }
 
-async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity = false } = {}) {
+async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity = false, forceManual = false } = {}) {
   try {
-    if (isUrlSeen(url)) {
+    if (!forceManual && isUrlSeen(url)) {
       console.log(`[skip] URL deja procesat: ${url}`);
       return { status: "skipped", reason: "URL-ul a fost deja procesat." };
     }
+    if (forceManual && isUrlSeen(url)) console.log(`[manual] Retrimitere forțată a URL-ului deja procesat: ${url}`);
 
     console.log(`[procesare] ${url}`);
     const article = await fetchArticle(url);
@@ -599,7 +611,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     }
 
     // Daca a trecut toate filtrele sau e pe acelasi site / bypass, finalizam
-    return await finalizeAndSendArticle(article, url, simResult, matchedKeywords);
+    return await finalizeAndSendArticle(article, url, simResult, matchedKeywords, { bypassAiSimilarity: forceManual });
   } catch (err) {
     console.error(`[eroare] la procesarea ${url}:`, err.message);
     await notify(`❌ Eroare la procesarea unui articol:\n${url}\n${err.message}`).catch(() => {});

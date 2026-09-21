@@ -81,7 +81,7 @@ test("authorized article links are acknowledged and processed with similarity by
 
   assert.equal(sent.length, 1);
   assert.match(sent[0][1], /Am primit linkul/);
-  assert.deepEqual(processed, [["https://example.com/story", { bypassSimilarity: true }]]);
+  assert.deepEqual(processed, [["https://example.com/story", { bypassSimilarity: true, forceManual: true }]]);
   assert.match(edits[0][0], /Gata/);
 });
 

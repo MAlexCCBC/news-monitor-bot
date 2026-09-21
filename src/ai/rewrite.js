@@ -67,6 +67,13 @@ ${articleText}
 Raspunde DOAR cu postarea finala, fara alte comentarii sau explicatii.
 `;
 
+export function isCompleteRewrite(text, finishReason) {
+  const cleaned = String(text || "").trim();
+  const bulletCount = (cleaned.match(/^•\s/gm) || []).length;
+  const hasRequiredEnding = cleaned.endsWith("👇 Așteptăm opinia ta în comentarii!");
+  return finishReason === "STOP" && bulletCount >= 3 && hasRequiredEnding;
+}
+
 export async function rewriteArticle(articleText) {
   const models = await filterModels(TEXT_MODELS);
   let lastError;
@@ -85,8 +92,17 @@ export async function rewriteArticle(articleText) {
           },
         }
       );
-      const text = res.data.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (!text) throw new Error("Raspuns gol de la model");
+      const candidate = res.data.candidates?.[0];
+      const text = candidate?.content?.parts?.map((part) => part.text || "").join("").trim();
+      const finishReason = candidate?.finishReason;
+      if (!text) throw new Error(`Răspuns gol de la model (finishReason=${finishReason || "necunoscut"})`);
+      if (!isCompleteRewrite(text, finishReason)) {
+        const bulletCount = (text.match(/^•\s/gm) || []).length;
+        const hasRequiredEnding = text.endsWith("👇 Așteptăm opinia ta în comentarii!");
+        console.warn(`[ai] ${model} a returnat o postare incompletă (finishReason=${finishReason || "necunoscut"}, bullets=${bulletCount}, final=${hasRequiredEnding}); încerc următorul model.`);
+        lastError = new Error(`Postare incompletă (finishReason=${finishReason || "necunoscut"})`);
+        continue;
+      }
       console.log(`[ai] Reformatare reusita cu modelul: ${model}`);
       return { text, modelUsed: model };
     } catch (err) {

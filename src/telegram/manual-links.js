@@ -59,7 +59,7 @@ export function createManualMessageHandler({ bot, authorizedChatId, enqueue, pro
         reply_to_message_id: message.message_id,
         allow_sending_without_reply: true,
       });
-      const result = await enqueue(() => processUrl(link, { bypassSimilarity: true }));
+      const result = await enqueue(() => processUrl(link, { bypassSimilarity: true, forceManual: true }));
       const response = result?.status === "done"
         ? "✅ Gata — ți-am trimis rezultatul mai sus în chat."
         : result?.status === "pending"
