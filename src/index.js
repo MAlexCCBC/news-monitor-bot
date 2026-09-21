@@ -49,6 +49,7 @@ import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
 import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
+import { createArticleProcessingPolicy } from "./filter/processing-policy.js";
 import { checkSimilarity, checkSimilarityEmbedding, createNewsEmbedding } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
@@ -529,25 +530,30 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
 
 async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity = false, forceManual = false } = {}) {
   const articleStartedAt = Date.now();
+  const policy = createArticleProcessingPolicy({ bypassFilters, bypassSimilarity, forceManual });
   try {
-    if (!forceManual && isUrlSeen(url)) {
+    if (policy.checkSeenUrl && isUrlSeen(url)) {
       console.log(`[skip] URL deja procesat: ${url}`);
       return { status: "skipped", reason: "URL-ul a fost deja procesat." };
     }
+    if (forceManual) console.log("[manual] Link solicitat explicit: procesare forțată, fără filtre editoriale sau verificări de similaritate.");
     if (forceManual && isUrlSeen(url)) console.log(`[manual] Retrimitere forțată a URL-ului deja procesat: ${url}`);
 
     console.log(`[procesare] ${url}`);
     const article = await timedStage("scrape", () => fetchArticle(url));
 
-    if (!article.content || article.content.length < 100) {
+    if (policy.checkMinimumContent && (!article.content || article.content.length < 100)) {
       console.log(
         `[skip] Continut prea scurt / nu s-a putut extrage (${article.content?.length || 0} caractere, titlu: "${article.title}")`
       );
       return { status: "skipped", reason: "Nu am putut extrage suficient text din articol." };
     }
+    if (!policy.checkMinimumContent && (!article.content || article.content.length < 100)) {
+      console.log(`[manual] Continut extras scurt (${article.content?.length || 0} caractere); continuam deoarece linkul a fost solicitat explicit.`);
+    }
 
     // 1. Verificare data (trebuie sa fie din ziua curenta)
-    if (!isPublishedToday(article.isoDate)) {
+    if (policy.checkPublishedToday && !isPublishedToday(article.isoDate)) {
       console.log(`[skip] Nu e din ziua curenta (data gasita: "${article.isoDate}")`);
       return { status: "skipped", reason: `Articolul nu pare publicat azi (data identificată: ${article.isoDate || "necunoscută"}).` };
     }
@@ -558,9 +564,9 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     // 2. Verificare keywords (pe titlu + primul paragraf).
     const { matched, matchedKeywords } = matchesKeywords(essentialText, keywordsList);
     if (!matched) {
-      if (bypassFilters) {
-        console.log("[pas] Canal bypass - NU sunt keywords gasite, dar continuam oricum");
-      } else {
+      if (!policy.checkKeywords) {
+        console.log(`[pas] ${forceManual ? "Link manual" : "Canal bypass"} - NU sunt keywords gasite, dar continuam oricum`);
+      } else if (policy.checkKeywords) {
         console.log("[skip] Niciun keyword gasit");
         return { status: "skipped", reason: "Nu am găsit niciun keyword configurat în titlu sau lead." };
       }
@@ -569,7 +575,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     }
 
     // 2b. Filtru stiri straine (DINAMIC, cu AI)
-    if (!bypassFilters && !hasStrongRomanianContext(essentialText, romanianPersonalities)) {
+    if (policy.checkForeignRelevance && !hasStrongRomanianContext(essentialText, romanianPersonalities)) {
       const relevant = await timedStage("relevance", () => isRelevantToRomania(
         article.title,
         (article.content || "").slice(0, 1500)
@@ -586,7 +592,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
 
     // 3. Verificare similaritate cu ultimele 72h pe amprenta concentrata (Titlu + Lead 300 caractere).
     let simResult = null;
-    if (!bypassFilters && !bypassSimilarity) {
+    if (policy.checkArticleSimilarity) {
       const recentNews = getRecentNews(historyHours);
       // checkSimilarity separa titlul de lead folosind newline pentru
       // arbitrajul pe titluri. Pastreaza delimitatorul in textul embed-uit.
@@ -611,10 +617,10 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
         });
         return { status: "pending", reason: simResult.similarityReason };
       }
-    } else if (bypassFilters) {
+    } else if (bypassFilters && !forceManual) {
       console.log("[pas] Canal bypass - sarim peste filtrul de similaritate");
     } else {
-      console.log("[pas] Link trimis direct in chat - sarim peste filtrul de similaritate");
+      console.log("[pas] Sarim peste filtrul de similaritate");
       try {
         const textToEmbed = `${article.title}\n${(article.content || "").slice(0, 300)}`;
         simResult = { embedding: await createNewsEmbedding(textToEmbed) };
@@ -625,7 +631,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     }
 
     // Daca a trecut toate filtrele sau e pe acelasi site / bypass, finalizam
-    return await finalizeAndSendArticle(article, url, simResult, matchedKeywords, { bypassAiSimilarity: forceManual });
+    return await finalizeAndSendArticle(article, url, simResult, matchedKeywords, { bypassAiSimilarity: !policy.checkAiSimilarity });
   } catch (err) {
     console.error(`[eroare] la procesarea ${url}:`, err.message);
     await notify(`❌ Eroare la procesarea unui articol:\n${url}\n${err.message}`).catch(() => {});
