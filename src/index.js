@@ -563,12 +563,17 @@ function enqueueProcess(fn) {
 // comparația de similaritate; restul filtrelor normale rămân active.
 notifyBot.on("message", async (message) => {
   if (message.from?.is_bot) return;
-  if (String(message.chat?.id) !== String(NOTIFY_CHAT_ID)) {
-    console.log(`[notifyBot] Mesaj privat primit; chat configurat: ${String(message.chat?.type) === "private" && String(message.chat?.id) === String(NOTIFY_CHAT_ID) ? "da" : "nu"}`);
+  if (message.chat?.type !== "private") {
+    console.log(`[notifyBot] Update message primit (chatType=${message.chat?.type || "necunoscut"}); ignorat deoarece nu este chat privat.`);
     return;
   }
-  if (message.chat?.type !== "private") {
-    console.warn("[notifyBot] Link ignorat: trimite-l în chatul privat cu botul, nu într-un grup.");
+  const authorizedChat = String(message.chat?.id) === String(NOTIFY_CHAT_ID);
+  console.log(`[notifyBot] Mesaj privat primit; chat configurat: ${authorizedChat ? "da" : "nu"}; link detectabil: ${Boolean(extractBotMessageLink(message)) ? "da" : "nu"}.`);
+  if (!authorizedChat) {
+    await notifyBot.sendMessage(
+      message.chat.id,
+      "Am primit mesajul, dar acest bot procesează linkuri doar din chatul privat autorizat. Verifică valoarea secretului NOTIFY_CHAT_ID din configurația botului."
+    ).catch((err) => console.warn("[notifyBot] Nu am putut răspunde chatului neautorizat:", err.message));
     return;
   }
   if (message.text?.trim().split(/\s+/)[0]?.split("@")[0] === "/start" || message.text?.trim().split(/\s+/)[0]?.split("@")[0] === "/help") {
@@ -576,7 +581,13 @@ notifyBot.on("message", async (message) => {
     return;
   }
   const link = extractBotMessageLink(message);
-  if (!link) return;
+  if (!link) {
+    await notifyBot.sendMessage(message.chat.id, "Am primit mesajul, dar nu am găsit un link http:// sau https://. Trimite URL-ul direct sau ca text-link/caption.", {
+      reply_to_message_id: message.message_id,
+      allow_sending_without_reply: true,
+    }).catch((err) => console.warn("[notifyBot] Nu am putut confirma mesajul fără link:", err.message));
+    return;
+  }
   console.log("[notifyBot] Link primit din chatul privat configurat; încep procesarea.");
   let acknowledgement;
   try {
