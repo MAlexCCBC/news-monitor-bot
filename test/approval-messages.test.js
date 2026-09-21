@@ -15,8 +15,23 @@ test("link similarity prompt labels the link-to-link comparison and exposes both
 
   assert.match(text, /Comparație între link-uri/);
   assert.match(text, /href="https:\/\/news\.example\/current\?id=1&amp;x=2"/);
-  assert.match(text, /href="https:\/\/news\.example\/previous"/);
+  assert.match(text, /<a href="https:\/\/news\.example\/current\?id=1&amp;x=2">https:\/\/news\.example\/current\?id=1&amp;x=2<\/a>/);
+  assert.match(text, /<a href="https:\/\/news\.example\/previous">https:\/\/news\.example\/previous<\/a>/);
+  assert.doesNotMatch(text, /Deschide știrea/);
   assert.match(text, /expiră în 12 ore/);
+});
+
+test("legacy link approvals recover their comparison URL from the saved similarity result", () => {
+  const text = formatApprovalText({
+    kind: "article",
+    article: { title: "Știrea nouă" },
+    url: "https://news.example/current",
+    simResult: { similarUrl: "https://news.example/previous" },
+    similarity: 0.91,
+  });
+
+  assert.match(text, /https:\/\/news\.example\/previous/);
+  assert.doesNotMatch(text, /link indisponibil/);
 });
 
 test("AI similarity prompt clearly compares against an AI-created story and has no expiry", () => {
@@ -32,6 +47,6 @@ test("AI similarity prompt clearly compares against an AI-created story and has 
 
   assert.match(text, /Comparație cu știri create deja cu AI/);
   assert.match(text, /Știre creată anterior cu AI/);
-  assert.match(text, /href="https:\/\/news\.example\/previous"/);
+  assert.match(text, /<a href="https:\/\/news\.example\/previous">https:\/\/news\.example\/previous<\/a>/);
   assert.match(text, /Cererea nu expiră/);
 });

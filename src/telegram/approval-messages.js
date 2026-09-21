@@ -7,12 +7,13 @@ function escapeHtml(value) {
     .replace(/'/g, "&#39;");
 }
 
-function clickableUrl(value, label = "Deschide știrea") {
+function clickableUrl(value) {
   if (!value) return "<i>link indisponibil</i>";
   try {
     const parsed = new URL(value);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return escapeHtml(value);
-    return `<a href="${escapeHtml(parsed.href)}">${escapeHtml(label)}</a>`;
+    const url = escapeHtml(parsed.href);
+    return `<a href="${url}">${url}</a>`;
   } catch {
     return escapeHtml(value);
   }
@@ -23,7 +24,9 @@ export function formatApprovalText(item) {
   const comparisonTitle = escapeHtml(item.comparisonTitle || "Știre anterioară");
   const score = `${(Number(item.similarity || 0) * 100).toFixed(0)}%`;
   const currentLink = clickableUrl(item.url);
-  const comparisonLink = clickableUrl(item.comparisonUrl, "Deschide știrea anterioară");
+  // Older pending requests may predate the dedicated comparison_url field;
+  // the similarity result already persisted the candidate URL in that case.
+  const comparisonLink = clickableUrl(item.comparisonUrl || item.simResult?.similarUrl);
 
   if (item.kind === "ai_text") {
     const preview = escapeHtml((item.formattedPost || "").slice(0, 700));
