@@ -86,7 +86,7 @@ test("interrupted in-progress approvals return to pending after restart", () => 
   db.close();
 });
 
-test("approved AI outputs and their embeddings persist for later similarity checks", () => {
+test("approved AI outputs and embeddings remain available for similarity checks without an age cutoff", () => {
   const db = new Database(":memory:");
   const history = createAiPostHistoryStore(db);
   history.save({
@@ -94,10 +94,12 @@ test("approved AI outputs and their embeddings persist for later similarity chec
     title: "Titlu",
     content: "Postarea redactată cu AI",
     embedding: [0.25, 0.75],
+    createdAt: Date.now() - 10 * 365 * 24 * 60 * 60 * 1000,
   });
-  const rows = history.getRecent(72);
+  const rows = history.getAll();
   assert.equal(rows.length, 1);
   assert.equal(rows[0].content, "Postarea redactată cu AI");
   assert.deepEqual(rows[0].embedding, [0.25, 0.75]);
+  assert.ok(rows[0].created_at < Date.now() - 9 * 365 * 24 * 60 * 60 * 1000);
   db.close();
 });

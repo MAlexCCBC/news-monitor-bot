@@ -12,7 +12,7 @@ export function createAiPostHistoryStore(db) {
   `);
 
   return {
-    save({ url, title, content, embedding }) {
+    save({ url, title, content, embedding, createdAt }) {
       db.prepare(`
         INSERT INTO ai_post_history (url, title, content, embedding, created_at)
         VALUES (?, ?, ?, ?, ?)
@@ -21,24 +21,18 @@ export function createAiPostHistoryStore(db) {
           content = excluded.content,
           embedding = excluded.embedding,
           created_at = excluded.created_at
-      `).run(url, title, content, JSON.stringify(embedding), Date.now());
+      `).run(url, title, content, JSON.stringify(embedding), createdAt ?? Date.now());
     },
 
-    getRecent(hoursBack) {
-      const cutoff = Date.now() - hoursBack * 60 * 60 * 1000;
+    getAll() {
       return db.prepare(`
         SELECT url, title, content, embedding, created_at
         FROM ai_post_history
-        WHERE created_at >= ?
         ORDER BY created_at DESC
-      `).all(cutoff).map((row) => ({
+      `).all().map((row) => ({
         ...row,
         embedding: row.embedding ? JSON.parse(row.embedding) : null,
       }));
-    },
-
-    deleteBefore(timestamp) {
-      db.prepare("DELETE FROM ai_post_history WHERE created_at < ?").run(timestamp);
     },
   };
 }

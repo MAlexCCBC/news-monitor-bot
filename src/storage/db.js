@@ -95,7 +95,6 @@ export function cleanupOld(hoursBack, daysBackImages) {
   const cutoffNews = Date.now() - hoursBack * 60 * 60 * 1000 * 2; // pastram 2x ca marja
   const cutoffImg = Date.now() - daysBackImages * 24 * 60 * 60 * 1000 * 2;
   db.prepare(`DELETE FROM news_history WHERE created_at < ?`).run(cutoffNews);
-  aiPostHistory.deleteBefore(cutoffNews);
   db.prepare(`DELETE FROM image_history WHERE created_at < ?`).run(cutoffImg);
 }
 
@@ -112,4 +111,4 @@ export default db;
 export const pendingApprovals = createPendingApprovalStore(db);
 const aiPostHistory = createAiPostHistoryStore(db);
 export const saveAiPost = (item) => aiPostHistory.save(item);
-export const getRecentAiPosts = (hoursBack) => aiPostHistory.getRecent(hoursBack);
+export const getAllAiPosts = () => aiPostHistory.getAll();

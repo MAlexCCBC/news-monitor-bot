@@ -54,7 +54,7 @@ import { rewriteArticle } from "./ai/rewrite.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage, processArticleImage } from "./image/search.js";
-import { saveNews, saveAiPost, getRecentNews, getRecentAiPosts, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
+import { saveNews, saveAiPost, getRecentNews, getAllAiPosts, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
 import { createPollingErrorHandler } from "./telegram/polling-health.js";
@@ -359,7 +359,9 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
   if (!formattedPost) {
     const rewritten = await rewriteArticle(article.fullTextForKeywordCheck);
     formattedPost = rewritten.text;
-    const previousTexts = [...getRecentNews(historyHours), ...getRecentAiPosts(historyHours)];
+    // Postările AI rămân în istoricul de similaritate pe termen nelimitat;
+    // HISTORY_HOURS limitează doar articolele-sursă, nu textele aprobate.
+    const previousTexts = [...getRecentNews(historyHours), ...getAllAiPosts()];
     const aiSimilarity = await checkSimilarity(formattedPost, previousTexts, threshold);
     aiEmbedding = aiSimilarity.embedding;
     if (aiSimilarity.isDuplicate) {
