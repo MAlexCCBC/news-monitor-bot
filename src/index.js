@@ -58,7 +58,7 @@ import { saveNews, saveAiPost, getRecentNews, getRecentAiPosts, isUrlSeen, clean
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
 import { createPollingErrorHandler } from "./telegram/polling-health.js";
-import { parseApprovalCallback } from "./telegram/approval-callback.js";
+import { answerCallbackSafely, parseApprovalCallback } from "./telegram/approval-callback.js";
 
 const {
   TG_API_ID,
@@ -251,7 +251,7 @@ async function handleApprovalCallback(callbackQuery) {
   const action = parseApprovalCallback(callbackQuery.data || "");
   if (!action) return;
   if (String(callbackQuery.message?.chat?.id) !== String(NOTIFY_CHAT_ID)) {
-    await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Acțiune neautorizată.", show_alert: true });
+    await answerCallbackSafely(notifyBot, callbackQuery, { text: "Acțiune neautorizată.", show_alert: true });
     return;
   }
 
@@ -259,7 +259,7 @@ async function handleApprovalCallback(callbackQuery) {
   if (action.action === "ignore") {
     const item = pendingApprovals.claim(id);
     if (!item) {
-      await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Cererea a expirat sau a fost deja procesată.", show_alert: true });
+      await answerCallbackSafely(notifyBot, callbackQuery, { text: "Cererea a expirat sau a fost deja procesată.", show_alert: true });
       return;
     }
     const timer = approvalExpiryTimers.get(id);
@@ -267,7 +267,7 @@ async function handleApprovalCallback(callbackQuery) {
     approvalExpiryTimers.delete(id);
     pendingApprovals.setState(id, "ignored");
     await persistPendingApprovals();
-    await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Știre ignorată." });
+    await answerCallbackSafely(notifyBot, callbackQuery, { text: "Știre ignorată." });
     try {
       await notifyBot.editMessageText(
         `❌ <b>Știre ignorată manual.</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
@@ -279,14 +279,14 @@ async function handleApprovalCallback(callbackQuery) {
 
   const item = pendingApprovals.claim(id);
   if (!item) {
-    await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Cererea a expirat sau a fost deja procesată.", show_alert: true });
+    await answerCallbackSafely(notifyBot, callbackQuery, { text: "Cererea a expirat sau a fost deja procesată.", show_alert: true });
     return;
   }
   const timer = approvalExpiryTimers.get(id);
   if (timer) clearTimeout(timer);
   approvalExpiryTimers.delete(id);
   await persistPendingApprovals();
-  await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Se procesează știrea..." });
+  await answerCallbackSafely(notifyBot, callbackQuery, { text: "Se procesează știrea..." });
   try {
     await notifyBot.editMessageText(
       `⚙️ <b>Se procesează știrea aprobată...</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
@@ -331,7 +331,11 @@ async function handleApprovalCallback(callbackQuery) {
 
 // Acțiunile inline citesc și revendică starea din SQLite; nu depind de RAM-ul
 // procesului, astfel încât butonul rămâne funcțional după un restart.
-notifyBot.on("callback_query", handleApprovalCallback);
+notifyBot.on("callback_query", (query) => {
+  handleApprovalCallback(query).catch((err) => {
+    console.error("[approval callback] Eroare neașteptată (polling-ul rămâne activ):", err?.message || String(err));
+  });
+});
 
 // Extrage link-ul din mesajul Telegram (butonul "Deschide"/link direct din text)
 function extractLink(message) {
@@ -551,12 +555,17 @@ function enqueueProcess(fn) {
 
 // Un link trimis botului în chatul privat configurat este procesat fără
 // comparația de similaritate; restul filtrelor normale rămân active.
-notifyBot.on("message", createManualMessageHandler({
+const handleManualMessage = createManualMessageHandler({
   bot: notifyBot,
   authorizedChatId: NOTIFY_CHAT_ID,
   enqueue: enqueueProcess,
   processUrl: processArticleUrl,
-}));
+});
+notifyBot.on("message", (message) => {
+  handleManualMessage(message).catch((err) => {
+    console.error("[notifyBot] Eroare neașteptată la handlerul de mesaje (polling-ul rămâne activ):", err?.message || String(err));
+  });
+});
 
 async function main() {
   let botIdentity;
