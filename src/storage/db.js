@@ -1,6 +1,8 @@
 import Database from "better-sqlite3";
 import path from "path";
 import { fileURLToPath } from "url";
+import { createPendingApprovalStore } from "./pending-approvals.js";
+import { createAiPostHistoryStore } from "./ai-post-history.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const db = new Database(path.join(__dirname, "../../data.sqlite"));
@@ -93,6 +95,7 @@ export function cleanupOld(hoursBack, daysBackImages) {
   const cutoffNews = Date.now() - hoursBack * 60 * 60 * 1000 * 2; // pastram 2x ca marja
   const cutoffImg = Date.now() - daysBackImages * 24 * 60 * 60 * 1000 * 2;
   db.prepare(`DELETE FROM news_history WHERE created_at < ?`).run(cutoffNews);
+  aiPostHistory.deleteBefore(cutoffNews);
   db.prepare(`DELETE FROM image_history WHERE created_at < ?`).run(cutoffImg);
 }
 
@@ -106,3 +109,7 @@ export function checkpointDb() {
 }
 
 export default db;
+export const pendingApprovals = createPendingApprovalStore(db);
+const aiPostHistory = createAiPostHistoryStore(db);
+export const saveAiPost = (item) => aiPostHistory.save(item);
+export const getRecentAiPosts = (hoursBack) => aiPostHistory.getRecent(hoursBack);

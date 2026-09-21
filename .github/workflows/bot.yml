@@ -22,6 +22,8 @@ jobs:
         with:
           node-version: 22
       - run: npm ci
+      - name: Teste unitare și de persistență
+        run: npm test
       - name: Verifica sintaxa
         run: node --check src/index.js && echo "sintax OK"
 

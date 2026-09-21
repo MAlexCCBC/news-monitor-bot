@@ -21,30 +21,33 @@ function runGit(args) {
   });
 }
 
-let saving = null;
+let saving = Promise.resolve();
 
-export async function persistNow(branch) {
-  if (!branch || saving) return;
-  saving = (async () => {
-    try {
-      checkpointDb();
-      await runGit(["add", "-f", DB_REL]);
-      // Verificam daca e ceva nou inainte de a rula commit (evitam eroarea
-      // "nothing to commit" care pe Windows nu e capturata corect in stderr).
-      const hasChanges = await runGit(["diff", "--cached", "--quiet"]).then(() => false).catch(() => true);
-      if (!hasChanges) return;
-      await runGit([
-        "-c", "user.name=news-bot",
-        "-c", "user.email=news-bot@users.noreply.github.com",
-        "commit", "-m", `autosave baza de date ${new Date().toISOString()}`,
-      ]);
-      await runGit(["push", "--force", "origin", `HEAD:${branch}`]);
-      console.log(`[persist] Baza de date salvata in branch '${branch}' (${new Date().toLocaleTimeString("ro-RO")})`);
-    } catch (e) {
-      console.warn(`[persist] Nu am putut salva baza de date: ${e.message}`);
-    } finally {
-      saving = null;
-    }
-  })();
+async function persistSnapshot(branch) {
+  try {
+    checkpointDb();
+    await runGit(["add", "-f", DB_REL]);
+    // Limitează commitul la baza de date și nu include accidental fișiere
+    // care ar putea fi deja staged în checkout.
+    const hasChanges = await runGit(["diff", "--cached", "--quiet", "--", DB_REL]).then(() => false).catch(() => true);
+    if (!hasChanges) return;
+    await runGit([
+      "-c", "user.name=news-bot",
+      "-c", "user.email=news-bot@users.noreply.github.com",
+      "commit", "-m", `autosave baza de date ${new Date().toISOString()}`, "--", DB_REL,
+    ]);
+    await runGit(["push", "--force", "origin", `HEAD:${branch}`]);
+    console.log(`[persist] Baza de date salvata in branch '${branch}' (${new Date().toLocaleTimeString("ro-RO")})`);
+  } catch (e) {
+    console.warn(`[persist] Nu am putut salva baza de date: ${e.message}`);
+  }
+}
+
+// Serialize snapshots instead of dropping requests that arrive while a push
+// is already in flight. Critical approval state is therefore pushed as soon
+// as the current autosave finishes.
+export function persistNow(branch) {
+  if (!branch) return Promise.resolve();
+  saving = saving.catch(() => {}).then(() => persistSnapshot(branch));
   return saving;
 }

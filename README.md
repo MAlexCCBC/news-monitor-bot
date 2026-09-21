@@ -99,8 +99,8 @@ real e mai potrivit Railway/VPS, nu Actions.
 3. Verifică dacă data e azi
 4. Caută keywords (lista completă e în `.env`, o poți edita oricând)
 5. Calculează embedding cu Gemini pe **titlu + primul paragraf** și compară cu
-   ultimele 72h — dacă similaritatea trece de 85%, ignoră duplicatul (sau te anunță scurt,
-   ca să știi de ce a sărit)
+   istoricul recent; verificarea combină scorul semantic cu termenii tematici
+   din titlu, iar o posibilă repetare cere confirmare în chat.
 6. Reformatează cu Gemini text (cascadă automată de modele dacă unul dă rate-limit sau timeout)
 7. Caută o imagine (Tavily -> Bing HTML -> Wikimedia Commons -> Wikipedia -> DuckDuckGo),
    verifică facial + anti-text cu AI, decupează la format portret 3:4 centrat pe față,
@@ -111,10 +111,20 @@ real e mai potrivit Railway/VPS, nu Actions.
 ### Procesare manuală a unui link (fără filtrul de similaritate)
 
 Trimite linkul articolului direct în chatul privat cu botul configurat la
-`NOTIFY_CHAT_ID`. Botul îl procesează fără comparația cu știrile similare,
-util pentru articole pe care filtrul le-ar putea marca greșit. Verificarea
-URL-urilor deja procesate, data publicării, keywords și relevanța pentru
-România rămân active. Această cale nu publică automat articolul.
+`NOTIFY_CHAT_ID` (sau folosește `/start` pentru instrucțiuni). Botul confirmă
+primirea și îți spune aici dacă articolul este filtrat. Linkul sare peste
+comparația articolului-sursă, dar păstrează verificările de URL deja procesat,
+dată, keywords și relevanță pentru România. După rescriere, textul AI este
+comparat separat cu știrile și postările AI recente; pentru o posibilă
+similaritate apare o cerere cu butoane. Această cale nu publică automat.
+
+### Cereri de similaritate și restart
+
+Cererea de aprobare a articolului-sursă expiră după o oră; cererea pentru un
+text AI similar nu expiră. Ambele sunt salvate în SQLite împreună cu datele
+necesare procesării și ID-ul mesajului Telegram. Butoanele rămân valide după
+restart, iar acțiunea poate fi revendicată o singură dată. Pe GitHub Actions,
+baza de date se restaurează și se salvează în branch-ul `data`.
 
 Pentru cererile text Gemini încearcă mai întâi `gemini-3.8-flash`, apoi
 modelele fallback configurate; modelele indisponibile pe cheia API curentă

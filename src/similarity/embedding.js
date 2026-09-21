@@ -70,10 +70,12 @@ const STOP_WORDS = new Set([
 // între titluri despre subiecte diferite.
 const GENERIC_TITLE_WORDS = new Set([
   "romania", "romaniei", "roman", "romani", "politica", "politic", "politice",
-  "guvern", "guvernul", "ministru", "ministrul", "presedinte", "presedintele",
-  "parlament", "parlamentul", "declaratie", "declaratii", "anunta", "anuntat",
-  "spune", "afirma", "dupa", "azi", "astazi", "nou", "noua", "oficial",
+  "guvern", "guvernul", "ministru", "ministrul", "minister", "ministerul",
+  "presedinte", "presedintele", "parlament", "parlamentul", "declaratie",
+  "declaratii", "anunta", "anuntat", "anuntă", "spune", "afirma", "dupa",
+  "azi", "astazi", "nou", "noua", "oficial",
 ]);
+const GENERIC_TITLE_STEMS = new Set([...GENERIC_TITLE_WORDS].map(stemRo));
 
 function stemRo(word) {
   let w = word.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -92,8 +94,9 @@ function getStems(text) {
     .replace(/[\u0300-\u036f]/g, "")
     .replace(/[^a-z0-9\s]/g, " ")
     .split(/\s+/)
-    .filter((w) => w.length >= 3 && !STOP_WORDS.has(w) && !GENERIC_TITLE_WORDS.has(w))
-    .map(stemRo);
+    .filter((w) => w.length >= 3 && !STOP_WORDS.has(w))
+    .map(stemRo)
+    .filter((w) => !GENERIC_TITLE_STEMS.has(w));
 }
 
 const GENERIC_PROPER_NOUNS = new Set([
@@ -155,7 +158,7 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
 
   const hasMatchingEntities =
     (titleOverlap >= 0.60 && commonTitleWords >= 3) ||
-    (titleOverlap >= 0.20 && (commonProper >= 1 || commonNumbers >= 1)) ||
+    (titleOverlap >= 0.35 && commonTitleWords >= 2 && (commonProper >= 1 || commonNumbers >= 1)) ||
     (commonProper >= 2 && commonNumbers >= 1);
 
   return {
@@ -180,14 +183,16 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
 
   // 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
   if (embSim >= threshold) {
-    // Protectie de siguranta: daca titlurile au 0% cuvinte comune si nicio entitate comuna,
-    // semantica generica pe domeniu nu poate bloca o stire complet diferita.
-    if (match.titleOverlap < 0.15 && match.commonProper === 0 && match.commonNumbers === 0) {
+    // Un scor semantic mare, singur, nu e suficient: același politician sau
+    // an poate apărea în știri diferite. Cerem o ancoră tematică în titlu.
+    const hasTopicAnchor = match.hasMatchingEntities ||
+      (match.titleOverlap >= 0.30 && match.commonTitleWords >= 2);
+    if (!hasTopicAnchor) {
       return {
         isDuplicate: false,
         score: embSim * 0.75,
-        zone: "VERDE (Permis - Subiecte complet diferite)",
-        reason: "Zero potrivire pe titlu si entitati specifice",
+        zone: "VERDE (Permis - Fără ancoră tematică)",
+        reason: "Scorul semantic nu este susținut de termeni tematici comuni în titlu",
       };
     }
     return {
@@ -203,7 +208,7 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
     if (match.hasMatchingEntities) {
       return {
         isDuplicate: true,
-        score: Math.max(embSim, 0.82),
+        score: embSim,
         zone: "GRI (Duplicat confirmat)",
         reason: `Subiect/entitati comune (overlap titlu ${(match.titleOverlap * 100).toFixed(0)}%, ${match.commonProper} nume, ${match.commonNumbers} numere)`,
       };
@@ -226,13 +231,26 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
   };
 }
 
+// Keep the best duplicate candidate independently from the highest raw score.
+// A highly semantic but title-unanchored article must not mask another, slightly
+// lower-scoring candidate that passed the duplicate arbitration.
+export function selectSimilarityCandidate(candidates) {
+  let bestOverall = null;
+  let bestDuplicate = null;
+  for (const candidate of candidates) {
+    if (!bestOverall || candidate.score > bestOverall.score) bestOverall = candidate;
+    if (candidate.isDuplicate && (!bestDuplicate || candidate.score > bestDuplicate.score)) {
+      bestDuplicate = candidate;
+    }
+  }
+  return bestDuplicate || bestOverall || { isDuplicate: false, score: 0, url: null };
+}
+
 // Verifica daca articolul nou e duplicat (amprenta concentrata Titlu + Lead pe 3 zone)
 export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80) {
   const newEmbedding = await getEmbedding(newText);
 
-  let maxSimilarity = 0;
-  let isDuplicateFinal = false;
-  let mostSimilarUrl = null;
+  const candidates = [];
 
   // Extragem titlul si lead-ul din textul nou
   const partsNew = newText.split("\n");
@@ -248,17 +266,14 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
     const rawSim = cosineSimilarity(newEmbedding, item.embedding);
     const evalRes = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, titleOld, leadOld, threshold);
 
-    if (evalRes.score > maxSimilarity) {
-      maxSimilarity = evalRes.score;
-      isDuplicateFinal = evalRes.isDuplicate;
-      mostSimilarUrl = item.url;
-    }
+    candidates.push({ ...evalRes, url: item.url });
   }
+  const best = selectSimilarityCandidate(candidates);
 
   return {
-    isDuplicate: isDuplicateFinal,
-    similarity: maxSimilarity,
-    similarUrl: mostSimilarUrl,
+    isDuplicate: best.isDuplicate,
+    similarity: best.score,
+    similarUrl: best.url,
     embedding: newEmbedding, // o salvam ca sa n-o mai calculam a doua oara
   };
 }

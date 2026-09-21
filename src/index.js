@@ -33,13 +33,8 @@ function gracefulExit() {
       notifyBot.stopPolling();
     }
   } catch {}
-  try {
-    if (typeof pendingSimilarArticles !== "undefined") {
-      for (const item of pendingSimilarArticles.values()) {
-        if (item.timeoutId) clearTimeout(item.timeoutId);
-      }
-    }
-  } catch {}
+  for (const timer of approvalExpiryTimers.values()) clearTimeout(timer);
+  approvalExpiryTimers.clear();
   persistNow(dbPersistBranch)
     .catch(() => {})
     .finally(() => process.exit(0));
@@ -59,8 +54,10 @@ import { rewriteArticle } from "./ai/rewrite.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage, processArticleImage } from "./image/search.js";
-import { saveNews, getRecentNews, isUrlSeen, cleanupOld } from "./storage/db.js";
+import { saveNews, saveAiPost, getRecentNews, getRecentAiPosts, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
+import { extractBotMessageLink } from "./telegram/manual-links.js";
+import { parseApprovalCallback } from "./telegram/approval-callback.js";
 
 const {
   TG_API_ID,
@@ -116,11 +113,21 @@ console.log(`[config] NOTIFY_BOT_TOKEN: ${process.env.NOTIFY_BOT_TOKEN ? "setat"
 console.log(`[config] NOTIFY_CHAT_ID: ${process.env.NOTIFY_CHAT_ID ? "setat" : "LIPSESTE"}`);
 
 // Bot-ul care iti trimite TIE mesaje private si asculta interactiuni (butoane)
-const notifyBot = new TelegramBot(NOTIFY_BOT_TOKEN, { polling: true });
+const notifyBot = new TelegramBot(NOTIFY_BOT_TOKEN, {
+  polling: { autoStart: false, params: { timeout: 10, allowed_updates: ["message", "callback_query"] } },
+});
+const approvalExpiryTimers = new Map();
+let pollingConflictAlerted = false;
 notifyBot.on("polling_error", (err) => {
-  if (!err?.message?.includes("ETELEGRAM: 409")) {
-    console.warn("[notifyBot polling]", err.message);
+  if (err?.message?.includes("ETELEGRAM: 409")) {
+    console.error("[notifyBot polling] Conflict 409: alt proces foloseste acelasi token sau webhook-ul este activ. Linkurile trimise botului nu pot fi primite pana nu ramane un singur poller.");
+    if (!pollingConflictAlerted && NOTIFY_CHAT_ID) {
+      pollingConflictAlerted = true;
+      notifyBot.sendMessage(NOTIFY_CHAT_ID, "⚠️ Nu pot asculta mesajele: Telegram raportează un poller/webhook concurent pentru bot. Oprește celelalte instanțe ale botului și repornește-l.").catch(() => {});
+    }
+    return;
   }
+  console.warn("[notifyBot polling]", err.message);
 });
 
 function escapeHtml(str) {
@@ -130,9 +137,6 @@ function escapeHtml(str) {
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 }
-
-// Harta pentru stiri similare in asteptare de aprobare manuala
-const pendingSimilarArticles = new Map();
 
 async function notify(text) {
   await notifyBot.sendMessage(NOTIFY_CHAT_ID, text, { parse_mode: "HTML" });
@@ -147,87 +151,197 @@ async function notifyWithImage(caption, imageBuffer) {
   await notifyBot.sendPhoto(NOTIFY_CHAT_ID, imageBuffer, { caption }, { filename: "imagine.jpg" });
 }
 
-// Handler pentru butoanele inline (✅ Proceseaza stirea / ❌ Ignora)
-notifyBot.on("callback_query", async (callbackQuery) => {
-  const data = callbackQuery.data || "";
-  const msgId = callbackQuery.message?.message_id;
+function approvalMarkup(id) {
+  return { inline_keyboard: [[
+    { text: "✅ Procesează știrea", callback_data: `proc_${id}` },
+    { text: "❌ Ignoră", callback_data: `ign_${id}` },
+  ]] };
+}
 
-  if (data.startsWith("proc_")) {
-    const pendingId = data.replace("proc_", "");
-    const item = pendingSimilarArticles.get(pendingId);
+function approvalText(item) {
+  const title = escapeHtml(item.article.title || "(fără titlu)");
+  const comparisonTitle = escapeHtml(item.comparisonTitle || "Știre anterioară");
+  const comparisonUrl = escapeHtml(item.comparisonUrl || "");
+  const score = `${(Number(item.similarity || 0) * 100).toFixed(0)}%`;
+  if (item.kind === "ai_text") {
+    const preview = escapeHtml((item.formattedPost || "").slice(0, 700));
+    return `🤖⏭️ <b>Textul generat de AI pare similar (${score})</b>\n\n` +
+      `<b>Titlu articol:</b> ${title}\n<b>Sursă:</b> ${escapeHtml(item.url)}\n` +
+      `<b>Similar cu:</b> ${comparisonTitle} — ${comparisonUrl}\n\n` +
+      `<b>Previzualizare:</b>\n${preview}\n\n` +
+      `<i>Cererea nu expiră. Dorești să primești știrea oricum?</i>`;
+  }
+  return `⏭️ <b>Știre similară (${score})</b>\n\n` +
+    `<b>Titlu:</b> ${title}\n<b>Sursă:</b> ${escapeHtml(item.url)}\n\n` +
+    `<b>Similară cu:</b> ${comparisonTitle} — ${comparisonUrl}\n\n` +
+    `<i>Dorești să fie procesată și trimisă oricum? Cererea expiră într-o oră.</i>`;
+}
 
+async function sendApprovalPrompt(item) {
+  return notifyBot.sendMessage(NOTIFY_CHAT_ID, approvalText(item), {
+    parse_mode: "HTML",
+    reply_markup: approvalMarkup(item.id),
+  });
+}
+
+async function persistPendingApprovals() {
+  if (dbPersistBranch) await persistNow(dbPersistBranch);
+}
+
+function scheduleApprovalExpiry(item) {
+  if (item.expires_at === null || item.expires_at === undefined) return;
+  const oldTimer = approvalExpiryTimers.get(item.id);
+  if (oldTimer) clearTimeout(oldTimer);
+  const delay = Math.max(0, item.expires_at - Date.now());
+  const timer = setTimeout(async () => {
+    approvalExpiryTimers.delete(item.id);
+    const expired = pendingApprovals.expire(item.id, Date.now());
+    if (!expired) return;
+    await persistPendingApprovals();
+    if (expired.message_id) {
+      try {
+        await notifyBot.editMessageText(
+          `⌛ <b>Cerere expirată (1 oră)</b>\n\n<b>Titlu:</b> ${escapeHtml(expired.article.title)}\n<b>Sursă:</b> ${escapeHtml(expired.url)}`,
+          {
+            chat_id: NOTIFY_CHAT_ID,
+            message_id: expired.message_id,
+            parse_mode: "HTML",
+            reply_markup: { inline_keyboard: [] },
+          }
+        );
+      } catch (err) {
+        console.warn("[approval expiry] Nu am putut actualiza mesajul expirat:", err.message);
+      }
+    }
+  }, delay);
+  approvalExpiryTimers.set(item.id, timer);
+}
+
+async function createApprovalRequest(item) {
+  const id = `a${Date.now().toString(36)}${Math.random().toString(36).slice(2, 9)}`;
+  const stored = pendingApprovals.create({ ...item, id, createdAt: Date.now() });
+  // Persistăm înainte de Telegram send; dacă procesul cade aici, la pornire
+  // restaurăm cererea și îi trimitem din nou mesajul cu butoane.
+  await persistPendingApprovals();
+  scheduleApprovalExpiry(stored);
+  const sent = await sendApprovalPrompt(stored);
+  pendingApprovals.setMessageId(id, sent.message_id);
+  const updated = pendingApprovals.get(id);
+  scheduleApprovalExpiry(updated);
+  await persistPendingApprovals();
+  return updated;
+}
+
+let restoringPendingApprovals = false;
+async function restorePendingApprovalRequests({ recoverInterrupted = false } = {}) {
+  if (restoringPendingApprovals) return;
+  restoringPendingApprovals = true;
+  try {
+    if (recoverInterrupted) {
+      pendingApprovals.recoverInterrupted();
+      await persistPendingApprovals();
+    }
+    for (const item of pendingApprovals.listPending()) {
+      scheduleApprovalExpiry(item);
+      if (item.message_id) continue;
+      try {
+        const sent = await sendApprovalPrompt(item);
+        pendingApprovals.setMessageId(item.id, sent.message_id);
+        await persistPendingApprovals();
+      } catch (err) {
+        console.error(`[approval restore] Nu am putut retrimite cererea ${item.id}:`, err.message);
+      }
+    }
+  } finally {
+    restoringPendingApprovals = false;
+  }
+}
+
+async function handleApprovalCallback(callbackQuery) {
+  const action = parseApprovalCallback(callbackQuery.data || "");
+  if (!action) return;
+  if (String(callbackQuery.message?.chat?.id) !== String(NOTIFY_CHAT_ID)) {
+    await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Acțiune neautorizată.", show_alert: true });
+    return;
+  }
+
+  const { id } = action;
+  if (action.action === "ignore") {
+    const item = pendingApprovals.claim(id);
     if (!item) {
-      await notifyBot.answerCallbackQuery(callbackQuery.id, {
-        text: "Această cerere a expirat sau a fost deja procesată.",
-        show_alert: true,
-      });
+      await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Cererea a expirat sau a fost deja procesată.", show_alert: true });
       return;
     }
-
-    clearTimeout(item.timeoutId);
-    pendingSimilarArticles.delete(pendingId);
-
-    await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Se procesează știrea..." });
-
-    try {
-      await notifyBot.editMessageText(
-        `⚙️ <b>Se procesează știrea aprobată...</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${item.url}`,
-        {
-          chat_id: NOTIFY_CHAT_ID,
-          message_id: msgId,
-          parse_mode: "HTML",
-        }
-      );
-    } catch {}
-
-    await enqueueProcess(async () => {
-      try {
-        await finalizeAndSendArticle(item.article, item.url, item.simResult, item.matchedKeywords);
-        try {
-          await notifyBot.editMessageText(
-            `✅ <b>Știre procesată și trimisă cu succes!</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${item.url}`,
-            {
-              chat_id: NOTIFY_CHAT_ID,
-              message_id: msgId,
-              parse_mode: "HTML",
-            }
-          );
-        } catch {}
-      } catch (err) {
-        console.error("[callback proc eroare]", err);
-        await notify(`❌ Eroare la procesarea știrii aprobate:\n${item.url}\n${err.message}`);
-      }
-    });
-  } else if (data.startsWith("ign_")) {
-    const pendingId = data.replace("ign_", "");
-    const item = pendingSimilarArticles.get(pendingId);
-    if (item) {
-      clearTimeout(item.timeoutId);
-      pendingSimilarArticles.delete(pendingId);
-    }
-
+    const timer = approvalExpiryTimers.get(id);
+    if (timer) clearTimeout(timer);
+    approvalExpiryTimers.delete(id);
+    pendingApprovals.setState(id, "ignored");
+    await persistPendingApprovals();
     await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Știre ignorată." });
     try {
       await notifyBot.editMessageText(
-        `❌ <b>Știre ignorată manual.</b>\n\n<b>Titlu:</b> ${item ? escapeHtml(item.article.title) : ""}\n<b>Sursă:</b> ${item ? item.url : ""}`,
-        {
-          chat_id: NOTIFY_CHAT_ID,
-          message_id: msgId,
-          parse_mode: "HTML",
-        }
+        `❌ <b>Știre ignorată manual.</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
+        { chat_id: NOTIFY_CHAT_ID, message_id: callbackQuery.message.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
       );
-    } catch {}
+    } catch (err) { console.warn("[approval] Nu am putut actualiza mesajul ignorat:", err.message); }
+    return;
   }
-});
 
-// Extrage domeniul unui URL, normalizat (fara www.): ex. "www.mediafax.ro" -> "mediafax.ro"
-function normalizeHost(url) {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "");
-  } catch {
-    return "";
+  const item = pendingApprovals.claim(id);
+  if (!item) {
+    await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Cererea a expirat sau a fost deja procesată.", show_alert: true });
+    return;
   }
+  const timer = approvalExpiryTimers.get(id);
+  if (timer) clearTimeout(timer);
+  approvalExpiryTimers.delete(id);
+  await persistPendingApprovals();
+  await notifyBot.answerCallbackQuery(callbackQuery.id, { text: "Se procesează știrea..." });
+  try {
+    await notifyBot.editMessageText(
+      `⚙️ <b>Se procesează știrea aprobată...</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
+      { chat_id: NOTIFY_CHAT_ID, message_id: callbackQuery.message.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
+    );
+  } catch {}
+
+  await enqueueProcess(async () => {
+    try {
+      const result = await finalizeAndSendArticle(
+        item.article,
+        item.url,
+        item.simResult,
+        item.matchedKeywords,
+        { approvedPost: item.formattedPost, aiEmbedding: item.aiEmbedding }
+      );
+      pendingApprovals.setState(id, "done");
+      await persistPendingApprovals();
+      try {
+        const status = result?.status === "pending" ? "Textul AI similar a fost pus într-o cerere separată de aprobare." : "Știre procesată și trimisă cu succes!";
+        await notifyBot.editMessageText(
+          `✅ <b>${status}</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
+          { chat_id: NOTIFY_CHAT_ID, message_id: callbackQuery.message.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
+        );
+      } catch {}
+    } catch (err) {
+      console.error("[callback proc eroare]", err);
+      pendingApprovals.setState(id, "pending");
+      const retryItem = pendingApprovals.get(id);
+      scheduleApprovalExpiry(retryItem);
+      await persistPendingApprovals();
+      await notify(`❌ Eroare la procesarea știrii aprobate:\n${item.url}\n${err.message}`).catch(() => {});
+      try {
+        await notifyBot.editMessageText(
+          `❌ <b>Procesarea a eșuat; poți încerca din nou.</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
+          { chat_id: NOTIFY_CHAT_ID, message_id: callbackQuery.message.message_id, parse_mode: "HTML", reply_markup: approvalMarkup(id) }
+        );
+      } catch {}
+    }
+  });
 }
+
+// Acțiunile inline citesc și revendică starea din SQLite; nu depind de RAM-ul
+// procesului, astfel încât butonul rămâne funcțional după un restart.
+notifyBot.on("callback_query", handleApprovalCallback);
 
 // Extrage link-ul din mesajul Telegram (butonul "Deschide"/link direct din text)
 function extractLink(message) {
@@ -242,35 +356,36 @@ function extractLink(message) {
   return urlMatch ? urlMatch[0] : null;
 }
 
-// Bot API-ul folosit pentru chatul privat are entitati cu type/url, diferite
-// de entitatile GramJS folosite de mesajele canalelor.
-function extractBotMessageLink(message) {
-  const text = message.text || message.caption || "";
-  const entities = message.entities || message.caption_entities || [];
-  const linkedEntity = entities.find((entity) => entity.type === "text_link" && entity.url);
-  const rawUrl = linkedEntity?.url || text.match(/https?:\/\/[^\s<>]+/)?.[0];
-  if (!rawUrl) return null;
-  const cleanUrl = rawUrl.replace(/[),.!?;:\]]+$/g, "");
-  try {
-    const parsed = new URL(cleanUrl);
-    return ["http:", "https:"].includes(parsed.protocol) ? parsed.href : null;
-  } catch {
-    return null;
-  }
-}
-
 // Finalizeaza generarea postarii, cautarea imaginii si trimiterea notificarii
-async function finalizeAndSendArticle(article, url, simResult, matchedKeywords = []) {
-  // 4. Reformatare cu AI (cascada de modele)
-  const { text: formattedPost } = await rewriteArticle(article.fullTextForKeywordCheck);
-
-  // 5. Salvam in istoric ACUM (ca sa nu se re-proceseze si sa prindem embedding-ul deja calculat)
-  saveNews({
-    url,
-    title: article.title,
-    content: article.content,
-    embedding: simResult?.embedding ?? null,
-  });
+async function finalizeAndSendArticle(article, url, simResult, matchedKeywords = [], approval = {}) {
+  // 4. Rescriere AI și al doilea control pe textul care va fi trimis efectiv.
+  // Comparăm atât cu articolele-sursă, cât și cu postările AI aprobate anterior.
+  let formattedPost = approval.approvedPost;
+  let aiEmbedding = approval.aiEmbedding;
+  if (!formattedPost) {
+    const rewritten = await rewriteArticle(article.fullTextForKeywordCheck);
+    formattedPost = rewritten.text;
+    const previousTexts = [...getRecentNews(historyHours), ...getRecentAiPosts(historyHours)];
+    const aiSimilarity = await checkSimilarity(formattedPost, previousTexts, threshold);
+    aiEmbedding = aiSimilarity.embedding;
+    if (aiSimilarity.isDuplicate) {
+      const pending = await createApprovalRequest({
+        kind: "ai_text",
+        url,
+        article,
+        simResult,
+        matchedKeywords,
+        formattedPost,
+        aiEmbedding,
+        comparisonUrl: aiSimilarity.similarUrl,
+        comparisonTitle: previousTexts.find((entry) => entry.url === aiSimilarity.similarUrl)?.title,
+        similarity: aiSimilarity.similarity,
+        expiresAt: null, // cererile pentru texte AI nu expiră
+      });
+      console.log(`[similar AI] Text pus în așteptare fără expirare: ${pending.id}`);
+      return { status: "pending", pendingId: pending.id };
+    }
+  }
 
   // 6. Sistemul inteligent de imagini. Vorbitorul se determina AI-PRIMAR
   const regexSpeaker = detectSpeaker(article.title, matchedKeywords);
@@ -317,14 +432,24 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
     );
   }
 
+  // Salvăm numai după livrarea reușită; articolele în așteptarea aprobării AI
+  // nu devin false pozitive la următoarea verificare.
+  saveNews({
+    url,
+    title: article.title,
+    content: article.content,
+    embedding: simResult?.embedding ?? null,
+  });
+  saveAiPost({ url, title: formattedPost.split(/\r?\n/, 1)[0] || article.title, content: formattedPost, embedding: aiEmbedding });
   console.log("[ok] Trimis pentru aprobare");
+  return { status: "done" };
 }
 
 async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity = false } = {}) {
   try {
     if (isUrlSeen(url)) {
       console.log(`[skip] URL deja procesat: ${url}`);
-      return;
+      return { status: "skipped", reason: "URL-ul a fost deja procesat." };
     }
 
     console.log(`[procesare] ${url}`);
@@ -334,13 +459,13 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       console.log(
         `[skip] Continut prea scurt / nu s-a putut extrage (${article.content?.length || 0} caractere, titlu: "${article.title}")`
       );
-      return;
+      return { status: "skipped", reason: "Nu am putut extrage suficient text din articol." };
     }
 
     // 1. Verificare data (trebuie sa fie din ziua curenta)
     if (!isPublishedToday(article.isoDate)) {
       console.log(`[skip] Nu e din ziua curenta (data gasita: "${article.isoDate}")`);
-      return;
+      return { status: "skipped", reason: `Articolul nu pare publicat azi (data identificată: ${article.isoDate || "necunoscută"}).` };
     }
 
     // Textul esential al stirii = titlul + primul paragraf.
@@ -353,7 +478,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
         console.log("[pas] Canal bypass - NU sunt keywords gasite, dar continuam oricum");
       } else {
         console.log("[skip] Niciun keyword gasit");
-        return;
+        return { status: "skipped", reason: "Nu am găsit niciun keyword configurat în titlu sau lead." };
       }
     } else {
       console.log(`[match] Keywords gasite: ${matchedKeywords.join(", ")}`);
@@ -371,7 +496,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
           : !relevant;
       if (foreign) {
         console.log("[skip] Stire straina fara implicare romaneasca");
-        return;
+        return { status: "skipped", reason: "Știrea pare străină și fără implicare românească." };
       }
     }
 
@@ -385,70 +510,22 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       simResult = await checkSimilarity(textToEmbed, recentNews, threshold);
 
       if (simResult.isDuplicate) {
-        const sameSite =
-          simResult.similarUrl && normalizeHost(simResult.similarUrl) === normalizeHost(url);
-        if (sameSite) {
-          console.log(
-            `[pas] Similar ${(simResult.similarity * 100).toFixed(0)}% dar e ACELASI site (${normalizeHost(url)}) - articol diferit, continuam`
-          );
-        } else {
-          console.log(
-            `[similar] Similaritate ${(simResult.similarity * 100).toFixed(1)}% cu ${simResult.similarUrl} - trimit cerere interactiva cu butoane`
-          );
-          
-          const pendingId = `sim_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
-          const escapedTitle = escapeHtml(article.title);
-
-          const msgText = `⏭️ <b>Știre similară (${(simResult.similarity * 100).toFixed(0)}%)</b>\n\n` +
-            `<b>Titlu:</b> ${escapedTitle}\n` +
-            `<b>Sursă:</b> ${url}\n\n` +
-            `<b>Similară cu:</b> ${simResult.similarUrl}\n\n` +
-            `<i>Dorești să fie procesată și trimisă oricum? (Apasă un buton sau va expira automat într-o oră)</i>`;
-
-          try {
-            const sentMsg = await notifyBot.sendMessage(NOTIFY_CHAT_ID, msgText, {
-              parse_mode: "HTML",
-              reply_markup: {
-                inline_keyboard: [
-                  [
-                    { text: "✅ Procesează știrea", callback_data: `proc_${pendingId}` },
-                    { text: "❌ Ignoră", callback_data: `ign_${pendingId}` },
-                  ],
-                ],
-              },
-            });
-
-            const timeoutId = setTimeout(async () => {
-              if (pendingSimilarArticles.has(pendingId)) {
-                pendingSimilarArticles.delete(pendingId);
-                try {
-                  await notifyBot.editMessageText(
-                    `⌛ <b>Știre similară (${(simResult.similarity * 100).toFixed(0)}%) - Expirată automat (1 oră)</b>\n\n<b>Titlu:</b> ${escapedTitle}\n<b>Sursă:</b> ${url}`,
-                    {
-                      chat_id: NOTIFY_CHAT_ID,
-                      message_id: sentMsg.message_id,
-                      parse_mode: "HTML",
-                    }
-                  );
-                } catch {}
-              }
-            }, 60 * 60 * 1000); // 1 ora expirare automata
-
-            pendingSimilarArticles.set(pendingId, {
-              article,
-              url,
-              simResult,
-              matchedKeywords,
-              timeoutId,
-              messageId: sentMsg.message_id,
-            });
-          } catch (e) {
-            console.error("[similar notify eroare]", e.message);
-          }
-
-          // Continuam procesarea altor stiri fara blocaj
-          return;
-        }
+        console.log(
+          `[similar] Similaritate ${(simResult.similarity * 100).toFixed(1)}% cu ${simResult.similarUrl} - cer confirmare indiferent de domeniu`
+        );
+        const comparison = recentNews.find((entry) => entry.url === simResult.similarUrl);
+        await createApprovalRequest({
+          kind: "article",
+          url,
+          article,
+          simResult,
+          matchedKeywords,
+          comparisonUrl: simResult.similarUrl,
+          comparisonTitle: comparison?.title,
+          similarity: simResult.similarity,
+          expiresAt: Date.now() + 60 * 60 * 1000,
+        });
+        return { status: "pending" };
       }
     } else if (bypassFilters) {
       console.log("[pas] Canal bypass - sarim peste filtrul de similaritate");
@@ -464,10 +541,11 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     }
 
     // Daca a trecut toate filtrele sau e pe acelasi site / bypass, finalizam
-    await finalizeAndSendArticle(article, url, simResult, matchedKeywords);
+    return await finalizeAndSendArticle(article, url, simResult, matchedKeywords);
   } catch (err) {
     console.error(`[eroare] la procesarea ${url}:`, err.message);
     await notify(`❌ Eroare la procesarea unui articol:\n${url}\n${err.message}`).catch(() => {});
+    return { status: "error", reason: err.message };
   }
 }
 
@@ -484,14 +562,68 @@ function enqueueProcess(fn) {
 // Un link trimis botului în chatul privat configurat este procesat fără
 // comparația de similaritate; restul filtrelor normale rămân active.
 notifyBot.on("message", async (message) => {
-  if (String(message.chat?.id) !== String(NOTIFY_CHAT_ID)) return;
+  if (message.from?.is_bot) return;
+  if (String(message.chat?.id) !== String(NOTIFY_CHAT_ID)) {
+    console.log(`[notifyBot] Mesaj privat primit; chat configurat: ${String(message.chat?.type) === "private" && String(message.chat?.id) === String(NOTIFY_CHAT_ID) ? "da" : "nu"}`);
+    return;
+  }
+  if (message.chat?.type !== "private") {
+    console.warn("[notifyBot] Link ignorat: trimite-l în chatul privat cu botul, nu într-un grup.");
+    return;
+  }
+  if (message.text?.trim().split(/\s+/)[0]?.split("@")[0] === "/start" || message.text?.trim().split(/\s+/)[0]?.split("@")[0] === "/help") {
+    await notifyBot.sendMessage(message.chat.id, "Trimite-mi linkul complet al unei știri. O voi procesa și îți voi confirma aici dacă a fost filtrată sau dacă necesită aprobare.");
+    return;
+  }
   const link = extractBotMessageLink(message);
   if (!link) return;
-  console.log(`[manual] Link primit în chatul privat: ${link}`);
-  await enqueueProcess(() => processArticleUrl(link, { bypassSimilarity: true }));
+  console.log("[notifyBot] Link primit din chatul privat configurat; încep procesarea.");
+  let acknowledgement;
+  try {
+    acknowledgement = await notifyBot.sendMessage(message.chat.id, "⏳ Am primit linkul; îl verific și îl procesez acum…", {
+      reply_to_message_id: message.message_id,
+      allow_sending_without_reply: true,
+    });
+    const result = await enqueueProcess(() => processArticleUrl(link, { bypassSimilarity: true }));
+    const response = result?.status === "done"
+      ? "✅ Gata — ți-am trimis rezultatul mai sus în chat."
+      : result?.status === "pending"
+        ? "⏭️ Am găsit o posibilă similaritate. Uită-te la mesajul cu butoane de aprobare; cererea rămâne salvată și după restart."
+        : result?.status === "error"
+          ? `❌ Nu am putut procesa linkul: ${result.reason}`
+          : `ℹ️ Linkul a fost primit, dar nu a fost procesat: ${result?.reason || "motiv necunoscut"}`;
+    await notifyBot.editMessageText(response, { chat_id: message.chat.id, message_id: acknowledgement.message_id });
+  } catch (err) {
+    console.error("[notifyBot manual-link error]", err);
+    if (acknowledgement) {
+      await notifyBot.editMessageText(`❌ Eroare la procesarea linkului: ${err.message}`, {
+        chat_id: message.chat.id,
+        message_id: acknowledgement.message_id,
+      }).catch(() => {});
+    }
+  }
 });
 
 async function main() {
+  try {
+    const webhookInfo = await notifyBot.getWebHookInfo();
+    if (webhookInfo.url) {
+      console.warn("[notifyBot] Webhook existent găsit; îl dezactivez păstrând update-urile în coadă, fiindcă acest proiect folosește long polling.");
+      await notifyBot.deleteWebHook({ drop_pending_updates: false });
+    }
+    notifyBot.startPolling().catch((err) => {
+      console.error("[notifyBot] Nu am putut porni long polling:", err.message);
+    });
+    console.log('[notifyBot] Long polling pornit pentru update-uri "message" și "callback_query".');
+    await restorePendingApprovalRequests({ recoverInterrupted: true });
+    setInterval(() => {
+      restorePendingApprovalRequests().catch((err) => console.error("[approval restore]", err));
+    }, 60 * 1000);
+    await notify("🤖 Bot pornit. Pentru procesare manuală, trimite-mi linkul știrii în acest chat privat.");
+  } catch (err) {
+    console.error("[notifyBot] Inițializarea API-ului Telegram a eșuat:", err.message);
+  }
+
   const client = new TelegramClient(new StringSession(TG_SESSION), Number(TG_API_ID), TG_API_HASH, {
     connectionRetries: 5,
   });
@@ -532,7 +664,6 @@ async function main() {
   }, new NewMessage({}));
 
   console.log(`👀 Monitorizez canalele: ${channelsList.join(", ")}`);
-  await notify("🤖 Bot pornit. Monitorizez canalele și îți trimit stiri filtrate pentru aprobare.");
 
   const maxRuntimeMin = Number(process.env.BOT_MAX_RUNTIME_MIN || 0);
   if (maxRuntimeMin > 0) {

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { evaluate3ZoneSimilarity } from "../src/similarity/embedding.js";
+import { evaluate3ZoneSimilarity, selectSimilarityCandidate } from "../src/similarity/embedding.js";
 
 test("generic Romanian headline overlap does not mark unrelated coverage as duplicate", () => {
   const result = evaluate3ZoneSimilarity(
@@ -42,4 +42,27 @@ test("high semantic similarity cannot alone block unrelated titles", () => {
   );
 
   assert.equal(result.isDuplicate, false);
+});
+
+test("a shared public figure without shared event terms is not enough", () => {
+  const result = evaluate3ZoneSimilarity(
+    0.91,
+    "Bolojan anunță reforma pensiilor",
+    "",
+    "Bolojan vizitează fabrica din Iași după incendiu",
+    "",
+    0.8
+  );
+
+  assert.equal(result.isDuplicate, false);
+});
+
+test("a non-duplicate high score cannot hide a lower-scoring duplicate candidate", () => {
+  const selected = selectSimilarityCandidate([
+    { isDuplicate: false, score: 0.9, url: "https://example.com/unrelated" },
+    { isDuplicate: true, score: 0.77, url: "https://example.com/same-event" },
+  ]);
+
+  assert.equal(selected.isDuplicate, true);
+  assert.equal(selected.url, "https://example.com/same-event");
 });

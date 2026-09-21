@@ -1,0 +1,103 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import Database from "better-sqlite3";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+
+import { createPendingApprovalStore } from "../src/storage/pending-approvals.js";
+import { createAiPostHistoryStore } from "../src/storage/ai-post-history.js";
+
+test("saved approval survives closing and reopening SQLite, retaining its callback payload", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "news-pending-"));
+  const file = path.join(dir, "state.sqlite");
+  const firstDb = new Database(file);
+  const firstStore = createPendingApprovalStore(firstDb);
+  const article = { title: "Titlu de test", content: "Conținut", fullTextForKeywordCheck: "complet" };
+  firstStore.create({
+    id: "article-pending",
+    kind: "article",
+    url: "https://example.com/stire",
+    article,
+    simResult: { embedding: [0.1, 0.2], similarity: 0.84, similarUrl: "https://example.com/veche" },
+    matchedKeywords: ["guvern"],
+    expiresAt: null,
+  });
+  firstStore.setMessageId("article-pending", 1234);
+  firstDb.close();
+
+  const db = new Database(file);
+  const restoredStore = createPendingApprovalStore(db);
+  const restored = restoredStore.get("article-pending");
+  assert.deepEqual(restored.article, article);
+  assert.deepEqual(restored.simResult.embedding, [0.1, 0.2]);
+  assert.deepEqual(restored.matchedKeywords, ["guvern"]);
+  assert.equal(restored.message_id, 1234);
+  assert.equal(restored.state, "pending");
+
+  assert.equal(restoredStore.claim("article-pending").state, "processing");
+  assert.equal(restoredStore.claim("article-pending"), null, "second click must not process twice");
+  db.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test("one-hour article request expires, while AI-text approval has no time limit", () => {
+  const db = new Database(":memory:");
+  const store = createPendingApprovalStore(db);
+  const now = 2_000_000;
+  const base = {
+    url: "https://example.com/stire",
+    article: { title: "Titlu", content: "Text" },
+    simResult: { embedding: [1] },
+    matchedKeywords: [],
+  };
+  store.create({ ...base, id: "expires", kind: "article", expiresAt: now + 3_600_000, createdAt: now });
+  store.create({
+    ...base,
+    id: "unlimited-ai",
+    kind: "ai_text",
+    formattedPost: "Text AI",
+    aiEmbedding: [0.9],
+    expiresAt: null,
+    createdAt: now,
+  });
+
+  assert.equal(store.claim("expires", now + 3_600_001), null);
+  assert.equal(store.get("expires").state, "expired");
+  assert.equal(store.claim("unlimited-ai", now + 30 * 24 * 3_600_000).formattedPost, "Text AI");
+  db.close();
+});
+
+test("interrupted in-progress approvals return to pending after restart", () => {
+  const db = new Database(":memory:");
+  const store = createPendingApprovalStore(db);
+  store.create({
+    id: "interrupted",
+    kind: "ai_text",
+    url: "https://example.com/stire",
+    article: { title: "Titlu", content: "Text" },
+    simResult: {},
+    matchedKeywords: [],
+    formattedPost: "Text AI",
+  });
+  store.claim("interrupted");
+  store.recoverInterrupted();
+  assert.equal(store.get("interrupted").state, "pending");
+  db.close();
+});
+
+test("approved AI outputs and their embeddings persist for later similarity checks", () => {
+  const db = new Database(":memory:");
+  const history = createAiPostHistoryStore(db);
+  history.save({
+    url: "https://example.com/post",
+    title: "Titlu",
+    content: "Postarea redactată cu AI",
+    embedding: [0.25, 0.75],
+  });
+  const rows = history.getRecent(72);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].content, "Postarea redactată cu AI");
+  assert.deepEqual(rows[0].embedding, [0.25, 0.75]);
+  db.close();
+});
