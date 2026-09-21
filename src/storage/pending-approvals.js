@@ -11,6 +11,7 @@ function decode(row) {
 }
 
 export const ARTICLE_APPROVAL_TTL_MS = 12 * 60 * 60 * 1000;
+const LEGACY_ARTICLE_APPROVAL_TTL_MS = 60 * 60 * 1000;
 
 /** Durable Telegram approvals. SQLite is also restored from the data branch
  * on GitHub Actions, so callback buttons survive process restarts. */
@@ -47,8 +48,12 @@ export function createPendingApprovalStore(db) {
     WHERE kind = 'article'
       AND state IN ('pending', 'expired')
       AND created_at >= ?
-      AND expires_at < created_at + ?
-  `).run(ARTICLE_APPROVAL_TTL_MS, migrationNow - ARTICLE_APPROVAL_TTL_MS, ARTICLE_APPROVAL_TTL_MS);
+      AND expires_at <= created_at + ?
+  `).run(
+    ARTICLE_APPROVAL_TTL_MS,
+    migrationNow - ARTICLE_APPROVAL_TTL_MS,
+    LEGACY_ARTICLE_APPROVAL_TTL_MS + 60 * 1000
+  );
 
   const insert = db.prepare(`
     INSERT INTO pending_approvals (
