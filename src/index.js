@@ -569,26 +569,46 @@ notifyBot.on("message", createManualMessageHandler({
 }));
 
 async function main() {
+  let botIdentity;
+  try {
+    botIdentity = await notifyBot.getMe();
+    console.log(`[notifyBot] Tokenul este pentru @${botIdentity.username || `id:${botIdentity.id}`}.`);
+  } catch (err) {
+    console.error("[notifyBot] Nu am putut confirma identitatea botului:", err.message);
+  }
+
   try {
     const webhookInfo = await notifyBot.getWebHookInfo();
     if (webhookInfo.url) {
       console.warn("[notifyBot] Webhook existent găsit; îl dezactivez păstrând update-urile în coadă, fiindcă acest proiect folosește long polling.");
       await notifyBot.deleteWebHook({ drop_pending_updates: false });
     }
+  } catch (err) {
+    // Polling-ul va porni oricum: biblioteca încearcă să elimine webhook-ul
+    // dacă Telegram răspunde cu 409 la getUpdates.
+    console.error("[notifyBot] Verificarea webhook-ului a eșuat; încerc totuși long polling:", err.message);
+  }
+
+  try {
     // Reîncărcăm cererile din SQLite înainte să livrăm callback-urile aflate
     // în coada Telegram; astfel un click nu poate concura cu recuperarea stării.
     await restorePendingApprovalRequests({ recoverInterrupted: true });
-    notifyBot.startPolling().catch((err) => {
-      console.error("[notifyBot] Nu am putut porni long polling:", err.message);
-    });
-    console.log('[notifyBot] Long polling pornit pentru update-uri "message" și "callback_query".');
-    setInterval(() => {
-      restorePendingApprovalRequests().catch((err) => console.error("[approval restore]", err));
-    }, 60 * 1000);
-    await notify("🤖 Bot pornit. Pentru procesare manuală, trimite-mi linkul știrii în acest chat privat.");
   } catch (err) {
-    console.error("[notifyBot] Inițializarea API-ului Telegram a eșuat:", err.message);
+    // O bază de date temporar indisponibilă nu trebuie să lase botul surd la
+    // mesaje manuale. Restaurarea se reîncearcă periodic și la callback.
+    console.error("[approval restore] Restaurarea inițială a eșuat; polling-ul Telegram pornește oricum:", err.message);
   }
+
+  notifyBot.startPolling().catch((err) => {
+    console.error("[notifyBot] Nu am putut porni long polling:", err.message);
+  });
+  console.log('[notifyBot] Long polling pornit pentru update-uri "message" și "callback_query".');
+  setInterval(() => {
+    restorePendingApprovalRequests().catch((err) => console.error("[approval restore]", err));
+  }, 60 * 1000);
+  const identityLabel = botIdentity?.username ? ` @${botIdentity.username}` : "";
+  await notify(`🤖 Bot pornit${identityLabel}. Pentru procesare manuală, trimite-mi linkul știrii în acest chat privat.`)
+    .catch((err) => console.error("[notifyBot] Polling-ul e pornit, dar notificarea de startup a eșuat:", err.message));
 
   const client = new TelegramClient(new StringSession(TG_SESSION), Number(TG_API_ID), TG_API_HASH, {
     connectionRetries: 5,
