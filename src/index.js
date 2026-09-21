@@ -60,7 +60,7 @@ import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
 import { formatChannelAudit } from "./telegram/channel-audit.js";
 import { createPollingErrorHandler } from "./telegram/polling-health.js";
-import { answerCallbackSafely, parseApprovalCallback } from "./telegram/approval-callback.js";
+import { answerCallbackSafely, closeStaleApprovalMessage, parseApprovalCallback } from "./telegram/approval-callback.js";
 import { formatApprovalText } from "./telegram/approval-messages.js";
 import { splitTelegramText } from "./telegram/text-chunks.js";
 import { ARTICLE_APPROVAL_TTL_MS } from "./storage/pending-approvals.js";
@@ -351,6 +351,7 @@ async function handleApprovalCallback(callbackQuery) {
     const item = pendingApprovals.claim(id);
     if (!item) {
       await answerCallbackSafely(notifyBot, callbackQuery, { text: "Cererea a expirat sau a fost deja procesată.", show_alert: true });
+      await closeStaleApprovalMessage(notifyBot, callbackQuery);
       return;
     }
     const timer = approvalExpiryTimers.get(id);
@@ -371,6 +372,7 @@ async function handleApprovalCallback(callbackQuery) {
   const item = pendingApprovals.claim(id);
   if (!item) {
     await answerCallbackSafely(notifyBot, callbackQuery, { text: "Cererea a expirat sau a fost deja procesată.", show_alert: true });
+    await closeStaleApprovalMessage(notifyBot, callbackQuery);
     return;
   }
   const timer = approvalExpiryTimers.get(id);

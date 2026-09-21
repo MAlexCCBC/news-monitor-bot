@@ -244,26 +244,25 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
 
   const titleOverlap = titleWordOverlap(titleA, titleOld);
 
-  // O ancoră de duplicat trebuie să lege entitățile de subiectul din titlu.
-  // Numele și cifrele din lead-uri, fără overlap tematic, nu sunt suficiente.
-  const stemsA = new Set(getStems(titleA));
-  const stemsB = new Set(getStems(titleOld));
-  const titleNamesA = new Set([...extractEntities(titleA).properNouns].map(stemRo));
-  const titleNamesB = new Set([...extractEntities(titleOld).properNouns].map(stemRo));
+  // Măsurăm subiectul pe întregul text, nu doar pe titlu. Titlul rămâne un
+  // semnal suplimentar, iar numele/cifrele singure nu pot confirma un eveniment.
+  const articleA = `${titleA} ${leadA}`;
+  const articleB = `${titleOld} ${leadOld}`;
+  const stemsA = new Set(getStems(articleA));
+  const stemsB = new Set(getStems(articleB));
+  const namesA = new Set([...extractEntities(articleA).properNouns].map(stemRo));
+  const namesB = new Set([...extractEntities(articleB).properNouns].map(stemRo));
   let commonTopicWords = 0;
   for (const stem of stemsA) {
-    if (stemsB.has(stem) && !titleNamesA.has(stem) && !titleNamesB.has(stem)) commonTopicWords++;
+    if (stemsB.has(stem) && !namesA.has(stem) && !namesB.has(stem)) commonTopicWords++;
   }
 
   const hasMatchingEntities =
     (titleOverlap >= 0.60 && commonTopicWords >= 3) ||
-    // Unele redacții formulează aceeași știre cu sintaxe foarte diferite
-    // (ex. „Republica Moldova va institui...” vs „Maia Sandu anunță...”);
-    // permitem overlap puțin mai mic doar dacă există trei termeni de subiect
-    // și o entitate/cifră comună, ca să nu ajungă simpla persoană comună drept
-    // ancora evenimentului.
-    (titleOverlap >= 0.35 && commonTopicWords >= 2 && (commonProper >= 1 || commonNumbers >= 1)) ||
-    (titleOverlap >= 0.30 && commonTopicWords >= 3 && (commonProper >= 1 || commonNumbers >= 1));
+    // Când titlurile sunt formulate diferit, confirmarea vine din vocabularul
+    // articolului întreg, legat de cel puțin o entitate/cifră comună.
+    (commonTopicWords >= 4 && (commonProper >= 1 || commonNumbers >= 1)) ||
+    (titleOverlap >= 0.45 && commonTopicWords >= 3 && (commonProper >= 1 || commonNumbers >= 1));
 
   return {
     hasMatchingEntities,
@@ -383,20 +382,22 @@ export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recent
 export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80, { onReembed } = {}) {
   const [titleNew = "", ...leadParts] = newText.split("\n");
   const leadNew = leadParts.join("\n");
-  const titleAnchoredItems = recentNewsWithEmbeddings.filter((item) =>
-    checkKeyEntitiesMatch(titleNew, leadNew, item.title || "", item.content || "").hasMatchingEntities
-  );
-  const staleItems = titleAnchoredItems.filter((item) => item.embeddingVersion !== `${ARTICLE_EMBEDDING_VERSION_PREFIX}gemini-embedding-001`);
+  // First compare full-article embeddings against every item in the history.
+  // Titles/entities are a verdict guard, not a retrieval filter: using them to
+  // select candidates here misses the same event when editors phrase headlines
+  // differently.
+  const comparableItems = recentNewsWithEmbeddings.filter((item) => item.embedding?.length);
+  const staleItems = comparableItems.filter((item) => item.embeddingVersion !== `${ARTICLE_EMBEDDING_VERSION_PREFIX}gemini-embedding-001`);
   const documents = [{ title: titleNew, content: leadNew }, ...staleItems.map((item) => ({ title: item.title, content: item.content }))];
   const embedded = await embedArticles(documents);
   const newEmbedding = embedded.embeddings[0];
   const staleByUrl = new Map(staleItems.map((item, index) => [item.url, embedded.embeddings[index + 1]]));
   const reembeddedNews = [];
 
-  // If the primary model had to fall back, refresh every title-anchored stored
+  // If the primary model had to fall back, refresh every stored
   // vector in that same space before comparing; Gemini embedding spaces differ.
   const needsFallbackRefresh = embedded.model !== "gemini-embedding-001"
-    ? titleAnchoredItems.filter((item) => item.embeddingVersion !== embedded.version && !staleByUrl.has(item.url))
+    ? comparableItems.filter((item) => item.embeddingVersion !== embedded.version && !staleByUrl.has(item.url))
     : [];
   if (needsFallbackRefresh.length) {
     const refreshed = await embedArticles(
@@ -408,7 +409,7 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
     }
   }
 
-  const candidates = titleAnchoredItems.map((item) => {
+  const candidates = comparableItems.map((item) => {
     const embedding = staleByUrl.get(item.url)
       || (item.embeddingVersion === embedded.version ? item.embedding : null);
     if (staleByUrl.has(item.url)) {

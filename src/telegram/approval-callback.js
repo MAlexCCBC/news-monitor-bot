@@ -16,3 +16,22 @@ export async function answerCallbackSafely(bot, callbackQuery, options, logger =
     return false;
   }
 }
+
+export async function closeStaleApprovalMessage(bot, callbackQuery, logger = console) {
+  const message = callbackQuery?.message;
+  if (!message?.message_id || !message?.chat?.id) return false;
+  try {
+    await bot.editMessageText(
+      "ℹ️ Cererea a fost deja procesată sau a expirat. Acest buton nu mai este activ.",
+      {
+        chat_id: message.chat.id,
+        message_id: message.message_id,
+        reply_markup: { inline_keyboard: [] },
+      }
+    );
+    return true;
+  } catch (err) {
+    logger.warn("[approval callback] Nu am putut închide butonul expirat:", err?.message || String(err));
+    return false;
+  }
+}

@@ -59,6 +59,20 @@ test("different newsroom wording still catches the same Moldova emergency story"
   assert.equal(result.zone, "VERDE");
 });
 
+test("Basescu's assessment and PSD's vote plan are distinct Muresan stories", () => {
+  const result = evaluate3ZoneSimilarity(
+    0.786743,
+    "Băsescu nu îi dă mari șanse lui Siegfried Mureșan: Nu știu dacă va reuși să facă un alt fel de Guvern. Îi dau șanse puține",
+    "Într-o intervenție la B1 TV, Traian Băsescu a vorbit despre șansele premierului Siegfried Mureșan de a alcătui viitorul Guvern. «Eu nu-i dau mari șanse lui Siegfried Mureșan», a transmis fostul președinte.",
+    "Manda anunță cum va vota în ședința PSD în cazul lui Siegfried Mureșan: Avem de-a face doar cu un alt Bolojan",
+    "Biroul Permanent Național al PSD se reunește pentru a stabili poziția partidului față de premierul desemnat Siegfried Mureșan. Manda a spus că nu se așteaptă ca PSD să își schimbe poziția potrivit căreia nu va susține un guvern din care nu face parte.",
+    0.80
+  );
+
+  assert.equal(result.isDuplicate, false);
+  assert.match(result.zone, /Permis/);
+});
+
 test("shared politician and broad topic do not merge distinct Maia Sandu developments", () => {
   const result = evaluate3ZoneSimilarity(
     0.94,

@@ -43,6 +43,33 @@ test("legacy duplicate candidates are re-embedded from their complete stored art
   }
 });
 
+test("article-body similarity considers history entries before headline anchoring", async () => {
+  const originalPost = axios.post;
+  axios.post = async (_url, requestBody) => ({
+    data: { embeddings: requestBody.requests.map(() => ({ values: [1, 0] })) },
+  });
+
+  try {
+    const result = await checkSimilarity(
+      "Criza energetică de pe Nistru: măsuri noi\nRepublica Moldova declară stare de urgență energetică și hidrologică după problemele de pe Nistru. Maia Sandu a anunțat măsuri pentru protejarea sectorului energetic și a alimentării cu apă.",
+      [{
+        url: "https://example.com/previous",
+        title: "Maia Sandu a convocat Consiliul de Securitate",
+        content: "După problemele de pe Nistru, Republica Moldova declară stare de urgență în domeniul energetic și hidrologic. Maia Sandu a anunțat măsuri pentru protejarea sectorului energetic și a alimentării cu apă.",
+        embedding: [1, 0],
+        embeddingModel: "gemini-embedding-001",
+        embeddingVersion: "article-full-v1:gemini-embedding-001",
+      }],
+      0.8
+    );
+
+    assert.equal(result.isDuplicate, true);
+    assert.equal(result.similarUrl, "https://example.com/previous");
+  } finally {
+    axios.post = originalPost;
+  }
+});
+
 test("full-article embeddings batch all chunks and aggregate their vectors", async () => {
   const originalPost = axios.post;
   let payload;
