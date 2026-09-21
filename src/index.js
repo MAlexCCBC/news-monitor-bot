@@ -366,7 +366,7 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
         expiresAt: null, // cererile pentru texte AI nu expiră
       });
       console.log(`[similar AI] Text pus în așteptare fără expirare: ${pending.id}`);
-      return { status: "pending", pendingId: pending.id };
+      return { status: "pending", pendingId: pending.id, reason: aiSimilarity.similarityReason };
     }
   }
 
@@ -494,7 +494,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
 
       if (simResult.isDuplicate) {
         console.log(
-          `[similar] Similaritate ${(simResult.similarity * 100).toFixed(1)}% cu ${simResult.similarUrl} - cer confirmare indiferent de domeniu`
+          `[similar] ${simResult.similarityZone}: ${(simResult.similarity * 100).toFixed(1)}% cu ${simResult.similarUrl} - ${simResult.similarityReason}`
         );
         const comparison = recentNews.find((entry) => entry.url === simResult.similarUrl);
         await createApprovalRequest({
@@ -508,7 +508,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
           similarity: simResult.similarity,
           expiresAt: Date.now() + ARTICLE_APPROVAL_TTL_MS,
         });
-        return { status: "pending" };
+        return { status: "pending", reason: simResult.similarityReason };
       }
     } else if (bypassFilters) {
       console.log("[pas] Canal bypass - sarim peste filtrul de similaritate");

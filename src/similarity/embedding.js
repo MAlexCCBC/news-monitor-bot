@@ -73,7 +73,7 @@ const GENERIC_TITLE_WORDS = new Set([
   "guvern", "guvernul", "ministru", "ministrul", "minister", "ministerul",
   "presedinte", "presedintele", "parlament", "parlamentul", "declaratie",
   "declaratii", "anunta", "anuntat", "anuntă", "spune", "afirma", "dupa",
-  "azi", "astazi", "nou", "noua", "oficial",
+  "azi", "astazi", "nou", "noua", "noi", "oficial",
 ]);
 const GENERIC_TITLE_STEMS = new Set([...GENERIC_TITLE_WORDS].map(stemRo));
 
@@ -115,7 +115,13 @@ function extractEntities(text) {
   );
 
   const numMatches = text.match(/\b\d+([.,]\d+)?\b/g) || [];
-  const numbers = new Set(numMatches);
+  // Ani precum 2025/2026 sunt frecvenți în știri diferite și nu reprezintă
+  // singuri o amprentă de eveniment; îi excludem din ancorele numerice.
+  const numbers = new Set(numMatches.filter((value) => {
+    if (!/^\d{4}$/.test(value)) return true;
+    const year = Number(value);
+    return year < 1900 || year > 2099;
+  }));
 
   return { properNouns, numbers };
 }
@@ -148,23 +154,25 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
 
   const titleOverlap = titleWordOverlap(titleA, titleOld);
 
-  // Exista potrivire daca titlurile au cel putin 3 termeni distinctivi comuni
-  // si overlap ridicat, sau daca o entitate specifica comuna e sustinuta de
-  // overlap minim pe titlu. Termenii editoriali generici sunt deja eliminati.
+  // O ancoră de duplicat trebuie să lege entitățile de subiectul din titlu.
+  // Numele și cifrele din lead-uri, fără overlap tematic, nu sunt suficiente.
   const stemsA = new Set(getStems(titleA));
   const stemsB = new Set(getStems(titleOld));
-  let commonTitleWords = 0;
-  for (const stem of stemsA) if (stemsB.has(stem)) commonTitleWords++;
+  const titleNamesA = new Set([...extractEntities(titleA).properNouns].map(stemRo));
+  const titleNamesB = new Set([...extractEntities(titleOld).properNouns].map(stemRo));
+  let commonTopicWords = 0;
+  for (const stem of stemsA) {
+    if (stemsB.has(stem) && !titleNamesA.has(stem) && !titleNamesB.has(stem)) commonTopicWords++;
+  }
 
   const hasMatchingEntities =
-    (titleOverlap >= 0.60 && commonTitleWords >= 3) ||
-    (titleOverlap >= 0.35 && commonTitleWords >= 2 && (commonProper >= 1 || commonNumbers >= 1)) ||
-    (commonProper >= 2 && commonNumbers >= 1);
+    (titleOverlap >= 0.60 && commonTopicWords >= 3) ||
+    (titleOverlap >= 0.35 && commonTopicWords >= 2 && (commonProper >= 1 || commonNumbers >= 1));
 
   return {
     hasMatchingEntities,
     titleOverlap,
-    commonTitleWords,
+    commonTopicWords,
     commonProper,
     commonNumbers,
   };
@@ -183,11 +191,9 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
 
   // 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
   if (embSim >= threshold) {
-    // Un scor semantic mare, singur, nu e suficient: același politician sau
-    // an poate apărea în știri diferite. Cerem o ancoră tematică în titlu.
-    const hasTopicAnchor = match.hasMatchingEntities ||
-      (match.titleOverlap >= 0.30 && match.commonTitleWords >= 2);
-    if (!hasTopicAnchor) {
+    // Un scor semantic mare nu e suficient dacă titlurile nu confirmă același
+    // subiect: știrile din aceeași zi/despre aceeași persoană pot avea embedding-uri apropiate.
+    if (!match.hasMatchingEntities) {
       return {
         isDuplicate: false,
         score: embSim * 0.75,
@@ -274,6 +280,8 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
     isDuplicate: best.isDuplicate,
     similarity: best.score,
     similarUrl: best.url,
+    similarityZone: best.zone || null,
+    similarityReason: best.reason || null,
     embedding: newEmbedding, // o salvam ca sa n-o mai calculam a doua oara
   };
 }

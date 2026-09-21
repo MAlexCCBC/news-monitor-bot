@@ -99,8 +99,13 @@ real e mai potrivit Railway/VPS, nu Actions.
 3. Verifică dacă data e azi
 4. Caută keywords (lista completă e în `.env`, o poți edita oricând)
 5. Calculează embedding cu Gemini pe **titlu + primul paragraf** și compară cu
-   istoricul recent; verificarea combină scorul semantic cu termenii tematici
-   din titlu, iar o posibilă repetare cere confirmare în chat.
+   istoricul recent; scorul semantic nu e suficient singur pentru a declara un
+   duplicat. Titlurile trebuie să confirme subiectul fie prin overlap puternic
+   (cel puțin 60% și trei termeni tematici comuni), fie prin overlap de cel
+   puțin 35%, doi termeni tematici comuni și o entitate/cifră specifică.
+   Anii calendaristici, numele singure și scorul semantic fără potrivire
+   tematică nu sunt dovezi suficiente. O posibilă repetare cere confirmare în
+   chat.
 6. Reformatează cu Gemini text (cascadă automată de modele dacă unul dă rate-limit sau timeout)
 7. Caută o imagine (Tavily -> Bing HTML -> Wikimedia Commons -> Wikipedia -> DuckDuckGo),
    verifică facial + anti-text cu AI, decupează la format portret 3:4 centrat pe față,
