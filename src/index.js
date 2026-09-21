@@ -57,6 +57,7 @@ import { findImage, processArticleImage } from "./image/search.js";
 import { saveNews, saveAiPost, getRecentNews, getRecentAiPosts, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
+import { createPollingErrorHandler } from "./telegram/polling-health.js";
 import { parseApprovalCallback } from "./telegram/approval-callback.js";
 
 const {
@@ -117,18 +118,7 @@ const notifyBot = new TelegramBot(NOTIFY_BOT_TOKEN, {
   polling: { autoStart: false, params: { timeout: 10, allowed_updates: ["message", "callback_query"] } },
 });
 const approvalExpiryTimers = new Map();
-let pollingConflictAlerted = false;
-notifyBot.on("polling_error", (err) => {
-  if (err?.message?.includes("ETELEGRAM: 409")) {
-    console.error("[notifyBot polling] Conflict 409: alt proces foloseste acelasi token sau webhook-ul este activ. Linkurile trimise botului nu pot fi primite pana nu ramane un singur poller.");
-    if (!pollingConflictAlerted && NOTIFY_CHAT_ID) {
-      pollingConflictAlerted = true;
-      notifyBot.sendMessage(NOTIFY_CHAT_ID, "⚠️ Nu pot asculta mesajele: Telegram raportează un poller/webhook concurent pentru bot. Oprește celelalte instanțe ale botului și repornește-l.").catch(() => {});
-    }
-    return;
-  }
-  console.warn("[notifyBot polling]", err.message);
-});
+notifyBot.on("polling_error", createPollingErrorHandler({ bot: notifyBot, chatId: NOTIFY_CHAT_ID }));
 
 function escapeHtml(str) {
   if (!str) return "";

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { createManualMessageHandler, extractBotMessageLink } from "../src/telegram/manual-links.js";
+import { createPollingErrorHandler } from "../src/telegram/polling-health.js";
 
 test("manual link extraction handles plain URLs with Telegram punctuation", () => {
   assert.equal(
@@ -82,4 +83,24 @@ test("authorized article links are acknowledged and processed with similarity by
   assert.match(sent[0][1], /Am primit linkul/);
   assert.deepEqual(processed, [["https://example.com/story", { bypassSimilarity: true }]]);
   assert.match(edits[0][0], /Gata/);
+});
+
+test("polling errors notify the configured chat once per error code without exposing raw details", async () => {
+  const sent = [];
+  const warnings = [];
+  const handler = createPollingErrorHandler({
+    bot: { sendMessage: async (...args) => sent.push(args) },
+    chatId: 42,
+    logger: { warn: (...args) => warnings.push(args) },
+  });
+  const error = { response: { body: { error_code: 409, description: "Conflict: terminated by other getUpdates request" } } };
+
+  handler(error);
+  handler(error);
+  await new Promise((resolve) => setImmediate(resolve));
+
+  assert.equal(warnings.length, 2);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0][1], /poller sau un webhook concurent/);
+  assert.doesNotMatch(sent[0][1], /token|terminated/);
 });
