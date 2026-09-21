@@ -611,11 +611,13 @@ async function main() {
       console.warn("[notifyBot] Webhook existent găsit; îl dezactivez păstrând update-urile în coadă, fiindcă acest proiect folosește long polling.");
       await notifyBot.deleteWebHook({ drop_pending_updates: false });
     }
+    // Reîncărcăm cererile din SQLite înainte să livrăm callback-urile aflate
+    // în coada Telegram; astfel un click nu poate concura cu recuperarea stării.
+    await restorePendingApprovalRequests({ recoverInterrupted: true });
     notifyBot.startPolling().catch((err) => {
       console.error("[notifyBot] Nu am putut porni long polling:", err.message);
     });
     console.log('[notifyBot] Long polling pornit pentru update-uri "message" și "callback_query".');
-    await restorePendingApprovalRequests({ recoverInterrupted: true });
     setInterval(() => {
       restorePendingApprovalRequests().catch((err) => console.error("[approval restore]", err));
     }, 60 * 1000);
