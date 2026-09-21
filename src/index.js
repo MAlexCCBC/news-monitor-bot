@@ -50,12 +50,12 @@ import TelegramBot from "node-telegram-bot-api";
 import { fetchArticle } from "./scraper/article.js";
 import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
 import { createArticleProcessingPolicy } from "./filter/processing-policy.js";
-import { checkSimilarity, checkSimilarityEmbedding, createNewsEmbedding } from "./similarity/embedding.js";
+import { checkSimilarity, checkSimilarityEmbedding, createArticleEmbedding, createNewsEmbedding } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage, processArticleImage } from "./image/search.js";
-import { saveNews, saveAiPost, getRecentNews, getAllAiPosts, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
+import { saveNews, saveNewsEmbedding, saveAiPost, getRecentNews, getAllAiPosts, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
 import { formatChannelAudit } from "./telegram/channel-audit.js";
@@ -243,9 +243,10 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
           const updated = checkSimilarityEmbedding(
             pending.simResult.embedding,
             pending.article.title || "",
-            (pending.article.content || "").slice(0, 300),
+            pending.article.content || "",
             history.filter((entry) => entry.url !== pending.url),
-            threshold
+            threshold,
+            { embeddingModel: pending.simResult.embeddingModel }
           );
           console.log(`[approval recheck] ${pending.url}: ${updated.isDuplicate ? "duplicate păstrat" : "fals pozitiv vechi eliberat"}${updated.similarUrl ? ` (${updated.similarityZone}, ${(updated.similarity * 100).toFixed(1)}% vs ${updated.similarUrl})` : ""}`);
           if (updated.isDuplicate) continue;
@@ -522,6 +523,8 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
     title: article.title,
     content: article.content,
     embedding: simResult?.embedding ?? null,
+    embeddingModel: simResult?.embeddingModel ?? null,
+    embeddingVersion: simResult?.embeddingVersion ?? null,
   });
   saveAiPost({ url, title: formattedPost.split(/\r?\n/, 1)[0] || article.title, content: formattedPost, embedding: aiEmbedding });
   console.log("[ok] Trimis pentru aprobare");
@@ -590,14 +593,15 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       }
     }
 
-    // 3. Verificare similaritate cu ultimele 72h pe amprenta concentrata (Titlu + Lead 300 caractere).
+    // 3. Verificare similaritate cu ultimele 72h folosind articolul complet.
     let simResult = null;
     if (policy.checkArticleSimilarity) {
       const recentNews = getRecentNews(historyHours);
-      // checkSimilarity separa titlul de lead folosind newline pentru
-      // arbitrajul pe titluri. Pastreaza delimitatorul in textul embed-uit.
-      const textToEmbed = `${article.title}\n${(article.content || "").slice(0, 300)}`;
-      simResult = await timedStage("article_similarity", () => checkSimilarity(textToEmbed, recentNews, threshold));
+      // Păstrăm separatorul ca să delimităm titlul de corpul integral în arbitraj.
+      const textToEmbed = `${article.title}\n${article.content || ""}`;
+      simResult = await timedStage("article_similarity", () => checkSimilarity(textToEmbed, recentNews, threshold, {
+        onReembed: saveNewsEmbedding,
+      }));
 
       if (simResult.isDuplicate) {
         console.log(
@@ -622,8 +626,8 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     } else {
       console.log("[pas] Sarim peste filtrul de similaritate");
       try {
-        const textToEmbed = `${article.title}\n${(article.content || "").slice(0, 300)}`;
-        simResult = { embedding: await createNewsEmbedding(textToEmbed) };
+        const articleEmbedding = await createArticleEmbedding(article.title, article.content || "");
+        simResult = articleEmbedding;
       } catch (err) {
         // Eșecul embeddingului nu trebuie să blocheze un link solicitat manual.
         console.warn(`[manual] Nu am putut salva embeddingul pentru viitoarele comparații: ${err.message}`);

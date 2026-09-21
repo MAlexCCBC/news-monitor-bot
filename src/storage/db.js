@@ -16,6 +16,8 @@ db.exec(`
     title TEXT,
     content TEXT,
     embedding TEXT, -- JSON array, stocat ca text
+    embedding_model TEXT,
+    embedding_version TEXT,
     created_at INTEGER NOT NULL -- unix timestamp
   );
 
@@ -30,6 +32,10 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_image_created ON image_history(created_at);
 `);
 
+const newsCols = db.prepare(`PRAGMA table_info(news_history)`).all().map((column) => column.name);
+if (!newsCols.includes("embedding_model")) db.exec(`ALTER TABLE news_history ADD COLUMN embedding_model TEXT`);
+if (!newsCols.includes("embedding_version")) db.exec(`ALTER TABLE news_history ADD COLUMN embedding_version TEXT`);
+
 // Migrare: adaugam coloanele de utilizare a imaginilor la baza existenta
 // (used_count = de cate ori a fost folosita imaginea, last_used = ultima folosire).
 const imgCols = db.prepare(`PRAGMA table_info(image_history)`).all().map((c) => c.name);
@@ -41,25 +47,35 @@ if (!imgCols.includes("last_used")) {
 }
 db.exec(`UPDATE image_history SET last_used = created_at WHERE last_used IS NULL`);
 
-export function saveNews({ url, title, content, embedding }) {
+export function saveNews({ url, title, content, embedding, embeddingModel = null, embeddingVersion = null }) {
   const stmt = db.prepare(`
-    INSERT OR IGNORE INTO news_history (url, title, content, embedding, created_at)
-    VALUES (?, ?, ?, ?, ?)
+    INSERT OR IGNORE INTO news_history (url, title, content, embedding, embedding_model, embedding_version, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
-  stmt.run(url, title, content, JSON.stringify(embedding), Date.now());
+  stmt.run(url, title, content, JSON.stringify(embedding), embeddingModel, embeddingVersion, Date.now());
+}
+
+export function saveNewsEmbedding({ url, embedding, embeddingModel, embeddingVersion }) {
+  db.prepare(`
+    UPDATE news_history
+    SET embedding = ?, embedding_model = ?, embedding_version = ?
+    WHERE url = ?
+  `).run(JSON.stringify(embedding), embeddingModel, embeddingVersion, url);
 }
 
 export function getRecentNews(hoursBack) {
   const cutoff = Date.now() - hoursBack * 60 * 60 * 1000;
   const stmt = db.prepare(`
-    SELECT url, title, content, embedding, created_at
+    SELECT url, title, content, embedding, embedding_model, embedding_version, created_at
     FROM news_history
     WHERE created_at >= ?
     ORDER BY created_at DESC
   `);
   return stmt.all(cutoff).map((row) => ({
     ...row,
-    embedding: JSON.parse(row.embedding),
+    embedding: row.embedding ? JSON.parse(row.embedding) : null,
+    embeddingModel: row.embedding_model,
+    embeddingVersion: row.embedding_version,
   }));
 }
 

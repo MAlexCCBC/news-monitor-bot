@@ -8,6 +8,8 @@ const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 // Modele de embedding: gemini-embedding-001 este stabil cu vectori de 768 dimensiuni.
 // gemini-embedding-2 este fallback cu outputDimensionality setat.
 const EMBEDDING_MODELS = ["gemini-embedding-001", "gemini-embedding-2"];
+const ARTICLE_EMBEDDING_VERSION_PREFIX = "article-full-v1:";
+const ARTICLE_CHUNK_CHARS = 1800;
 
 async function getEmbedding(text) {
   let lastError;
@@ -43,6 +45,94 @@ async function getEmbedding(text) {
 // fără a rula sau aplica un verdict de similaritate în procesarea curentă.
 export async function createNewsEmbedding(text) {
   return getEmbedding(text);
+}
+
+export function splitArticleContent(content, maxChars = ARTICLE_CHUNK_CHARS) {
+  const text = String(content || "");
+  if (!text.trim()) return [""];
+  const chunks = [];
+  let start = 0;
+  while (start < text.length) {
+    let end = Math.min(start + maxChars, text.length);
+    if (end < text.length) {
+      const boundary = text.lastIndexOf(" ", end);
+      if (boundary > start + Math.floor(maxChars * 0.6)) end = boundary;
+    }
+    chunks.push(text.slice(start, end).trim());
+    start = end;
+    while (text[start] === " ") start++;
+  }
+  return chunks.filter(Boolean);
+}
+
+async function embedArticleChunks(chunks, preferredModel) {
+  let lastError;
+  const models = preferredModel
+    ? [preferredModel, ...EMBEDDING_MODELS.filter((model) => model !== preferredModel)]
+    : EMBEDDING_MODELS;
+  for (const model of models) {
+    try {
+      const response = await axios.post(
+        `https://generativelanguage.googleapis.com/v1beta/models/${model}:batchEmbedContents`,
+        {
+          requests: chunks.map((text) => ({
+            model: `models/${model}`,
+            content: { parts: [{ text }] },
+            outputDimensionality: 768,
+          })),
+        },
+        {
+          timeout: 30000,
+          headers: {
+            "x-goog-api-key": GEMINI_KEY(),
+            "Content-Type": "application/json",
+          },
+        }
+      );
+      return { embeddings: response.data.embeddings.map((item) => item.values), model };
+    } catch (err) {
+      lastError = err;
+      console.warn(`[embedding] Batch ${model} a esuat (status ${err.response?.status}: ${err.response?.data?.error?.message || err.message}), incerc urmatorul model...`);
+    }
+  }
+  throw new Error(`Toate modelele de embedding au esuat: ${lastError?.message}`);
+}
+
+function averageEmbeddings(embeddings) {
+  const valid = embeddings.filter((embedding) => Array.isArray(embedding) && embedding.length);
+  if (!valid.length) return [];
+  const length = valid[0].length;
+  const average = Array(length).fill(0);
+  for (const embedding of valid) {
+    for (let index = 0; index < length; index++) average[index] += embedding[index] / valid.length;
+  }
+  return average;
+}
+
+// Un embedding unic pentru articolul complet: Gemini primește fragmente sub
+// limita de tokeni, într-un singur batch, iar vectorii sunt agregați într-o
+// amprentă comparabilă. Repetăm titlul în fiecare fragment pentru context.
+async function embedArticles(articles, preferredModel) {
+  const articleInputs = articles.map(({ title, content }) => {
+    const chunks = splitArticleContent(content);
+    return chunks.map((chunk, index) =>
+      `Titlu: ${title || ""}\nFragment ${index + 1}/${chunks.length}: ${chunk}`
+    );
+  });
+  const flatInputs = articleInputs.flat();
+  const { embeddings, model } = await embedArticleChunks(flatInputs, preferredModel);
+  let offset = 0;
+  const results = articleInputs.map((inputs) => {
+    const vector = averageEmbeddings(embeddings.slice(offset, offset + inputs.length));
+    offset += inputs.length;
+    return vector;
+  });
+  return { embeddings: results, model, version: `${ARTICLE_EMBEDDING_VERSION_PREFIX}${model}` };
+}
+
+export async function createArticleEmbedding(title, content) {
+  const result = await embedArticles([{ title, content }]);
+  return { embedding: result.embeddings[0], embeddingModel: result.model, embeddingVersion: result.version };
 }
 
 function cosineSimilarity(a, b) {
@@ -181,7 +271,7 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
 /**
  * Arhitectura pe 3 Zone de Decizie:
  * 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
- * 2. ZONA GRI (Score in [0.74, 0.79]) -> Arbitraj pe entitati si cuvinte cheie din titlu/lead
+ * 2. ZONA GRI (Score in [0.74, 0.79]) -> Arbitraj pe entitati si cuvinte-cheie din titlu/articol
  *    Daca exista entitati / subiecte comune -> scorul urca la 0.82 (duplicat)
  *    Daca titlurile si actiunile sunt complet diferite -> permis direct ca stire noua
  * 3. ZONA ALBA (Score < 0.74) -> Stire noua / permis direct
@@ -255,13 +345,15 @@ export function selectSimilarityCandidate(candidates) {
 // Reutilizăm un embedding salvat pentru verificări de restituire/migrare fără
 // apel Gemini suplimentar. `recentNewsWithEmbeddings` trebuie să excludă deja
 // articolul candidat, dacă acesta a fost salvat între timp.
-export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recentNewsWithEmbeddings, threshold = 0.80) {
+export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recentNewsWithEmbeddings, threshold = 0.80, { embeddingModel } = {}) {
   const candidates = [];
   for (const item of recentNewsWithEmbeddings) {
     if (!item.embedding || item.embedding.length === 0) continue;
-    // Comparam Lead-to-Lead (primele 300 de caractere din stirea veche, nu tot corpul de 3000)
+    if (embeddingModel && item.embeddingModel !== embeddingModel) continue;
+    // Ancora tematică folosește articolul vechi complet; embeddings-urile sunt
+    // create din toate fragmentele și agregate în vectorul salvat.
     const titleOld = item.title || "";
-    const leadOld = (item.content || "").slice(0, 300);
+    const leadOld = item.content || "";
 
     const rawSim = cosineSimilarity(newEmbedding, item.embedding);
     const evalRes = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, titleOld, leadOld, threshold);
@@ -277,13 +369,57 @@ export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recent
     similarityZone: best.zone || null,
     similarityReason: best.reason || null,
     embedding: newEmbedding, // o salvam ca sa n-o mai calculam a doua oara
+    embeddingModel,
   };
 }
 
-// Verifica daca articolul nou e duplicat (amprenta concentrata Titlu + Lead pe 3 zone)
-export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80) {
-  const newEmbedding = await getEmbedding(newText);
+// Verifica dacă articolul nou e duplicat pe baza amprentelor întregului articol.
+export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80, { onReembed } = {}) {
   const [titleNew = "", ...leadParts] = newText.split("\n");
-  const leadNew = leadParts.join(" ");
-  return checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recentNewsWithEmbeddings, threshold);
+  const leadNew = leadParts.join("\n");
+  const titleAnchoredItems = recentNewsWithEmbeddings.filter((item) =>
+    checkKeyEntitiesMatch(titleNew, leadNew, item.title || "", item.content || "").hasMatchingEntities
+  );
+  const staleItems = titleAnchoredItems.filter((item) => item.embeddingVersion !== `${ARTICLE_EMBEDDING_VERSION_PREFIX}gemini-embedding-001`);
+  const documents = [{ title: titleNew, content: leadNew }, ...staleItems.map((item) => ({ title: item.title, content: item.content }))];
+  const embedded = await embedArticles(documents);
+  const newEmbedding = embedded.embeddings[0];
+  const staleByUrl = new Map(staleItems.map((item, index) => [item.url, embedded.embeddings[index + 1]]));
+  const reembeddedNews = [];
+
+  // If the primary model had to fall back, refresh every title-anchored stored
+  // vector in that same space before comparing; Gemini embedding spaces differ.
+  const needsFallbackRefresh = embedded.model !== "gemini-embedding-001"
+    ? titleAnchoredItems.filter((item) => item.embeddingVersion !== embedded.version && !staleByUrl.has(item.url))
+    : [];
+  if (needsFallbackRefresh.length) {
+    const refreshed = await embedArticles(
+      needsFallbackRefresh.map((item) => ({ title: item.title, content: item.content })),
+      embedded.model
+    );
+    if (refreshed.model === embedded.model) {
+      needsFallbackRefresh.forEach((item, index) => staleByUrl.set(item.url, refreshed.embeddings[index]));
+    }
+  }
+
+  const candidates = titleAnchoredItems.map((item) => {
+    const embedding = staleByUrl.get(item.url)
+      || (item.embeddingVersion === embedded.version ? item.embedding : null);
+    if (staleByUrl.has(item.url)) {
+      const updated = { url: item.url, embedding, embeddingModel: embedded.model, embeddingVersion: embedded.version };
+      reembeddedNews.push(updated);
+      onReembed?.(updated);
+    }
+    const rawSim = cosineSimilarity(newEmbedding, embedding);
+    const result = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, item.title || "", item.content || "", threshold);
+    return { ...result, url: item.url };
+  });
+  const best = selectSimilarityCandidate(candidates);
+  return {
+    ...best,
+    embedding: newEmbedding,
+    embeddingModel: embedded.model,
+    embeddingVersion: embedded.version,
+    reembeddedNews,
+  };
 }
