@@ -252,17 +252,11 @@ export function selectSimilarityCandidate(candidates) {
   return bestDuplicate || bestOverall || { isDuplicate: false, score: 0, url: null };
 }
 
-// Verifica daca articolul nou e duplicat (amprenta concentrata Titlu + Lead pe 3 zone)
-export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80) {
-  const newEmbedding = await getEmbedding(newText);
-
+// Reutilizăm un embedding salvat pentru verificări de restituire/migrare fără
+// apel Gemini suplimentar. `recentNewsWithEmbeddings` trebuie să excludă deja
+// articolul candidat, dacă acesta a fost salvat între timp.
+export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recentNewsWithEmbeddings, threshold = 0.80) {
   const candidates = [];
-
-  // Extragem titlul si lead-ul din textul nou
-  const partsNew = newText.split("\n");
-  const titleNew = partsNew[0] || "";
-  const leadNew = partsNew.slice(1).join(" ") || "";
-
   for (const item of recentNewsWithEmbeddings) {
     if (!item.embedding || item.embedding.length === 0) continue;
     // Comparam Lead-to-Lead (primele 300 de caractere din stirea veche, nu tot corpul de 3000)
@@ -284,4 +278,12 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
     similarityReason: best.reason || null,
     embedding: newEmbedding, // o salvam ca sa n-o mai calculam a doua oara
   };
+}
+
+// Verifica daca articolul nou e duplicat (amprenta concentrata Titlu + Lead pe 3 zone)
+export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80) {
+  const newEmbedding = await getEmbedding(newText);
+  const [titleNew = "", ...leadParts] = newText.split("\n");
+  const leadNew = leadParts.join(" ");
+  return checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recentNewsWithEmbeddings, threshold);
 }

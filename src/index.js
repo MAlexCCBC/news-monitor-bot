@@ -49,7 +49,7 @@ import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
 import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
-import { checkSimilarity, createNewsEmbedding } from "./similarity/embedding.js";
+import { checkSimilarity, checkSimilarityEmbedding, createNewsEmbedding } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
@@ -218,6 +218,81 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
     if (recoverInterrupted) {
       pendingApprovals.recoverInterrupted();
       await persistPendingApprovals();
+    }
+    const pendingItems = pendingApprovals.listPending();
+    // Cererile create de vechiul prag permisiv nu trebuie să rămână blocate
+    // după deploy. Revalidăm doar la boot, cu embeddingul deja salvat, fără API.
+    if (recoverInterrupted) {
+      const articleApprovals = pendingItems.filter((item) => item.kind === "article" && item.simResult?.embedding?.length);
+      if (articleApprovals.length) {
+        const history = getRecentNews(historyHours * 2);
+        for (const pending of articleApprovals) {
+          const updated = checkSimilarityEmbedding(
+            pending.simResult.embedding,
+            pending.article.title || "",
+            (pending.article.content || "").slice(0, 300),
+            history.filter((entry) => entry.url !== pending.url),
+            threshold
+          );
+          console.log(`[approval recheck] ${pending.url}: ${updated.isDuplicate ? "duplicate păstrat" : "fals pozitiv vechi eliberat"}${updated.similarUrl ? ` (${updated.similarityZone}, ${(updated.similarity * 100).toFixed(1)}% vs ${updated.similarUrl})` : ""}`);
+          if (updated.isDuplicate) continue;
+          if (isUrlSeen(pending.url)) {
+            pendingApprovals.setState(pending.id, "done");
+            if (pending.message_id) {
+              await notifyBot.editMessageText(
+                `ℹ️ <b>Știrea fusese deja procesată; cererea veche a fost închisă.</b>\n\n<b>Titlu:</b> ${escapeHtml(pending.article.title)}\n<b>Sursă:</b> ${escapeHtml(pending.url)}`,
+                { chat_id: NOTIFY_CHAT_ID, message_id: pending.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
+              ).catch(() => {});
+            }
+            await persistPendingApprovals();
+            continue;
+          }
+
+          const item = pendingApprovals.claim(pending.id);
+          if (!item) continue;
+          const timer = approvalExpiryTimers.get(item.id);
+          if (timer) clearTimeout(timer);
+          approvalExpiryTimers.delete(item.id);
+          await persistPendingApprovals();
+          if (item.message_id) {
+            try {
+              await notifyBot.editMessageText(
+                `🔄 <b>Reverificată cu regulile noi de similaritate; știrea a fost eliberată pentru procesare.</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
+                { chat_id: NOTIFY_CHAT_ID, message_id: item.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
+              );
+            } catch (err) { console.warn("[approval recheck] Nu am putut actualiza mesajul vechi:", err.message); }
+          }
+          enqueueProcess(async () => {
+            try {
+              const result = await finalizeAndSendArticle(item.article, item.url, item.simResult, item.matchedKeywords);
+              pendingApprovals.setState(item.id, "done");
+              await persistPendingApprovals();
+              if (item.message_id) {
+                const status = result?.status === "pending"
+                  ? "Textul AI similar a fost pus într-o cerere separată de aprobare."
+                  : "Știre procesată și trimisă cu succes!";
+                await notifyBot.editMessageText(
+                  `✅ <b>${status}</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
+                  { chat_id: NOTIFY_CHAT_ID, message_id: item.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
+                ).catch(() => {});
+              }
+            } catch (err) {
+              console.error(`[approval recheck] Procesarea articolului ${item.url} a eșuat:`, err);
+              pendingApprovals.setState(item.id, "pending");
+              const retryItem = pendingApprovals.get(item.id);
+              scheduleApprovalExpiry(retryItem);
+              await persistPendingApprovals();
+              await notify(`❌ Eroare la reprocesarea știrii eliberate:\n${item.url}\n${err.message}`).catch(() => {});
+              if (item.message_id) {
+                await notifyBot.editMessageText(
+                  `❌ <b>Reverificarea a eliberat știrea, dar procesarea a eșuat; poți încerca din nou.</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
+                  { chat_id: NOTIFY_CHAT_ID, message_id: item.message_id, parse_mode: "HTML", reply_markup: approvalMarkup(item.id) }
+                ).catch(() => {});
+              }
+            }
+          });
+        }
+      }
     }
     for (const item of pendingApprovals.listPending()) {
       scheduleApprovalExpiry(item);
