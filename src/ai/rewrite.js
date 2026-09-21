@@ -1,5 +1,5 @@
 import axios from "axios";
-import { filterModels } from "./models.js";
+import { filterModels, recordModelFailure } from "./models.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
@@ -108,6 +108,7 @@ export async function rewriteArticle(articleText) {
     } catch (err) {
       lastError = err;
       const status = err.response?.status;
+      recordModelFailure(model, err);
       const isTimeout = err.code === "ECONNABORTED" || /timeout/i.test(err.message);
       if (isTimeout) {
         console.warn(`[ai] ${model} a dat timeout (>60s), incerc urmatorul model...`);

@@ -13,6 +13,43 @@ const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 let cachedModels = null;
 let cachedAt = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000;
+const modelCooldowns = new Map();
+
+function retryAfterMs(err, now) {
+  const headers = err.response?.headers;
+  const header = headers?.get?.("retry-after") ?? headers?.["retry-after"];
+  if (header) {
+    const seconds = Number(header);
+    if (Number.isFinite(seconds) && seconds >= 0) return seconds * 1000;
+    const date = Date.parse(header);
+    if (Number.isFinite(date)) return Math.max(0, date - now);
+  }
+
+  const details = err.response?.data?.error?.details || [];
+  const retryInfo = details.find((detail) => String(detail["@type"] || "").endsWith("google.rpc.RetryInfo"));
+  const delay = retryInfo?.retryDelay || details.find((detail) => detail.retryDelay)?.retryDelay;
+  const match = typeof delay === "string" && delay.match(/^(\d+(?:\.\d+)?)s$/);
+  return match ? Number(match[1]) * 1000 : null;
+}
+
+// Rate limits and service outages are model-specific. Cache them across all
+// Gemini call sites so the next article/candidate won't repeat the same 429.
+export function recordModelFailure(model, err, now = Date.now()) {
+  const status = err?.response?.status;
+  if (status !== 429 && status !== 503) return false;
+  const serverDelay = retryAfterMs(err, now);
+  const defaultDelay = status === 429 ? 15 * 60 * 1000 : 60 * 1000;
+  const delay = serverDelay ?? defaultDelay;
+  modelCooldowns.set(model, Math.max(modelCooldowns.get(model) || 0, now + delay));
+  console.warn(`[models] ${model} în cooldown ${Math.ceil(delay / 1000)}s după HTTP ${status}`);
+  return true;
+}
+
+export function filterCoolingModels(models, now = Date.now()) {
+  const available = models.filter((model) => (modelCooldowns.get(model) || 0) <= now);
+  if (available.length) return available;
+  return [...models].sort((a, b) => (modelCooldowns.get(a) || 0) - (modelCooldowns.get(b) || 0)).slice(0, 1);
+}
 
 export async function listAvailableModels() {
   const now = Date.now();
@@ -44,8 +81,12 @@ export async function listAvailableModels() {
 // Daca ListModels nu e disponibil, cascada originala ramane neatinsa.
 export async function filterModels(preferred) {
   const available = await listAvailableModels();
-  if (!available) return preferred;
-  const filtered = preferred.filter((m) => available.includes(m));
-  if (filtered.length === 0) return preferred; // nu arunca toata cascada
+  const supported = available ? preferred.filter((m) => available.includes(m)) : preferred;
+  // Dacă endpointul de listare nu conține niciun nume preferat, păstrăm
+  // comportamentul fail-open. Cooldown-ul nu trebuie să golească cascada.
+  const configured = supported.length ? supported : preferred;
+  const filtered = filterCoolingModels(configured);
+  const skipped = configured.length - filtered.length;
+  if (skipped > 0) console.log(`[models] Sărim temporar peste ${skipped} model(e) în cooldown; folosim ${filtered.join(", ")}`);
   return filtered;
 }

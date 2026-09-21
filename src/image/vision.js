@@ -1,6 +1,6 @@
 import axios from "axios";
 import sharp from "sharp";
-import { filterModels } from "../ai/models.js";
+import { filterModels, recordModelFailure } from "../ai/models.js";
 
 // Analiza faciala prin Gemini Vision (multimodal). Folosim Gemini ca motor de:
 //  1. detectie fata -> bounding box pentru crop centrat corect;
@@ -37,8 +37,6 @@ export async function toInlineJpeg(buffer, maxSize = 512) {
   return { mimeType: "image/jpeg", data: jpeg.toString("base64") };
 }
 
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
 async function geminiVision(parts) {
   const models = await filterModels(VISION_MODELS);
   let lastError;
@@ -60,10 +58,8 @@ async function geminiVision(parts) {
       return text;
     } catch (err) {
       lastError = err;
+      recordModelFailure(model, err);
       console.warn(`[vision] ${model} a esuat (${err.response?.status || err.message})`);
-      // La 429 (rate limit) asteptam putin inainte sa trecem la urmatorul
-      // model - limitele se pot reseta rapid si salvam un apel din cascada.
-      if (err.response?.status === 429) await sleep(2000);
       continue;
     }
   }

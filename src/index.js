@@ -151,6 +151,15 @@ async function notifyWithImage(caption, imageBuffer) {
   await notifyBot.sendPhoto(NOTIFY_CHAT_ID, imageBuffer, { caption }, { filename: "imagine.jpg" });
 }
 
+async function timedStage(name, operation) {
+  const startedAt = Date.now();
+  try {
+    return await operation();
+  } finally {
+    console.log(`[timing] ${name}=${Date.now() - startedAt}ms`);
+  }
+}
+
 function approvalMarkup(id) {
   return { inline_keyboard: [[
     { text: "✅ Procesează știrea", callback_data: `proc_${id}` },
@@ -422,14 +431,14 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
   let formattedPost = approval.approvedPost;
   let aiEmbedding = approval.aiEmbedding;
   if (!formattedPost) {
-    const rewritten = await rewriteArticle(article.fullTextForKeywordCheck);
+    const rewritten = await timedStage("rewrite", () => rewriteArticle(article.fullTextForKeywordCheck));
     formattedPost = rewritten.text;
     // Comparația AI este separată de compararea link-urilor și nu are limită
     // de vechime: numai postări redactate/aprobate anterior prin AI intră aici.
     const previousTexts = approval.bypassAiSimilarity ? [] : getAllAiPosts();
     const aiSimilarity = approval.bypassAiSimilarity
       ? null
-      : await checkSimilarity(formattedPost, previousTexts, threshold);
+      : await timedStage("ai_text_similarity", () => checkSimilarity(formattedPost, previousTexts, threshold));
     if (approval.bypassAiSimilarity) {
       try {
         aiEmbedding = await createNewsEmbedding(formattedPost);
@@ -458,11 +467,11 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
 
   // 6. Sistemul inteligent de imagini. Vorbitorul se determina AI-PRIMAR
   const regexSpeaker = detectSpeaker(article.title, matchedKeywords);
-  const aiSpeaker = await extractSpeakerFromArticle(
+  const aiSpeaker = await timedStage("speaker", () => extractSpeakerFromArticle(
     article.title,
     (article.content || "").slice(0, 1500),
     [regexSpeaker, ...matchedKeywords].filter(Boolean).join(", ")
-  );
+  ));
   const speaker = isPlausiblePersonName(aiSpeaker)
     ? aiSpeaker
     : isPlausiblePersonName(regexSpeaker)
@@ -473,7 +482,7 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
   let imageResult = null;
   if (speaker) {
     try {
-      imageResult = await findImage(speaker, article.title);
+      imageResult = await timedStage("image_search", () => findImage(speaker, article.title));
     } catch (e) {
       console.warn("[image] findImage esuat:", e.message);
     }
@@ -483,7 +492,7 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
 
   if (!imageResult && article.imageUrl) {
     try {
-      imageResult = await processArticleImage(article.imageUrl);
+      imageResult = await timedStage("article_image", () => processArticleImage(article.imageUrl));
       console.log("[image] Fallback: imaginea articolului " + article.imageUrl);
     } catch {}
   }
@@ -492,13 +501,17 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
   const cleanPost = formattedPost.replace(/\*\*/g, "").trim();
 
   if (imageResult) {
-    await notifyWithImage(url, imageResult.buffer);
-    if (cleanPost) await notifyPlain(cleanPost);
+    await timedStage("telegram_delivery", async () => {
+      await notifyWithImage(url, imageResult.buffer);
+      if (cleanPost) await notifyPlain(cleanPost);
+    });
   } else {
-    if (cleanPost) await notifyPlain(cleanPost);
-    await notifyPlain(
-      `Sursa: ${url}\n\n⚠️ Nu am gasit imagine noua automat, cauta manual pentru: ${speaker || "eveniment"}`
-    );
+    await timedStage("telegram_delivery", async () => {
+      if (cleanPost) await notifyPlain(cleanPost);
+      await notifyPlain(
+        `Sursa: ${url}\n\n⚠️ Nu am gasit imagine noua automat, cauta manual pentru: ${speaker || "eveniment"}`
+      );
+    });
   }
 
   // Salvăm numai după livrarea reușită; articolele în așteptarea aprobării AI
@@ -515,6 +528,7 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
 }
 
 async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity = false, forceManual = false } = {}) {
+  const articleStartedAt = Date.now();
   try {
     if (!forceManual && isUrlSeen(url)) {
       console.log(`[skip] URL deja procesat: ${url}`);
@@ -523,7 +537,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     if (forceManual && isUrlSeen(url)) console.log(`[manual] Retrimitere forțată a URL-ului deja procesat: ${url}`);
 
     console.log(`[procesare] ${url}`);
-    const article = await fetchArticle(url);
+    const article = await timedStage("scrape", () => fetchArticle(url));
 
     if (!article.content || article.content.length < 100) {
       console.log(
@@ -556,10 +570,10 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
 
     // 2b. Filtru stiri straine (DINAMIC, cu AI)
     if (!bypassFilters && !hasStrongRomanianContext(essentialText, romanianPersonalities)) {
-      const relevant = await isRelevantToRomania(
+      const relevant = await timedStage("relevance", () => isRelevantToRomania(
         article.title,
         (article.content || "").slice(0, 1500)
-      );
+      ));
       const foreign =
         relevant === null
           ? isForeignOnly(essentialText, romanianPersonalities)
@@ -577,7 +591,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       // checkSimilarity separa titlul de lead folosind newline pentru
       // arbitrajul pe titluri. Pastreaza delimitatorul in textul embed-uit.
       const textToEmbed = `${article.title}\n${(article.content || "").slice(0, 300)}`;
-      simResult = await checkSimilarity(textToEmbed, recentNews, threshold);
+      simResult = await timedStage("article_similarity", () => checkSimilarity(textToEmbed, recentNews, threshold));
 
       if (simResult.isDuplicate) {
         console.log(
@@ -616,6 +630,8 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     console.error(`[eroare] la procesarea ${url}:`, err.message);
     await notify(`❌ Eroare la procesarea unui articol:\n${url}\n${err.message}`).catch(() => {});
     return { status: "error", reason: err.message };
+  } finally {
+    console.log(`[timing] article_total=${Date.now() - articleStartedAt}ms url=${url}`);
   }
 }
 

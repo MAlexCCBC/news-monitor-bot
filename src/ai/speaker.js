@@ -1,5 +1,5 @@
 import axios from "axios";
-import { filterModels } from "./models.js";
+import { filterModels, recordModelFailure } from "./models.js";
 
 // Extrage DINAMIC numele persoanei care declara, CITIND articolul (titlu +
 // fragment). Nu depinde de liste predefinite si NU intoarce institutii sau
@@ -14,10 +14,10 @@ const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 // flash-urilor (20/zi) - asa pastram cota modelelor bune pentru rescriere si
 // verificarea faciala. Aliasul -latest si Gemma 4 = rezerve.
 const SPEAKER_MODELS = [
-  "gemini-3.8-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
   "gemini-flash-lite-latest",
+  "gemini-3.8-flash",
   "gemini-3.7-flash",
   "gemma-4-31b-it",
 ];
@@ -111,6 +111,7 @@ export async function extractSpeakerFromArticle(title, excerpt, keywordHint = ""
       console.log(`[speaker] ${model}: persoana care declara -> ${answer}`);
       return answer;
     } catch (err) {
+      recordModelFailure(model, err);
       console.warn(`[speaker] ${model} a esuat (${err.response?.status || err.message})`);
       continue;
     }
