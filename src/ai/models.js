@@ -32,11 +32,11 @@ function retryAfterMs(err, now) {
   return match ? Number(match[1]) * 1000 : null;
 }
 
-// Rate limits and service outages are model-specific. Cache them across all
-// Gemini call sites so the next article/candidate won't repeat the same 429.
+// Rate limits and transient service outages are model-specific. Cache them
+// across all Gemini call sites so the next article won't repeat the same error.
 export function recordModelFailure(model, err, now = Date.now()) {
   const status = err?.response?.status;
-  if (status !== 429 && status !== 503) return false;
+  if (status !== 429 && status !== 500 && status !== 503) return false;
   const serverDelay = retryAfterMs(err, now);
   const defaultDelay = status === 429 ? 15 * 60 * 1000 : 60 * 1000;
   const delay = serverDelay ?? defaultDelay;

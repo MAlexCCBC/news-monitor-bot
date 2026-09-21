@@ -9,22 +9,22 @@ import { filterModels, recordModelFailure } from "../ai/models.js";
 // dupa importurile modulelor).
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
-// Modele vision, de la CEL MAI BUN la cel mai slab. 3.7 flash primul: la
-// comparat fețe calitatea modelului e critica (modelele slabe resping portrete
-// corecte). Apoi lite-urile - au 500 cereri/zi fata de 20 pe flash-uri, deci
-// preiau volumul fara sa moara de 429. gemini-flash-latest = alias mereu
+// Modele vision, de la CEL MAI BUN la cel mai slab. 3.7 flash primul la
+// comparat fețe; păstrăm 3.8 prioritar la rescriere, ca să nu consumăm cota sa
+// mică și pe analizele repetate de imagini. Lite-urile preiau volumul zilnic.
+// gemini-flash-latest = alias mereu
 // actual, Gemma 4 = ultima linie (14.4K/zi). Modelele care dau 404 (3-flash,
 // 2.5-*) sunt scoase; filterModels le exclude oricum dinamic.
 const VISION_MODELS = [
-  "gemini-3.8-flash",
   "gemini-3.7-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
+  "gemini-3.8-flash",
+  "gemma-4-31b-it",
+  "gemma-4-26b-a4b-it",
   "gemini-3.6-flash",
   "gemini-3.5-flash",
   "gemini-flash-latest",
-  "gemma-4-31b-it",
-  "gemma-4-26b-a4b-it",
 ];
 
 // Pregatim imaginea pt. Gemini: JPEG mic (512px max), calitate 80 - requesturi

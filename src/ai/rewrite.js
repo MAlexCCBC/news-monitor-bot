@@ -6,22 +6,23 @@ import { filterModels, recordModelFailure } from "./models.js";
 // nivel de modul GEMINI_API_KEY ar fi inca undefined.
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
-// Cascada de fallback, de la CEL MAI BUN model la cel mai slab. 3.7 flash e
-// varful; lite-urile au cele mai mari cote zilnice (500/zi) deci preiau volumul
-// dupa ce flash-urile (20/zi) se epuizeaza. gemini-flash-latest e alias care
+// Cascada începe cu modelele premium cerute; apoi trece la lite-uri cu cote
+// zilnice mari înaintea modelelor Flash care au deja limite mici/epuizate.
+// gemini-flash-latest e alias care
 // indica mereu cel mai nou flash - plasă de siguranță dacă o versiune dispare.
 // Modelele care dau 404 pe acest cont (gemini-3-flash, 2.5-flash, 2.5-lite)
 // sunt scoase; filterModels le exclude oricum dinamic, la pornire.
 const TEXT_MODELS = [
   "gemini-3.8-flash",
   "gemini-3.7-flash",
-  "gemini-3.6-flash",
-  "gemini-3.5-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
-  "gemini-flash-latest",
   "gemma-4-31b-it",
   "gemma-4-26b-a4b-it",
+  "gemini-3.6-flash",
+  "gemini-3.5-flash",
+  "gemini-flash-lite-latest",
+  "gemini-flash-latest",
 ];
 
 const PROMPT_TEMPLATE = (articleText) => `
