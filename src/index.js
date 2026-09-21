@@ -57,6 +57,7 @@ import { findImage, processArticleImage } from "./image/search.js";
 import { saveNews, saveAiPost, getRecentNews, getAllAiPosts, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
+import { formatChannelAudit } from "./telegram/channel-audit.js";
 import { createPollingErrorHandler } from "./telegram/polling-health.js";
 import { answerCallbackSafely, parseApprovalCallback } from "./telegram/approval-callback.js";
 import { formatApprovalText } from "./telegram/approval-messages.js";
@@ -621,19 +622,46 @@ async function main() {
     const chat = await message.getChat();
     const chatUsername = chat?.username?.toLowerCase();
 
-    console.log(`[mesaj primit] de la: ${chatUsername || "(fara username)"}`);
+    const preview = (message.message || "").split(/\r?\n/, 1)[0].trim();
+    const link = extractLink(message);
+    console.log(formatChannelAudit({ channel: chatUsername, messageId: message.id, title: preview, url: link, status: "received" }));
 
     if (!chatUsername || !channelsList.includes(chatUsername)) {
-      if (chatUsername) console.log(`[skip] "${chatUsername}" nu e in lista CHANNELS: [${channelsList.join(", ")}]`);
+      console.log(formatChannelAudit({
+        channel: chatUsername,
+        messageId: message.id,
+        title: preview,
+        url: link,
+        status: "ignored",
+        reason: !chatUsername
+          ? "Canalul nu are username public; nu poate fi potrivit cu CHANNELS."
+          : "Canalul nu este în lista CHANNELS configurată.",
+      }));
       return;
     }
 
-    const link = extractLink(message);
-    if (!link) return; // mesaj fara link, il ignoram (nu e stire)
+    if (!link) {
+      console.log(formatChannelAudit({
+        channel: chatUsername,
+        messageId: message.id,
+        title: preview,
+        status: "ignored",
+        reason: "Postarea nu conține un link HTTP(S) detectabil.",
+      }));
+      return;
+    }
 
     const bypassFilters = bypassChannels.includes(chatUsername);
     if (bypassFilters) console.log(`[bypass] Canalul ${chatUsername} ocoleste filtrele (similaritate, keywords, straine)`);
-    await enqueueProcess(() => processArticleUrl(link, { bypassFilters }));
+    const result = await enqueueProcess(() => processArticleUrl(link, { bypassFilters }));
+    console.log(formatChannelAudit({
+      channel: chatUsername,
+      messageId: message.id,
+      title: preview,
+      url: link,
+      status: result?.status || "unknown",
+      reason: result?.reason || null,
+    }));
   }, new NewMessage({}));
 
   console.log(`👀 Monitorizez canalele: ${channelsList.join(", ")}`);
