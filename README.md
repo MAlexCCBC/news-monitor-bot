@@ -115,16 +115,23 @@ Trimite linkul articolului direct în chatul privat cu botul configurat la
 primirea și îți spune aici dacă articolul este filtrat. Linkul sare peste
 comparația articolului-sursă, dar păstrează verificările de URL deja procesat,
 dată, keywords și relevanță pentru România. După rescriere, textul AI este
-comparat separat cu știrile și postările AI recente; pentru o posibilă
-similaritate apare o cerere cu butoane. Această cale nu publică automat.
+comparat doar cu toate textele AI aprobate anterior, fără limită de vechime;
+pentru o posibilă similaritate apare o cerere distinctă. Această cale nu
+publică automat.
 
 ### Cereri de similaritate și restart
 
-Cererea de aprobare a articolului-sursă expiră după o oră; cererea pentru un
-text AI similar nu expiră. Ambele sunt salvate în SQLite împreună cu datele
-necesare procesării și ID-ul mesajului Telegram. Butoanele rămân valide după
-restart, iar acțiunea poate fi revendicată o singură dată. Pe GitHub Actions,
-baza de date se restaurează și se salvează în branch-ul `data`.
+Comparația articolului-sursă este prezentată ca „Comparație între link-uri”, cu
+ambele linkuri clickabile; comparația textelor redactate este prezentată
+separat ca „Comparație cu știri create deja cu AI”. Cererea pentru link expiră
+după 12 ore, iar cererea AI nu expiră. Ambele se salvează în SQLite împreună cu
+datele necesare procesării și ID-ul mesajului Telegram. La upgrade, cererile
+vechi pentru link din ultimele 12 ore se prelungesc și butoanele se retrimit.
+Pe GitHub Actions, baza de date se restaurează și se salvează în branch-ul
+`data`.
+
+Indiferent de `KEYWORDS`, sunt păstrate și știrile despre Mureșan, Bolojan,
+PNL, USR și politică; setările existente rămân active în plus.
 
 Pentru cererile text Gemini încearcă mai întâi `gemini-3.8-flash`, apoi
 modelele fallback configurate; modelele indisponibile pe cheia API curentă

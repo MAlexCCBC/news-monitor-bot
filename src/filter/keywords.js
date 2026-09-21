@@ -6,6 +6,27 @@ function normalize(text) {
     .replace(/[\u0300-\u036f]/g, ""); // scoate diacriticele
 }
 
+// Cerute explicit pentru acest flux editorial: prioritizează știrile despre
+// Mureșan, Bolojan, PNL, USR și politică chiar dacă KEYWORDS extern e incomplet.
+export const CORE_POLITICAL_KEYWORDS = [
+  "Mureșan",
+  "Bolojan",
+  "PNL",
+  "Partidul Național Liberal",
+  "USR",
+  "Uniunea Salvați România",
+  "politic",
+];
+
+export const CORE_ROMANIAN_POLITICAL_CONTEXT = [
+  "Mureșan",
+  "Bolojan",
+  "PNL",
+  "Partidul Național Liberal",
+  "USR",
+  "Uniunea Salvați România",
+];
+
 export function matchesKeywords(text, keywords) {
   const normText = normalize(text);
   const found = keywords.filter((kw) => normText.includes(normalize(kw)));

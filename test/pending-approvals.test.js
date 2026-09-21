@@ -5,7 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
-import { createPendingApprovalStore } from "../src/storage/pending-approvals.js";
+import { ARTICLE_APPROVAL_TTL_MS, createPendingApprovalStore } from "../src/storage/pending-approvals.js";
 import { createAiPostHistoryStore } from "../src/storage/ai-post-history.js";
 
 test("saved approval survives closing and reopening SQLite, retaining its callback payload", () => {
@@ -21,7 +21,7 @@ test("saved approval survives closing and reopening SQLite, retaining its callba
     article,
     simResult: { embedding: [0.1, 0.2], similarity: 0.84, similarUrl: "https://example.com/veche" },
     matchedKeywords: ["guvern"],
-    expiresAt: null,
+    expiresAt: Date.now() + ARTICLE_APPROVAL_TTL_MS,
   });
   firstStore.setMessageId("article-pending", 1234);
   firstDb.close();
@@ -41,7 +41,7 @@ test("saved approval survives closing and reopening SQLite, retaining its callba
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("one-hour article request expires, while AI-text approval has no time limit", () => {
+test("link approval remains processable for 12 hours, while AI-text approval has no time limit", () => {
   const db = new Database(":memory:");
   const store = createPendingApprovalStore(db);
   const now = 2_000_000;
@@ -51,7 +51,8 @@ test("one-hour article request expires, while AI-text approval has no time limit
     simResult: { embedding: [1] },
     matchedKeywords: [],
   };
-  store.create({ ...base, id: "expires", kind: "article", expiresAt: now + 3_600_000, createdAt: now });
+  store.create({ ...base, id: "expires", kind: "article", expiresAt: now + ARTICLE_APPROVAL_TTL_MS, createdAt: now });
+  store.create({ ...base, id: "still-valid", kind: "article", expiresAt: now + ARTICLE_APPROVAL_TTL_MS, createdAt: now });
   store.create({
     ...base,
     id: "unlimited-ai",
@@ -62,10 +63,43 @@ test("one-hour article request expires, while AI-text approval has no time limit
     createdAt: now,
   });
 
-  assert.equal(store.claim("expires", now + 3_600_001), null);
+  assert.equal(store.claim("still-valid", now + 11 * 60 * 60 * 1000).state, "processing");
+  assert.equal(store.claim("expires", now + ARTICLE_APPROVAL_TTL_MS + 1), null);
   assert.equal(store.get("expires").state, "expired");
   assert.equal(store.claim("unlimited-ai", now + 30 * 24 * 3_600_000).formattedPost, "Text AI");
   db.close();
+});
+
+test("upgrade extends recent expired one-hour link requests to 12h and reissues their button", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "news-expiry-migration-"));
+  const file = path.join(dir, "state.sqlite");
+  const now = Date.now();
+  const createdAt = now - 2 * 60 * 60 * 1000;
+  const firstDb = new Database(file);
+  const firstStore = createPendingApprovalStore(firstDb);
+  firstStore.create({
+    id: "legacy-link-request",
+    kind: "article",
+    url: "https://example.com/legacy",
+    article: { title: "Articol vechi", content: "Text" },
+    simResult: {},
+    matchedKeywords: [],
+    expiresAt: createdAt + 60 * 60 * 1000,
+    createdAt,
+  });
+  firstStore.setMessageId("legacy-link-request", 555);
+  firstStore.expire("legacy-link-request", createdAt + 60 * 60 * 1000 + 1);
+  firstDb.close();
+
+  const upgradedDb = new Database(file);
+  const upgradedStore = createPendingApprovalStore(upgradedDb);
+  const restored = upgradedStore.get("legacy-link-request");
+  assert.equal(restored.state, "pending");
+  assert.equal(restored.expires_at, createdAt + ARTICLE_APPROVAL_TTL_MS);
+  assert.equal(restored.message_id, null, "a fresh Telegram message with live buttons must be sent");
+  assert.equal(upgradedStore.claim("legacy-link-request", createdAt + 11 * 60 * 60 * 1000).state, "processing");
+  upgradedDb.close();
+  fs.rmSync(dir, { recursive: true, force: true });
 });
 
 test("interrupted in-progress approvals return to pending after restart", () => {

@@ -48,7 +48,7 @@ import { NewMessage } from "telegram/events/index.js";
 import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
-import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker, isPlausiblePersonName } from "./filter/keywords.js";
+import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
 import { checkSimilarity, createNewsEmbedding } from "./similarity/embedding.js";
 import { rewriteArticle } from "./ai/rewrite.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
@@ -59,6 +59,8 @@ import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
 import { createPollingErrorHandler } from "./telegram/polling-health.js";
 import { answerCallbackSafely, parseApprovalCallback } from "./telegram/approval-callback.js";
+import { formatApprovalText } from "./telegram/approval-messages.js";
+import { ARTICLE_APPROVAL_TTL_MS } from "./storage/pending-approvals.js";
 
 const {
   TG_API_ID,
@@ -74,7 +76,10 @@ const {
   ROMANIAN_PERSONALITIES,
 } = process.env;
 
-const keywordsList = KEYWORDS.split(",").map((k) => k.trim());
+const keywordsList = [...new Set([
+  ...(KEYWORDS || "").split(",").map((k) => k.trim()).filter(Boolean),
+  ...CORE_POLITICAL_KEYWORDS,
+])];
 // Numele reale de personalitati romanesti (NU cuvinte generice ca "ministru"/
 // "premier"). Folosit la filtrul de stiri straine: o stire straina e acceptata
 // DOAR daca mentioneaza una dintre aceste persoane.
@@ -83,7 +88,8 @@ const romanianPersonalities = (
   "Ilie Bolojan,Bolojan,Nicusor Dan,Nicușor Dan,Dominic Fritz,Fritz,Diana Buzoianu,Buzoianu"
 )
   .split(",")
-  .map((k) => k.trim());
+  .map((k) => k.trim())
+  .concat(CORE_ROMANIAN_POLITICAL_CONTEXT);
 const channelsList = CHANNELS.split(",").map((c) => c.trim().toLowerCase());
 const threshold = Number(SIMILARITY_THRESHOLD || 0.80);
 const historyHours = Number(HISTORY_HOURS || 72);
@@ -148,27 +154,8 @@ function approvalMarkup(id) {
   ]] };
 }
 
-function approvalText(item) {
-  const title = escapeHtml(item.article.title || "(fără titlu)");
-  const comparisonTitle = escapeHtml(item.comparisonTitle || "Știre anterioară");
-  const comparisonUrl = escapeHtml(item.comparisonUrl || "");
-  const score = `${(Number(item.similarity || 0) * 100).toFixed(0)}%`;
-  if (item.kind === "ai_text") {
-    const preview = escapeHtml((item.formattedPost || "").slice(0, 700));
-    return `🤖⏭️ <b>Textul generat de AI pare similar (${score})</b>\n\n` +
-      `<b>Titlu articol:</b> ${title}\n<b>Sursă:</b> ${escapeHtml(item.url)}\n` +
-      `<b>Similar cu:</b> ${comparisonTitle} — ${comparisonUrl}\n\n` +
-      `<b>Previzualizare:</b>\n${preview}\n\n` +
-      `<i>Cererea nu expiră. Dorești să primești știrea oricum?</i>`;
-  }
-  return `⏭️ <b>Știre similară (${score})</b>\n\n` +
-    `<b>Titlu:</b> ${title}\n<b>Sursă:</b> ${escapeHtml(item.url)}\n\n` +
-    `<b>Similară cu:</b> ${comparisonTitle} — ${comparisonUrl}\n\n` +
-    `<i>Dorești să fie procesată și trimisă oricum? Cererea expiră într-o oră.</i>`;
-}
-
 async function sendApprovalPrompt(item) {
-  return notifyBot.sendMessage(NOTIFY_CHAT_ID, approvalText(item), {
+  return notifyBot.sendMessage(NOTIFY_CHAT_ID, formatApprovalText(item), {
     parse_mode: "HTML",
     reply_markup: approvalMarkup(item.id),
   });
@@ -191,7 +178,7 @@ function scheduleApprovalExpiry(item) {
     if (expired.message_id) {
       try {
         await notifyBot.editMessageText(
-          `⌛ <b>Cerere expirată (1 oră)</b>\n\n<b>Titlu:</b> ${escapeHtml(expired.article.title)}\n<b>Sursă:</b> ${escapeHtml(expired.url)}`,
+          `⌛ <b>Cerere pentru link expirată (12 ore)</b>\n\n<b>Titlu:</b> ${escapeHtml(expired.article.title)}\n<b>Sursă:</b> ${escapeHtml(expired.url)}`,
           {
             chat_id: NOTIFY_CHAT_ID,
             message_id: expired.message_id,
@@ -352,16 +339,15 @@ function extractLink(message) {
 
 // Finalizeaza generarea postarii, cautarea imaginii si trimiterea notificarii
 async function finalizeAndSendArticle(article, url, simResult, matchedKeywords = [], approval = {}) {
-  // 4. Rescriere AI și al doilea control pe textul care va fi trimis efectiv.
-  // Comparăm atât cu articolele-sursă, cât și cu postările AI aprobate anterior.
+  // 4. Rescriere AI și control al duplicatelor între texte AI aprobate anterior.
   let formattedPost = approval.approvedPost;
   let aiEmbedding = approval.aiEmbedding;
   if (!formattedPost) {
     const rewritten = await rewriteArticle(article.fullTextForKeywordCheck);
     formattedPost = rewritten.text;
-    // Postările AI rămân în istoricul de similaritate pe termen nelimitat;
-    // HISTORY_HOURS limitează doar articolele-sursă, nu textele aprobate.
-    const previousTexts = [...getRecentNews(historyHours), ...getAllAiPosts()];
+    // Comparația AI este separată de compararea link-urilor și nu are limită
+    // de vechime: numai postări redactate/aprobate anterior prin AI intră aici.
+    const previousTexts = getAllAiPosts();
     const aiSimilarity = await checkSimilarity(formattedPost, previousTexts, threshold);
     aiEmbedding = aiSimilarity.embedding;
     if (aiSimilarity.isDuplicate) {
@@ -519,7 +505,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
           comparisonUrl: simResult.similarUrl,
           comparisonTitle: comparison?.title,
           similarity: simResult.similarity,
-          expiresAt: Date.now() + 60 * 60 * 1000,
+          expiresAt: Date.now() + ARTICLE_APPROVAL_TTL_MS,
         });
         return { status: "pending" };
       }

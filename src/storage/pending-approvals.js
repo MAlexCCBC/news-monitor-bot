@@ -10,6 +10,8 @@ function decode(row) {
   };
 }
 
+export const ARTICLE_APPROVAL_TTL_MS = 12 * 60 * 60 * 1000;
+
 /** Durable Telegram approvals. SQLite is also restored from the data branch
  * on GitHub Actions, so callback buttons survive process restarts. */
 export function createPendingApprovalStore(db) {
@@ -34,6 +36,19 @@ export function createPendingApprovalStore(db) {
     CREATE INDEX IF NOT EXISTS idx_pending_approvals_state_expiry
       ON pending_approvals(state, expires_at);
   `);
+
+  // Migrează cererile vechi pentru link-uri la noul termen de 12h. Cererile
+  // expirate în ultima fereastră de 12h se reactivează și se retrimit cu
+  // butoane noi; cererile ignorate sau mai vechi nu sunt reînviate.
+  const migrationNow = Date.now();
+  db.prepare(`
+    UPDATE pending_approvals
+    SET expires_at = created_at + ?, state = 'pending', message_id = NULL
+    WHERE kind = 'article'
+      AND state IN ('pending', 'expired')
+      AND created_at >= ?
+      AND expires_at < created_at + ?
+  `).run(ARTICLE_APPROVAL_TTL_MS, migrationNow - ARTICLE_APPROVAL_TTL_MS, ARTICLE_APPROVAL_TTL_MS);
 
   const insert = db.prepare(`
     INSERT INTO pending_approvals (
