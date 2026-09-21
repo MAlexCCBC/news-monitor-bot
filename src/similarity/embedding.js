@@ -257,7 +257,13 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
 
   const hasMatchingEntities =
     (titleOverlap >= 0.60 && commonTopicWords >= 3) ||
-    (titleOverlap >= 0.35 && commonTopicWords >= 2 && (commonProper >= 1 || commonNumbers >= 1));
+    // Unele redacții formulează aceeași știre cu sintaxe foarte diferite
+    // (ex. „Republica Moldova va institui...” vs „Maia Sandu anunță...”);
+    // permitem overlap puțin mai mic doar dacă există trei termeni de subiect
+    // și o entitate/cifră comună, ca să nu ajungă simpla persoană comună drept
+    // ancora evenimentului.
+    (titleOverlap >= 0.35 && commonTopicWords >= 2 && (commonProper >= 1 || commonNumbers >= 1)) ||
+    (titleOverlap >= 0.30 && commonTopicWords >= 3 && (commonProper >= 1 || commonNumbers >= 1));
 
   return {
     hasMatchingEntities,

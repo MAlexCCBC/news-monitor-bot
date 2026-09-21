@@ -45,6 +45,34 @@ test("high semantic score with matching person and event terms still identifies 
   assert.equal(result.zone, "VERDE");
 });
 
+test("different newsroom wording still catches the same Moldova emergency story", () => {
+  const result = evaluate3ZoneSimilarity(
+    0.94,
+    "Republica Moldova va institui stare de urgență energetică și hidrologică. România, parte din planul de criză",
+    "Republica Moldova va institui stare de urgență în sectoarele energetic și hidrologic din cauza situației de pe Nistru. Președinta Maia Sandu a anunțat măsura după ședința CNS.",
+    "Maia Sandu anunță stare de urgență în domeniul energetic și hidrologic. Nu o să vă spun că va fi ușor",
+    "Consiliul Național de Securitate al Republicii Moldova a convenit asupra necesității declarării stării de urgență în domeniul energetic și hidrologic. Anunțul a fost făcut de președinta Maia Sandu după ședință.",
+    0.80
+  );
+
+  assert.equal(result.isDuplicate, true);
+  assert.equal(result.zone, "VERDE");
+});
+
+test("shared politician and broad topic do not merge distinct Maia Sandu developments", () => {
+  const result = evaluate3ZoneSimilarity(
+    0.94,
+    "Maia Sandu a convocat Consiliul Național de Securitate. Temele de pe agenda ședinței",
+    "Președinta Republicii Moldova, Maia Sandu, a convocat CNS privind impactul crizei energetice.",
+    "Maia Sandu anunță stare de urgență în domeniul energetic și hidrologic. Nu o să vă spun că va fi ușor",
+    "Consiliul Național de Securitate a decis declararea stării de urgență în contextul crizei energetice.",
+    0.80
+  );
+
+  assert.equal(result.isDuplicate, false);
+  assert.match(result.zone, /Permis/);
+});
+
 test("high semantic similarity cannot alone block unrelated titles", () => {
   const result = evaluate3ZoneSimilarity(
     0.9,
