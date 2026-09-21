@@ -417,6 +417,12 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
   const best = selectSimilarityCandidate(candidates);
   return {
     ...best,
+    // Păstrăm forma de rezultat folosită de index.js și de mesajele de
+    // aprobare; altfel `score/url/zone` deveneau 0% și link indisponibil.
+    similarity: best.score,
+    similarUrl: best.url,
+    similarityZone: best.zone || null,
+    similarityReason: best.reason || null,
     embedding: newEmbedding,
     embeddingModel: embedded.model,
     embeddingVersion: embedded.version,

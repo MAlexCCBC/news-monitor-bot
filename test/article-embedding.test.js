@@ -24,7 +24,7 @@ test("legacy duplicate candidates are re-embedded from their complete stored art
   const reembedded = [];
 
   try {
-    await checkSimilarity(
+    const result = await checkSimilarity(
       `Bolojan anunță reforma pensiilor\n${longBody}`,
       [{ url: "https://example.com/old", title: "Bolojan anunță reforma pensiilor", content: longBody, embedding: [1, 0] }],
       0.8,
@@ -33,6 +33,11 @@ test("legacy duplicate candidates are re-embedded from their complete stored art
     assert.ok(payload.requests.some((request) => request.content.parts[0].text.includes("MARCAJ_FINAL_ARTICOL")));
     assert.equal(reembedded.length, 1);
     assert.equal(reembedded[0].embeddingVersion, "article-full-v1:gemini-embedding-001");
+    assert.equal(result.isDuplicate, true);
+    assert.equal(result.similarity, 1);
+    assert.equal(result.similarUrl, "https://example.com/old");
+    assert.ok(result.similarityZone);
+    assert.ok(result.similarityReason);
   } finally {
     axios.post = originalPost;
   }
