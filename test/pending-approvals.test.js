@@ -8,6 +8,25 @@ import path from "node:path";
 import { ARTICLE_APPROVAL_TTL_MS, createPendingApprovalStore } from "../src/storage/pending-approvals.js";
 import { createAiPostHistoryStore } from "../src/storage/ai-post-history.js";
 
+test("rechecking updates the displayed comparison without creating a second approval", () => {
+  const db = new Database(":memory:");
+  try {
+    const store = createPendingApprovalStore(db);
+    store.create({ id: "recheck", kind: "article", url: "https://example.com/current",
+      article: { title: "Titlu" }, simResult: { embedding: [1, 0] },
+      comparisonTitle: "Comparație veche", comparisonUrl: "https://example.com/old",
+      matchedKeywords: [], expiresAt: Date.now() + ARTICLE_APPROVAL_TTL_MS });
+    store.setMessageId("recheck", 123);
+    store.updateComparison("recheck", { embedding: [1, 0], similarUrl: "https://example.com/actual", similarity: .91 }, "Duplicatul real");
+    const restored = store.get("recheck");
+    assert.equal(restored.comparisonUrl, "https://example.com/actual");
+    assert.equal(restored.comparisonTitle, "Duplicatul real");
+    assert.equal(restored.similarity, .91);
+    assert.equal(restored.message_id, 123);
+    assert.equal(store.listPending().length, 1);
+  } finally { db.close(); }
+});
+
 test("saved approval survives closing and reopening SQLite, retaining its callback payload", () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "news-pending-"));
   const file = path.join(dir, "state.sqlite");

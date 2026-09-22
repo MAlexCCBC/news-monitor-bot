@@ -58,7 +58,6 @@ jobs:
       CHANNELS: ${{ secrets.CHANNELS }}
       KEYWORDS: ${{ secrets.KEYWORDS }}
       SIMILARITY_THRESHOLD: ${{ secrets.SIMILARITY_THRESHOLD }}
-      HISTORY_HOURS: ${{ secrets.HISTORY_HOURS }}
       IMAGE_HISTORY_DAYS: ${{ secrets.IMAGE_HISTORY_DAYS }}
       BYPASS_CHANNELS: ${{ secrets.BYPASS_CHANNELS }}
       ROMANIAN_PERSONALITIES: ${{ secrets.ROMANIAN_PERSONALITIES }}
@@ -68,7 +67,7 @@ jobs:
       - uses: actions/checkout@v5
 
       # Baza de date se restauraza din branch-ul "data" (botul o salveaza
-      # periodic + la oprire). Asa istoricul de 72h NU se pierde intre rulari,
+      # periodic + la oprire). Asa istoricul de 24h NU se pierde intre rulari,
       # chiar daca jobul e oprit fortat (ultima salvare periodica ramane).
       - name: Restaurare baza de date din branch data
         run: |

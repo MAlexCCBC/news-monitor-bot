@@ -1,11 +1,12 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
+import { cleanArticleContent } from "./clean-content.js";
 
 // Selectoare de continut per site, cu fallback generic. Nu mai depindem
 // exclusiv de ele pentru data (folosim meta tags, mult mai fiabil).
 const SITE_CONFIG = {
   "g4media.ro": {
-    content: "div.entry-content, div.post-content, article",
+    content: "div.single__text, div.entry-content, div.post-content, article",
   },
   "digi24.ro": {
     content: "div.article-body, div.articol-content, article",
@@ -96,17 +97,23 @@ async function getWithRetry(url, attempts = 3) {
 
 export async function fetchArticle(url) {
   const { data: html } = await getWithRetry(url);
+  return parseArticleHtml(html, url);
+}
 
+export function parseArticleHtml(html, url) {
   const $ = cheerio.load(html);
   const config = getSiteConfig(url);
 
   const contentSelector = config?.content || "article, .entry-content, .post-content, main";
 
-  let $content = $(contentSelector).first();
+  // Comma selectors return DOM order, not priority. Prefer the actual article
+  // body over its enclosing article and over recommendation cards.
+  const selector = contentSelector.split(",").find((part) => $(part.trim()).length);
+  let $content = selector ? $(selector.trim()).first() : $([]);
   if ($content.length === 0) $content = $("body"); // ultim fallback
 
   $content = $content.clone();
-  $content.find("script, style, iframe, .ad, .advertisement, aside, nav").remove();
+  $content.find("script, style, iframe, .ad, .advertisement, aside, nav, .sgb-google-buttons, #mediakitPlayer, [data-platform], .related-posts").remove();
 
   const title = $("h1").first().text().trim() || $('meta[property="og:title"]').attr("content") || "";
   const isoDate = extractPublishDate($);
@@ -135,12 +142,17 @@ export async function fetchArticle(url) {
   const paragraphs = [];
   let stopped = false;
 
-  $content.find("p, h2, h3").each((_, el) => {
+  $content.find("p, h2, h3, li, div").each((_, el) => {
     if (stopped) return;
+    // WordPress pasted text may live in leaf divs. Do not add ancestor divs
+    // as well, which would duplicate the same paragraphs in the embedding.
+    if (el.tagName === "div" && $(el).find("p, h2, h3, li, div").length) return;
     const t = $(el).text().trim().toLowerCase();
 
-    if (STOP_MARKERS.some((marker) => t.includes(marker))) {
-      stopped = true;
+    if (STOP_MARKERS.some((marker) => t.startsWith(marker))) {
+      // Inline recommendations are often followed by the rest of the story.
+      // A recommendations heading, on the other hand, starts a footer section.
+      stopped = el.tagName === "h2" || el.tagName === "h3";
       return;
     }
 
@@ -148,7 +160,7 @@ export async function fetchArticle(url) {
     if (originalText.length > 20) paragraphs.push(originalText);
   });
 
-  const contentText = paragraphs.join("\n\n");
+  const contentText = cleanArticleContent(paragraphs.join("\n\n"));
   console.log(`[scraper] Articol extras: ${contentText.length} caractere, ${paragraphs.length} paragrafe, ${stopped ? "oprit la marker de conținut recomandat" : "fără marker de oprire"} (${url})`);
 
   return {

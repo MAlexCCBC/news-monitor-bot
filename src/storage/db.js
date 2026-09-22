@@ -3,6 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { createPendingApprovalStore } from "./pending-approvals.js";
 import { createAiPostHistoryStore } from "./ai-post-history.js";
+import { readArticleSimilarityHistory } from "./article-history.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const db = new Database(path.join(__dirname, "../../data.sqlite"));
@@ -63,20 +64,8 @@ export function saveNewsEmbedding({ url, embedding, embeddingModel, embeddingVer
   `).run(JSON.stringify(embedding), embeddingModel, embeddingVersion, url);
 }
 
-export function getRecentNews(hoursBack) {
-  const cutoff = Date.now() - hoursBack * 60 * 60 * 1000;
-  const stmt = db.prepare(`
-    SELECT url, title, content, embedding, embedding_model, embedding_version, created_at
-    FROM news_history
-    WHERE created_at >= ?
-    ORDER BY created_at DESC
-  `);
-  return stmt.all(cutoff).map((row) => ({
-    ...row,
-    embedding: row.embedding ? JSON.parse(row.embedding) : null,
-    embeddingModel: row.embedding_model,
-    embeddingVersion: row.embedding_version,
-  }));
+export function getRecentNews() {
+  return readArticleSimilarityHistory(db);
 }
 
 export function isUrlSeen(url) {

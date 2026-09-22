@@ -30,12 +30,10 @@ export function formatApprovalText(item) {
 
   if (item.kind === "ai_text") {
     const preview = escapeHtml((item.formattedPost || "").slice(0, 700));
-    return `🤖⏭️ <b>Textul generat de AI pare similar (${score})</b>\n\n` +
-      `<b>Comparație cu știri create deja cu AI</b>\n` +
+    return `📝 <b>Text pregătit pentru trimitere</b>\n\n` +
       `<b>Știrea curentă:</b> ${title} — ${currentLink}\n` +
-      `<b>Știre creată anterior cu AI:</b> ${comparisonTitle} — ${comparisonLink}\n\n` +
       `<b>Previzualizare:</b>\n${preview}\n\n` +
-      `<i>Cererea nu expiră. Dorești să primești știrea oricum?</i>`;
+      `<i>Filtrul pe texte AI a fost eliminat. Poți reîncerca trimiterea textului salvat.</i>`;
   }
 
   return `⏭️ <b>Știre similară (${score})</b>\n\n` +

@@ -6,6 +6,8 @@ function decode(row) {
     simResult: JSON.parse(row.sim_result_json),
     matchedKeywords: JSON.parse(row.matched_keywords_json),
     formattedPost: row.formatted_post,
+    comparisonUrl: row.comparison_url,
+    comparisonTitle: row.comparison_title,
     aiEmbedding: row.ai_embedding_json ? JSON.parse(row.ai_embedding_json) : null,
   };
 }
@@ -150,6 +152,14 @@ export function createPendingApprovalStore(db) {
     },
 
     get,
+
+    updateComparison(id, simResult, comparisonTitle) {
+      db.prepare(`UPDATE pending_approvals
+        SET sim_result_json = ?, comparison_url = ?, comparison_title = ?, similarity = ?
+        WHERE id = ? AND state = 'pending'`)
+        .run(JSON.stringify(simResult), simResult.similarUrl, comparisonTitle || null, simResult.similarity, id);
+      return get(id);
+    },
 
     setMessageId(id, messageId) {
       db.prepare(`UPDATE pending_approvals SET message_id = ? WHERE id = ? AND state = 'pending'`)

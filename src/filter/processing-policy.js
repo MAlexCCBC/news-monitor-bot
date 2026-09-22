@@ -12,6 +12,5 @@ export function createArticleProcessingPolicy({
     checkKeywords: !forceManual && !bypassFilters,
     checkForeignRelevance: !forceManual && !bypassFilters,
     checkArticleSimilarity: !forceManual && !bypassFilters && !bypassSimilarity,
-    checkAiSimilarity: !forceManual,
   };
 }

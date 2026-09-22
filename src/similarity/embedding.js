@@ -1,4 +1,5 @@
 import axios from "axios";
+import { cleanArticleContent, articleFocus } from "../scraper/clean-content.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
@@ -114,7 +115,7 @@ function averageEmbeddings(embeddings) {
 // amprentă comparabilă. Repetăm titlul în fiecare fragment pentru context.
 async function embedArticles(articles, preferredModel) {
   const articleInputs = articles.map(({ title, content }) => {
-    const chunks = splitArticleContent(content);
+    const chunks = splitArticleContent(cleanArticleContent(content));
     return chunks.map((chunk, index) =>
       `Titlu: ${title || ""}\nFragment ${index + 1}/${chunks.length}: ${chunk}`
     );
@@ -136,8 +137,8 @@ export async function createArticleEmbedding(title, content) {
 }
 
 function cosineSimilarity(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length === 0 || b.length === 0) return 0;
-  const len = Math.min(a.length, b.length);
+  if (!validVector(a) || !validVector(b) || a.length !== b.length) return 0;
+  const len = a.length;
   let dot = 0, normA = 0, normB = 0;
   for (let i = 0; i < len; i++) {
     dot += a[i] * b[i];
@@ -145,7 +146,19 @@ function cosineSimilarity(a, b) {
     normB += b[i] * b[i];
   }
   const denom = Math.sqrt(normA) * Math.sqrt(normB);
-  return denom === 0 ? 0 : dot / denom;
+  return denom === 0 ? 0 : Math.max(-1, Math.min(1, dot / denom));
+}
+
+function validVector(vector) {
+  return Array.isArray(vector) && vector.length > 0 &&
+    vector.every(Number.isFinite) && vector.some((value) => value !== 0);
+}
+
+function compatibleVector(newEmbedding, item, model) {
+  return validVector(newEmbedding) && validVector(item.embedding) &&
+    newEmbedding.length === item.embedding.length &&
+    (!model || item.embeddingModel === model ||
+      (!item.embeddingModel && model === "gemini-embedding-001"));
 }
 
 const STOP_WORDS = new Set([
@@ -228,7 +241,9 @@ function titleWordOverlap(titleA, titleB) {
   return minSize > 0 ? common / minSize : 0;
 }
 
-function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
+export function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
+  leadA = cleanArticleContent(leadA);
+  leadOld = cleanArticleContent(leadOld);
   const entA = extractEntities(`${titleA}. ${leadA}`);
   const entB = extractEntities(`${titleOld}. ${leadOld}`);
 
@@ -268,13 +283,19 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
   const topicCountA = [...stemsA].filter((stem) => !namesA.has(stem) && !namesB.has(stem)).length;
   const topicCountB = [...stemsB].filter((stem) => !namesA.has(stem) && !namesB.has(stem)).length;
   const bodyTopicOverlap = commonTopicWords / Math.max(1, Math.min(topicCountA, topicCountB));
+  const focusA = new Set(getStems(articleFocus(leadA)).filter((s) => !namesA.has(s) && !namesB.has(s)));
+  const focusB = new Set(getStems(articleFocus(leadOld)).filter((s) => !namesA.has(s) && !namesB.has(s)));
+  const commonFocusWords = [...focusA].filter((s) => focusB.has(s)).length;
+  const focusTopicOverlap = commonFocusWords / Math.max(1, Math.min(focusA.size, focusB.size));
 
   const hasMatchingEntities =
     (titleOverlap >= 0.60 && commonTitleTopicWords >= 2 && (commonProper >= 1 || commonNumbers >= 1)) ||
     (titleOverlap >= 0.45 && commonTitleTopicWords >= 3 && (commonProper >= 1 || commonNumbers >= 1)) ||
     // Titluri foarte diferite pot totuși fi aceeași relatare, dar doar când
     // corpul are suprapunere lexicală densă, nu doar nume și termeni generici.
-    (commonTopicWords >= 8 && bodyTopicOverlap >= 0.35 && (commonProper >= 1 || commonNumbers >= 1));
+    (commonTopicWords >= 8 && bodyTopicOverlap >= 0.35 &&
+      commonFocusWords >= 6 && focusTopicOverlap >= 0.28 &&
+      (commonProper >= 1 || commonNumbers >= 1));
 
   return {
     hasMatchingEntities,
@@ -282,6 +303,8 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
     commonTitleTopicWords,
     bodyTopicOverlap,
     commonTopicWords,
+    commonFocusWords,
+    focusTopicOverlap,
     commonProper,
     commonNumbers,
   };
@@ -291,11 +314,18 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
  * Arhitectura pe 3 Zone de Decizie:
  * 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
  * 2. ZONA GRI (Score in [0.74, 0.79]) -> Arbitraj pe entitati si cuvinte-cheie din titlu/articol
- *    Daca exista entitati / subiecte comune -> scorul urca la 0.82 (duplicat)
+ *    Daca exista dovezi ale aceluiasi eveniment -> duplicat, pastrand scorul real
  *    Daca titlurile si actiunile sunt complet diferite -> permis direct ca stire noua
  * 3. ZONA ALBA (Score < 0.74) -> Stire noua / permis direct
  */
 export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, leadOld, threshold = 0.80) {
+  // An exact, nontrivial article body is evidence even without named people.
+  // Preserve accents/punctuation here: normalization must not erase negation.
+  const bodyNew = cleanArticleContent(leadNew).toLowerCase();
+  const bodyOld = cleanArticleContent(leadOld).toLowerCase();
+  if (embSim >= threshold && bodyNew.length >= 120 && bodyNew === bodyOld) {
+    return { isDuplicate: true, score: embSim, zone: "VERDE", reason: "Corp integral identic" };
+  }
   const match = checkKeyEntitiesMatch(titleNew, leadNew, titleOld, leadOld);
   // Când titlurile sunt formulate diferit, acceptăm drept ancoră o potrivire
   // puternică în corpurile complete. Pragul semantic suplimentar, minimum 6
@@ -315,16 +345,16 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
     if (!match.hasMatchingEntities && !strongArticleMatch) {
       return {
         isDuplicate: false,
-        score: embSim * 0.75,
+        score: embSim,
         zone: "VERDE (Permis - Fără ancoră tematică)",
-        reason: "Scorul semantic nu este susținut de termeni tematici comuni în titlu",
+        reason: "Apropiere semantică fără suficiente dovezi ale aceluiași eveniment în titlu și articol",
       };
     }
     return {
       isDuplicate: true,
       score: embSim,
       zone: "VERDE",
-      reason: "Semantic embedding >= 0.80",
+      reason: `Scor semantic >= ${threshold}; eveniment confirmat prin text`,
     };
   }
 
@@ -377,8 +407,7 @@ export function selectSimilarityCandidate(candidates) {
 export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recentNewsWithEmbeddings, threshold = 0.80, { embeddingModel } = {}) {
   const candidates = [];
   for (const item of recentNewsWithEmbeddings) {
-    if (!item.embedding || item.embedding.length === 0) continue;
-    if (embeddingModel && item.embeddingModel !== embeddingModel) continue;
+    if (!compatibleVector(newEmbedding, item, embeddingModel)) continue;
     // Ancora tematică folosește articolul vechi complet; embeddings-urile sunt
     // create din toate fragmentele și agregate în vectorul salvat.
     const titleOld = item.title || "";
@@ -418,9 +447,7 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
   const embedded = await embedArticles([{ title: titleNew, content: leadNew }]);
   const newEmbedding = embedded.embeddings[0];
   const reembeddedNews = [];
-  const compatibleItems = comparableItems.filter((item) =>
-    item.embeddingModel === embedded.model || (!item.embeddingModel && embedded.model === "gemini-embedding-001")
-  );
+  const compatibleItems = comparableItems.filter((item) => compatibleVector(newEmbedding, item, embedded.model));
   const candidates = compatibleItems.map((item) => {
     const rawSim = cosineSimilarity(newEmbedding, item.embedding);
     const result = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, item.title || "", item.content || "", threshold);

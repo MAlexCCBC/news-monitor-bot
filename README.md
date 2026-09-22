@@ -2,7 +2,7 @@
 
 Monitorizeaza canale Telegram,
 filtreaza dupa keywords politice,
-verifica sa nu fie duplicat/similar cu ce ai postat in ultimele 72h,
+verifica articolele din linkuri fata de cele procesate in ultimele 24h,
 reformateaza cu AI in stilul tau, gaseste o imagine potrivita, si **iti trimite
 tie privat pe Telegram** rezultatul gata pregatit.
 
@@ -98,14 +98,15 @@ real e mai potrivit Railway/VPS, nu Actions.
 2. Când apare un mesaj cu link, extrage, curăță
 3. Verifică dacă data e azi
 4. Caută keywords (lista completă e în `.env`, o poți edita oricând)
-5. Calculează embedding cu Gemini pe **titlu + primul paragraf** și compară cu
-   istoricul recent; scorul semantic nu e suficient singur pentru a declara un
-   duplicat. Titlurile trebuie să confirme subiectul fie prin overlap puternic
-   (cel puțin 60% și trei termeni tematici comuni), fie prin overlap de cel
-   puțin 35%, doi termeni tematici comuni și o entitate/cifră specifică.
-   Anii calendaristici, numele singure și scorul semantic fără potrivire
-   tematică nu sunt dovezi suficiente. O posibilă repetare cere confirmare în
-   chat.
+5. Calculează embedding cu Gemini pentru **titlu + întregul articol curățat**,
+   în fragmente trimise într-un batch. Compară local cu vectorii salvați ai
+   articolelor procesate în **ultimele 24 de ore**, inclusiv la reverificarea
+   cererilor după restart. `HISTORY_HOURS` vechi nu mai modifică această fereastră.
+   Istoricul nu se retrimite la Gemini. Scorul semantic este verificat cu
+   dovezi despre eveniment din titlu și corp; pasajele de context comune nu
+   sunt suficiente dacă începuturile articolelor descriu dezvoltări diferite.
+   O posibilă repetare cere confirmare în chat. Aceste reguli sunt euristice,
+   iar procentul afișat este scor de apropiere, nu probabilitate de duplicat.
 6. Reformatează cu Gemini text (cascadă automată de modele dacă unul dă rate-limit sau timeout)
 7. Caută o imagine (Tavily -> Bing HTML -> Wikimedia Commons -> Wikipedia -> DuckDuckGo),
    verifică facial + anti-text cu AI, decupează la format portret 3:4 centrat pe față,
@@ -117,20 +118,19 @@ real e mai potrivit Railway/VPS, nu Actions.
 
 Trimite linkul articolului direct în chatul privat cu botul configurat la
 `NOTIFY_CHAT_ID` (sau folosește `/start` pentru instrucțiuni). Botul confirmă
-primirea și îți spune aici dacă articolul este filtrat. Linkul sare peste
-comparația articolului-sursă, dar păstrează verificările de URL deja procesat,
-dată, keywords și relevanță pentru România. După rescriere, textul AI este
-comparat doar cu toate textele AI aprobate anterior, fără limită de vechime;
-pentru o posibilă similaritate apare o cerere distinctă. Această cale nu
-publică automat.
+primirea și procesează linkul chiar dacă URL-ul a fost procesat anterior,
+fără filtre de similaritate, dată, keywords sau relevanță. Textele generate
+de AI nu se mai compară cu alte texte și nu li se mai calculează embeddings.
+Această cale îți trimite rezultatul în privat; nu publică automat pe canal.
 
 ### Cereri de similaritate și restart
 
 Comparația articolului-sursă este prezentată ca „Comparație între link-uri”, cu
-ambele linkuri clickabile; comparația textelor redactate este prezentată
-separat ca „Comparație cu știri create deja cu AI”. Cererea pentru link expiră
-după 12 ore, iar cererea AI nu expiră. Ambele se salvează în SQLite împreună cu
-datele necesare procesării și ID-ul mesajului Telegram. La upgrade, cererile
+ambele linkuri clickabile. Cererea pentru link expiră după 12 ore și se
+salvează în SQLite împreună cu datele procesării și ID-ul mesajului Telegram.
+La reverificare se actualizează comparația în același mesaj, dacă duplicatul
+găsit s-a schimbat. Vechile texte AI blocate se eliberează la pornire, folosind
+textul deja generat; nu se mai creează astfel de cereri. La upgrade, cererile
 vechi pentru link din ultimele 12 ore se prelungesc și butoanele se retrimit.
 Pe GitHub Actions, baza de date se restaurează și se salvează în branch-ul
 `data`.

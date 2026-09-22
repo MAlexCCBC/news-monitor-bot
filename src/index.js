@@ -51,11 +51,12 @@ import { fetchArticle } from "./scraper/article.js";
 import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
 import { createArticleProcessingPolicy } from "./filter/processing-policy.js";
 import { checkSimilarity, checkSimilarityEmbedding, createArticleEmbedding } from "./similarity/embedding.js";
-import { rewriteArticle } from "./ai/rewrite.js";
+import { prepareArticlePost } from "./ai/prepare-post.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage, processArticleImage } from "./image/search.js";
-import { saveNews, saveAiPost, getRecentNews, getAllAiPosts, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
+import { saveNews, saveAiPost, getRecentNews, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
+import { ARTICLE_HISTORY_HOURS } from "./storage/article-history.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
 import { formatChannelAudit } from "./telegram/channel-audit.js";
@@ -73,7 +74,6 @@ const {
   NOTIFY_BOT_TOKEN,
   NOTIFY_CHAT_ID,
   SIMILARITY_THRESHOLD,
-  HISTORY_HOURS,
   KEYWORDS,
   BYPASS_CHANNELS,
   ROMANIAN_PERSONALITIES,
@@ -95,7 +95,8 @@ const romanianPersonalities = (
   .concat(CORE_ROMANIAN_POLITICAL_CONTEXT);
 const channelsList = CHANNELS.split(",").map((c) => c.trim().toLowerCase());
 const threshold = Number(SIMILARITY_THRESHOLD || 0.80);
-const historyHours = Number(HISTORY_HOURS || 72);
+const historyHours = ARTICLE_HISTORY_HOURS;
+console.log(`[config] Similaritate: articole din ultimele ${historyHours}h; compararea textelor AI dezactivată`);
 // Canalele care OCOLESC toate filtrele de continut (similaritate, keywords,
 // stiri straine) - ex: canalul tau de rezerva, unde vrei sa pui orice daca da
 // prost. RAMANE activ doar deduplicarea de URL (protectie la bug-uri Telegram).
@@ -105,7 +106,7 @@ const bypassChannels = (BYPASS_CHANNELS || "gtasixleak")
 
 // Persistarea bazei de date in git (doar cand e configurata, ex: pe GitHub
 // Actions). Botul salveaza data.sqlite periodic + la oprire, ca istoricul de
-// 72h sa nu se piarda intre rulari.
+// 24h sa nu se piarda intre rulari.
 const dbPersistBranch = process.env.DB_PERSIST_BRANCH?.trim() || "";
 const dbPersistIntervalMin = Number(process.env.DB_PERSIST_INTERVAL_MIN || 5);
 if (dbPersistBranch) {
@@ -250,11 +251,12 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
     // Cererile create de vechiul prag permisiv nu trebuie să rămână blocate
     // după deploy. Revalidăm doar la boot, cu embeddingul deja salvat, fără API.
     if (recoverInterrupted) {
-      const articleApprovals = pendingItems.filter((item) => item.kind === "article" && item.simResult?.embedding?.length);
+      const articleApprovals = pendingItems.filter((item) => item.kind === "ai_text" ||
+        (item.kind === "article" && item.simResult?.embedding?.length));
       if (articleApprovals.length) {
-        const history = getRecentNews(historyHours * 2);
+        const history = getRecentNews();
         for (const pending of articleApprovals) {
-          const updated = checkSimilarityEmbedding(
+          const updated = pending.kind === "ai_text" ? { isDuplicate: false } : checkSimilarityEmbedding(
             pending.simResult.embedding,
             pending.article.title || "",
             pending.article.content || "",
@@ -262,8 +264,22 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
             threshold,
             { embeddingModel: pending.simResult.embeddingModel }
           );
-          console.log(`[approval recheck] ${pending.url}: ${updated.isDuplicate ? "duplicate păstrat" : "fals pozitiv vechi eliberat"}${updated.similarUrl ? ` (${updated.similarityZone}, ${(updated.similarity * 100).toFixed(1)}% vs ${updated.similarUrl})` : ""}`);
-          if (updated.isDuplicate) continue;
+          console.log(`[approval recheck] ${pending.url}: ${pending.kind === "ai_text" ? "filtrul AI eliminat" : updated.isDuplicate ? "duplicat păstrat" : "eliberat după reverificare în 24h"}${updated.similarUrl ? ` (${updated.similarityZone}, ${(updated.similarity * 100).toFixed(1)}% vs ${updated.similarUrl})` : ""}`);
+          if (updated.isDuplicate && !isUrlSeen(pending.url)) {
+            const comparison = history.find((entry) => entry.url === updated.similarUrl);
+            if (pending.comparisonUrl === updated.similarUrl &&
+                pending.comparisonTitle === comparison?.title &&
+                Math.abs(pending.similarity - updated.similarity) < 0.000001) continue;
+            const refreshed = pendingApprovals.updateComparison(pending.id,
+              { ...pending.simResult, ...updated }, comparison?.title);
+            if (refreshed.message_id) {
+              await notifyBot.editMessageText(formatApprovalText(refreshed), {
+                chat_id: NOTIFY_CHAT_ID, message_id: refreshed.message_id,
+                parse_mode: "HTML", reply_markup: approvalMarkup(refreshed.id),
+              }).catch((err) => console.warn("[approval recheck] Actualizarea comparației a eșuat:", err.message));
+            }
+            continue;
+          }
           if (isUrlSeen(pending.url)) {
             pendingApprovals.setState(pending.id, "done");
             if (pending.message_id) {
@@ -285,20 +301,19 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
           if (item.message_id) {
             try {
               await notifyBot.editMessageText(
-                `🔄 <b>Reverificată cu regulile noi de similaritate; știrea a fost eliberată pentru procesare.</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
+                `🔄 <b>${item.kind === "ai_text" ? "Filtrul pe texte AI a fost eliminat; textul salvat va fi trimis." : "Reverificată în istoricul de 24h; știrea a fost eliberată pentru procesare."}</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
                 { chat_id: NOTIFY_CHAT_ID, message_id: item.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
               );
             } catch (err) { console.warn("[approval recheck] Nu am putut actualiza mesajul vechi:", err.message); }
           }
           enqueueProcess(async () => {
             try {
-              const result = await finalizeAndSendArticle(item.article, item.url, item.simResult, item.matchedKeywords);
+              await finalizeAndSendArticle(item.article, item.url, item.simResult, item.matchedKeywords,
+                { approvedPost: item.formattedPost });
               pendingApprovals.setState(item.id, "done");
               await persistPendingApprovals();
               if (item.message_id) {
-                const status = result?.status === "pending"
-                  ? "Textul AI similar a fost pus într-o cerere separată de aprobare."
-                  : "Știre procesată și trimisă cu succes!";
+                const status = "Știre procesată și trimisă cu succes!";
                 await notifyBot.editMessageText(
                   `✅ <b>${status}</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
                   { chat_id: NOTIFY_CHAT_ID, message_id: item.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
@@ -322,6 +337,7 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
         }
       }
     }
+    if (recoverInterrupted) await persistPendingApprovals();
     for (const item of pendingApprovals.listPending()) {
       scheduleApprovalExpiry(item);
       if (item.message_id) continue;
@@ -389,22 +405,19 @@ async function handleApprovalCallback(callbackQuery) {
 
   await enqueueProcess(async () => {
     try {
-      const result = await finalizeAndSendArticle(
+      await finalizeAndSendArticle(
         item.article,
         item.url,
         item.simResult,
         item.matchedKeywords,
         {
           approvedPost: item.formattedPost,
-          aiEmbedding: item.aiEmbedding,
-          aiEmbeddingModel: item.simResult?.aiEmbeddingModel,
-          aiEmbeddingVersion: item.simResult?.aiEmbeddingVersion,
         }
       );
       pendingApprovals.setState(id, "done");
       await persistPendingApprovals();
       try {
-        const status = result?.status === "pending" ? "Textul AI similar a fost pus într-o cerere separată de aprobare." : "Știre procesată și trimisă cu succes!";
+        const status = "Știre procesată și trimisă cu succes!";
         await notifyBot.editMessageText(
           `✅ <b>${status}</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
           { chat_id: NOTIFY_CHAT_ID, message_id: callbackQuery.message.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
@@ -450,55 +463,8 @@ function extractLink(message) {
 
 // Finalizeaza generarea postarii, cautarea imaginii si trimiterea notificarii
 async function finalizeAndSendArticle(article, url, simResult, matchedKeywords = [], approval = {}) {
-  // 4. Rescriere AI și control al duplicatelor între texte AI aprobate anterior.
-  let formattedPost = approval.approvedPost;
-  let aiEmbedding = approval.aiEmbedding;
-  let aiEmbeddingModel = approval.aiEmbeddingModel || approval.simResult?.aiEmbeddingModel || null;
-  let aiEmbeddingVersion = approval.aiEmbeddingVersion || approval.simResult?.aiEmbeddingVersion || null;
-  if (!formattedPost) {
-    const rewritten = await timedStage("rewrite", () => rewriteArticle(article.fullTextForKeywordCheck));
-    formattedPost = rewritten.text;
-    // Comparația AI este separată de compararea link-urilor și nu are limită
-    // de vechime: numai postări redactate/aprobate anterior prin AI intră aici.
-    const previousTexts = approval.bypassAiSimilarity ? [] : getAllAiPosts();
-    const aiSimilarity = approval.bypassAiSimilarity
-      ? null
-      : await timedStage("ai_text_similarity", () => checkSimilarity(formattedPost, previousTexts, threshold));
-    if (approval.bypassAiSimilarity) {
-      try {
-        const [postTitle = "", ...postBody] = formattedPost.split(/\r?\n/);
-        const generated = await createArticleEmbedding(postTitle, postBody.join("\n"));
-        aiEmbedding = generated.embedding;
-        aiEmbeddingModel = generated.embeddingModel;
-        aiEmbeddingVersion = generated.embeddingVersion;
-      } catch (err) {
-        console.warn(`[manual] Nu am putut salva embeddingul textului AI pentru viitoarele comparații: ${err.message}`);
-      }
-    } else if (aiSimilarity.isDuplicate) {
-      aiEmbedding = aiSimilarity.embedding;
-      aiEmbeddingModel = aiSimilarity.embeddingModel;
-      aiEmbeddingVersion = aiSimilarity.embeddingVersion;
-      const pending = await createApprovalRequest({
-        kind: "ai_text",
-        url,
-        article,
-        simResult: { ...simResult, aiEmbeddingModel, aiEmbeddingVersion },
-        matchedKeywords,
-        formattedPost,
-        aiEmbedding,
-        comparisonUrl: aiSimilarity.similarUrl,
-        comparisonTitle: previousTexts.find((entry) => entry.url === aiSimilarity.similarUrl)?.title,
-        similarity: aiSimilarity.similarity,
-        expiresAt: null, // cererile pentru texte AI nu expiră
-      });
-      console.log(`[similar AI] Text pus în așteptare fără expirare: ${pending.id}`);
-      return { status: "pending", pendingId: pending.id, reason: aiSimilarity.similarityReason };
-    } else {
-      aiEmbedding = aiSimilarity.embedding;
-      aiEmbeddingModel = aiSimilarity.embeddingModel;
-      aiEmbeddingVersion = aiSimilarity.embeddingVersion;
-    }
-  }
+  // 4. Rescriere AI fără verificare de similaritate și fără embedding de text AI.
+  const formattedPost = await timedStage("rewrite", () => prepareArticlePost(article, approval));
 
   // 6. Sistemul inteligent de imagini. Vorbitorul se determina AI-PRIMAR
   const regexSpeaker = detectSpeaker(article.title, matchedKeywords);
@@ -549,8 +515,7 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
     });
   }
 
-  // Salvăm numai după livrarea reușită; articolele în așteptarea aprobării AI
-  // nu devin false pozitive la următoarea verificare.
+  // Salvăm numai după livrarea reușită. Textele AI rămân doar arhivă.
   saveNews({
     url,
     title: article.title,
@@ -563,9 +528,7 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
     url,
     title: formattedPost.split(/\r?\n/, 1)[0] || article.title,
     content: formattedPost,
-    embedding: aiEmbedding,
-    embeddingModel: aiEmbeddingModel,
-    embeddingVersion: aiEmbeddingVersion,
+    embedding: null,
   });
   console.log("[ok] Trimis pentru aprobare");
   return { status: "done" };
@@ -640,10 +603,10 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       }
     }
 
-    // 3. Verificare similaritate cu ultimele 72h folosind articolul complet.
+    // 3. Verificare similaritate cu ultimele 24h folosind articolul complet.
     let simResult = null;
     if (policy.checkArticleSimilarity) {
-      const recentNews = getRecentNews(historyHours);
+      const recentNews = getRecentNews();
       // Păstrăm separatorul ca să delimităm titlul de corpul integral în arbitraj.
       const textToEmbed = `${article.title}\n${article.content || ""}`;
       simResult = await timedStage("article_similarity", () => checkSimilarity(textToEmbed, recentNews, threshold));
@@ -680,7 +643,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     }
 
     // Daca a trecut toate filtrele sau e pe acelasi site / bypass, finalizam
-    return await finalizeAndSendArticle(article, url, simResult, matchedKeywords, { bypassAiSimilarity: !policy.checkAiSimilarity });
+    return await finalizeAndSendArticle(article, url, simResult, matchedKeywords);
   } catch (err) {
     console.error(`[eroare] la procesarea ${url}:`, err.message);
     await notify(`❌ Eroare la procesarea unui articol:\n${url}\n${err.message}`).catch(() => {});
@@ -701,7 +664,7 @@ function enqueueProcess(fn) {
 }
 
 // Un link trimis botului în chatul privat configurat este procesat fără
-// comparația de similaritate; restul filtrelor normale rămân active.
+// comparația de similaritate și fără filtrele editoriale.
 const handleManualMessage = createManualMessageHandler({
   bot: notifyBot,
   authorizedChatId: NOTIFY_CHAT_ID,
@@ -767,7 +730,7 @@ async function main() {
   setInterval(() => cleanupOld(historyHours, Number(process.env.IMAGE_HISTORY_DAYS || 7)), 6 * 60 * 60 * 1000);
 
   // Salvam periodic baza de date in git (pe Actions filesystem-ul e efemer;
-  // fara asta istoricul de 72h s-ar pierde la fiecare oprire).
+  // fara asta istoricul de 24h s-ar pierde la fiecare oprire).
   if (dbPersistBranch) {
     persistNow(dbPersistBranch).catch(() => {});
     setInterval(() => persistNow(dbPersistBranch).catch(() => {}), dbPersistIntervalMin * 60 * 1000);

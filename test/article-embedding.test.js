@@ -2,7 +2,35 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import axios from "axios";
 
-import { checkSimilarity, createArticleEmbedding, splitArticleContent } from "../src/similarity/embedding.js";
+import { checkSimilarity, checkSimilarityEmbedding, createArticleEmbedding, splitArticleContent } from "../src/similarity/embedding.js";
+
+test("incompatible or invalid vectors cannot produce a false 100 percent duplicate", () => {
+  const title = "Bolojan anunță reforma pensiilor";
+  for (const embedding of [[1, 0, 100], [NaN, 0], [Infinity, 0], [0, 0]]) {
+    const result = checkSimilarityEmbedding([1, 0], title, "", [{
+      url: "https://example.com/invalid", title, content: "", embedding,
+      embeddingModel: "gemini-embedding-001",
+    }], .8, { embeddingModel: "gemini-embedding-001" });
+    assert.equal(result.isDuplicate, false);
+    assert.equal(result.similarUrl, null);
+  }
+});
+
+test("restored and live comparisons use the same legacy primary-model compatibility", async () => {
+  const title = "Bolojan anunță reforma pensiilor";
+  const history = [{ url: "https://example.com/legacy", title, content: "", embedding: [1, 0] }];
+  const restored = checkSimilarityEmbedding([1, 0], title, "", history, .8, { embeddingModel: "gemini-embedding-001" });
+  assert.equal(restored.isDuplicate, true);
+  const originalPost = axios.post;
+  axios.post = async () => ({ data: { embeddings: [{ values: [1, 0] }] } });
+  try {
+    const live = await checkSimilarity(title, history);
+    assert.equal(live.isDuplicate, restored.isDuplicate);
+    assert.equal(live.similarUrl, restored.similarUrl);
+  } finally { axios.post = originalPost; }
+  assert.equal(checkSimilarityEmbedding([1, 0], title, "", history, .8,
+    { embeddingModel: "gemini-embedding-2" }).isDuplicate, false);
+});
 
 test("article chunking covers the whole story instead of only its lead", () => {
   const article = "știre ".repeat(1200);

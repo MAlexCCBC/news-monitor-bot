@@ -3,6 +3,23 @@ import assert from "node:assert/strict";
 
 import { evaluate3ZoneSimilarity, selectSimilarityCandidate } from "../src/similarity/embedding.js";
 
+test("identical substantial articles do not require proper names", () => {
+  const body = "furtuna a doborât copaci pe carosabil și a întrerupt alimentarea cu electricitate în mai multe cartiere. echipele de intervenție au degajat străzile și au reparat cablurile avariate.";
+  assert.equal(evaluate3ZoneSimilarity(.98, "furtuna a provocat avarii", body,
+    "furtuna a provocat avarii", body).isDuplicate, true);
+});
+
+test("shared political background in long articles cannot override different reported developments", () => {
+  const background = "Contextul crizei presupune negocieri parlamentare, voturi pentru învestitură, consultări constituționale, majorități fragile, alianțe politice, propuneri pentru portofolii ministeriale, declarații televizate, discuții despre calendarul alegerilor, analize bugetare, măsuri economice, cheltuieli publice, responsabilități instituționale, decizii administrative, obligații fiscale, salarii, pensii, investiții, reforme și încrederea populației.";
+  const a = "Traian Băsescu consideră că relațiile europene vor continua normal în cazul unui acord parlamentar.\n\nFostul lider discută despre politica externă și apartenența la Uniunea Europeană.\n\n" + background;
+  const b = "Traian Băsescu se îndoiește că premierul desemnat va reuși să își alcătuiască echipa.\n\nEl oferă șanse puține formării cabinetului și explică obstacolele învestirii.\n\n" + background;
+  const result = evaluate3ZoneSimilarity(.94,
+    "Băsescu: relațiile cu UE nu vor fi afectate de o înțelegere cu AUR", a,
+    "Băsescu nu îi dă mari șanse lui Siegfried Mureșan să facă un alt fel de Guvern", b);
+  assert.equal(result.isDuplicate, false);
+  assert.equal(result.score, .94, "do not manufacture a different semantic score after arbitration");
+});
+
 test("generic Romanian headline overlap does not mark unrelated coverage as duplicate", () => {
   const result = evaluate3ZoneSimilarity(
     0.77,

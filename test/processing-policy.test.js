@@ -11,7 +11,6 @@ test("explicit manual links bypass every editorial and similarity gate", () => {
     checkKeywords: false,
     checkForeignRelevance: false,
     checkArticleSimilarity: false,
-    checkAiSimilarity: false,
   });
 });
 
@@ -23,7 +22,6 @@ test("channel bypass keeps its existing date and minimum-content checks", () => 
     checkKeywords: false,
     checkForeignRelevance: false,
     checkArticleSimilarity: false,
-    checkAiSimilarity: true,
   });
 });
 
@@ -35,6 +33,5 @@ test("ordinary feed items keep all filtering enabled", () => {
     checkKeywords: true,
     checkForeignRelevance: true,
     checkArticleSimilarity: true,
-    checkAiSimilarity: true,
   });
 });

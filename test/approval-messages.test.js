@@ -34,7 +34,7 @@ test("legacy link approvals recover their comparison URL from the saved similari
   assert.doesNotMatch(text, /link indisponibil/);
 });
 
-test("AI similarity prompt clearly compares against an AI-created story and has no expiry", () => {
+test("legacy AI text retries no longer display a similarity gate", () => {
   const text = formatApprovalText({
     kind: "ai_text",
     article: { title: "Articol curent" },
@@ -45,8 +45,7 @@ test("AI similarity prompt clearly compares against an AI-created story and has 
     formattedPost: "Previzualizare text",
   });
 
-  assert.match(text, /Comparație cu știri create deja cu AI/);
-  assert.match(text, /Știre creată anterior cu AI/);
-  assert.match(text, /<a href="https:\/\/news\.example\/previous">https:\/\/news\.example\/previous<\/a>/);
-  assert.match(text, /Cererea nu expiră/);
+  assert.match(text, /Text pregătit pentru trimitere/);
+  assert.match(text, /reîncerca trimiterea/);
+  assert.doesNotMatch(text, /pare similar|Comparație|88%|news\.example\/previous/);
 });
