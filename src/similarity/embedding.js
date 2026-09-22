@@ -297,12 +297,22 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
  */
 export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, leadOld, threshold = 0.80) {
   const match = checkKeyEntitiesMatch(titleNew, leadNew, titleOld, leadOld);
+  // Când titlurile sunt formulate diferit, acceptăm drept ancoră o potrivire
+  // puternică în corpurile complete. Pragul semantic suplimentar, minimum 6
+  // termeni tematici comuni, overlap minim, titlu tematic și două entități reduc riscul ca
+  // simpla acoperire a aceleiași persoane/subiect larg să unească evenimente.
+  const strongArticleMatch =
+    embSim >= threshold + 0.04 &&
+    match.commonTopicWords >= 6 &&
+    match.bodyTopicOverlap >= 0.18 &&
+    match.commonTitleTopicWords >= 3 &&
+    match.commonProper >= 2;
 
   // 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
   if (embSim >= threshold) {
     // Un scor semantic mare nu e suficient dacă titlurile nu confirmă același
     // subiect: știrile din aceeași zi/despre aceeași persoană pot avea embedding-uri apropiate.
-    if (!match.hasMatchingEntities) {
+    if (!match.hasMatchingEntities && !strongArticleMatch) {
       return {
         isDuplicate: false,
         score: embSim * 0.75,

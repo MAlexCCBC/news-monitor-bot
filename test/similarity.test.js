@@ -59,6 +59,20 @@ test("different newsroom wording still catches the same Moldova emergency story"
   assert.equal(result.zone, "VERDE");
 });
 
+test("full-article evidence catches the same Moldova emergency despite rewritten headlines", () => {
+  const result = evaluate3ZoneSimilarity(
+    0.865976,
+    "Republica Moldova instituie stare de urgență în sectoarele energetic și hidrologic pentru 60 de zile. Aproape 60% din energia electrică va fi importată",
+    "Propunerea Guvernului care vizează o stare de urgență de 60 de zile urmează să fie înaintată Parlamentului Republicii Moldova pentru examinare și aprobare. Potrivit Guvernului, aproximativ 59% din necesarul de energie electrică al Republicii Moldova va trebui acoperit din import în această iarnă. În sectorul hidrologic, Guvernul invocă deficitul sever de apă de pe râurile Nistru și Prut, care poate afecta alimentarea populației cu apă potabilă.",
+    "Video Maia Sandu anunță stare de urgență în domeniul energetic și hidrologic. Nu o să vă spun că va fi ușor",
+    "Consiliul Național de Securitate al Republicii Moldova a convenit asupra necesității declarării stării de urgență în domeniul energetic și hidrologic în contextul creșterii prețurilor la energie și combustibili, dar și al situației critice de pe Nistru. Anunțul a fost făcut de președinta Maia Sandu după ședința Consiliului. Măsura este necesară pentru ca autoritățile să poată interveni rapid în cazul unor probleme de aprovizionare cu carburanți sau al agravării situației hidrologice.",
+    0.80
+  );
+
+  assert.equal(result.isDuplicate, true);
+  assert.equal(result.score, 0.865976);
+});
+
 test("Basescu's assessment and PSD's vote plan are distinct Muresan stories", () => {
   const result = evaluate3ZoneSimilarity(
     0.786743,
