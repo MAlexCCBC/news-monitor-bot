@@ -31,12 +31,21 @@ db.exec(`
 
   CREATE TABLE IF NOT EXISTS ai_model_cooldowns (
     model TEXT PRIMARY KEY,
-    cooldown_until INTEGER NOT NULL
+    cooldown_until INTEGER NOT NULL,
+    cooldown_version INTEGER NOT NULL DEFAULT 1
   );
 
   CREATE INDEX IF NOT EXISTS idx_news_created ON news_history(created_at);
   CREATE INDEX IF NOT EXISTS idx_image_created ON image_history(created_at);
 `);
+
+// Ignore legacy cooldowns created by the old broad quota_exceeded heuristic.
+// Their exact quota window was unknown and they could suppress models that
+// still had daily capacity.
+const cooldownCols = db.prepare(`PRAGMA table_info(ai_model_cooldowns)`).all().map((column) => column.name);
+if (!cooldownCols.includes("cooldown_version")) {
+  db.exec(`ALTER TABLE ai_model_cooldowns ADD COLUMN cooldown_version INTEGER NOT NULL DEFAULT 1`);
+}
 
 const newsCols = db.prepare(`PRAGMA table_info(news_history)`).all().map((column) => column.name);
 if (!newsCols.includes("embedding_model")) db.exec(`ALTER TABLE news_history ADD COLUMN embedding_model TEXT`);
@@ -102,13 +111,18 @@ export function getRecentImages(daysBack) {
 }
 
 export function getActiveModelCooldowns(now = Date.now()) {
-  return db.prepare(`SELECT model, cooldown_until FROM ai_model_cooldowns WHERE cooldown_until > ?`).all(now);
+  return db.prepare(`SELECT model, cooldown_until FROM ai_model_cooldowns WHERE cooldown_until > ? AND cooldown_version = 2`).all(now);
 }
 
 export function saveModelCooldown(model, cooldownUntil) {
   db.prepare(`
-    INSERT INTO ai_model_cooldowns (model, cooldown_until) VALUES (?, ?)
-    ON CONFLICT(model) DO UPDATE SET cooldown_until = MAX(cooldown_until, excluded.cooldown_until)
+    INSERT INTO ai_model_cooldowns (model, cooldown_until, cooldown_version) VALUES (?, ?, 2)
+    ON CONFLICT(model) DO UPDATE SET
+      cooldown_until = CASE
+        WHEN ai_model_cooldowns.cooldown_version = 2 THEN MAX(ai_model_cooldowns.cooldown_until, excluded.cooldown_until)
+        ELSE excluded.cooldown_until
+      END,
+      cooldown_version = excluded.cooldown_version
   `).run(model, cooldownUntil);
 }
 

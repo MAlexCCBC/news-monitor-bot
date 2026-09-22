@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { getActiveModelCooldowns } from "../src/storage/db.js";
+import db, { getActiveModelCooldowns, saveModelCooldown } from "../src/storage/db.js";
 import { describeGeminiError, filterCoolingModels, filterRateLimitedModels, recordModelFailure, recordModelRequest } from "../src/ai/models.js";
 
 test("Gemini 429 cools down only the failed model and respects Retry-After", () => {
@@ -47,15 +47,40 @@ test("local RPM guard keeps Gemini 3.8 below its observed five-requests-per-minu
 test("daily and per-minute quota errors get cooldowns matched to their reset windows", () => {
   const now = 100_000;
   recordModelFailure("test-daily-quota", {
-    response: { status: 429, data: { error: { details: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel" }] } } },
+    response: { status: 429, data: { error: { details: [{ violations: [{ quotaId: "GenerateRequestsPerDayPerProjectPerModel-FreeTier" }] }] } } },
   }, now);
   recordModelFailure("test-minute-quota", {
-    response: { status: 429, data: { error: { details: [{ quotaId: "GenerateRequestsPerMinutePerProjectPerModel" }] } } },
+    response: { status: 429, data: { error: { details: [{ violations: [{ quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" }] }] } } },
   }, now);
 
   assert.deepEqual(filterCoolingModels(["test-minute-quota", "ready"], now + 59_999), ["ready"]);
   assert.deepEqual(filterCoolingModels(["test-minute-quota", "ready"], now + 60_000), ["test-minute-quota", "ready"]);
   assert.deepEqual(filterCoolingModels(["test-daily-quota", "ready"], now + 60_001), ["ready"]);
+  assert.deepEqual(filterCoolingModels(["test-daily-quota", "ready"], now + 24 * 60 * 60 * 1000), ["test-daily-quota", "ready"]);
+});
+
+test("retry duration in Google's error message is honored when RetryInfo/header is absent", () => {
+  const now = 300_000;
+  recordModelFailure("test-inline-retry", {
+    response: {
+      status: 429,
+      data: { error: { status: "RESOURCE_EXHAUSTED", message: "You exceeded your current quota. Please retry in 1.624874675s." } },
+    },
+  }, now);
+
+  assert.deepEqual(filterCoolingModels(["test-inline-retry"], now + 1_625), ["test-inline-retry"]);
+});
+
+test("legacy heuristic cooldown rows do not suppress models after the corrected rollout", () => {
+  db.prepare("INSERT OR REPLACE INTO ai_model_cooldowns (model, cooldown_until, cooldown_version) VALUES (?, ?, 1)")
+    .run("test-legacy-cooldown", Date.now() + 24 * 60 * 60 * 1000);
+
+  assert.equal(getActiveModelCooldowns().some(({ model }) => model === "test-legacy-cooldown"), false);
+
+  const freshCooldown = Date.now() + 2_000;
+  saveModelCooldown("test-legacy-cooldown", freshCooldown);
+  const migrated = getActiveModelCooldowns().find(({ model }) => model === "test-legacy-cooldown");
+  assert.equal(migrated.cooldown_until, freshCooldown);
 });
 
 test("models all in cooldown are skipped instead of retrying the least-cooled model", () => {

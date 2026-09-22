@@ -41,7 +41,23 @@ function retryAfterMs(err, now) {
   const retryInfo = details.find((detail) => String(detail["@type"] || "").endsWith("google.rpc.RetryInfo"));
   const delay = retryInfo?.retryDelay || details.find((detail) => detail.retryDelay)?.retryDelay;
   const match = typeof delay === "string" && delay.match(/^(\d+(?:\.\d+)?)s$/);
-  return match ? Number(match[1]) * 1000 : null;
+  if (match) return Number(match[1]) * 1000;
+
+  // The REST error sometimes includes its retry hint only in error.message.
+  const messageDelay = err.response?.data?.error?.message?.match(/retry in\s+(\d+(?:\.\d+)?)\s*s/i);
+  return messageDelay ? Number(messageDelay[1]) * 1000 : null;
+}
+
+function nextPacificMidnightDelay(now) {
+  const dayInPacific = (timestamp) => new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Los_Angeles", year: "numeric", month: "2-digit", day: "2-digit",
+  }).format(timestamp);
+  const currentDay = dayInPacific(now);
+  let nextReset = now;
+  do {
+    nextReset += 60_000;
+  } while (dayInPacific(nextReset) === currentDay);
+  return nextReset - now;
 }
 
 export function describeGeminiError(err) {
@@ -58,21 +74,21 @@ export function recordModelFailure(model, err, now = Date.now()) {
   const status = err?.response?.status;
   if (status !== 429 && status !== 500 && status !== 503) return false;
   const serverDelay = retryAfterMs(err, now);
-  const quotaDetails = JSON.stringify(err?.response?.data?.error || {}).toLowerCase();
-  const isDailyQuota = /per[_ ]?day|perday|daily|requestsperday|quota_exceeded/.test(quotaDetails);
-  const isMinuteQuota = /per[_ ]?minute|perminute|rpm|requestsperminute|rate_limit_exceeded/.test(quotaDetails);
-  const defaultDelay = status !== 429
-    ? 60 * 1000
-    : isDailyQuota
-      ? 24 * 60 * 60 * 1000
-      : isMinuteQuota
-        ? 60 * 1000
-        : 15 * 60 * 1000;
-  const delay = serverDelay ?? defaultDelay;
+  const apiError = err?.response?.data?.error || {};
+  const violations = (apiError.details || []).flatMap((detail) => detail.violations || []);
+  const quotaIds = violations.map((violation) => violation.quotaId || "").join(" ").toLowerCase();
+  // A daily lockout requires an explicit PerDay quota id; generic 429 text or
+  // a near-full dashboard counter is not enough to infer RPD exhaustion.
+  const isDailyQuota = /per[_ ]?day|perday|requestsperday/.test(quotaIds);
+  const isMinuteQuota = /per[_ ]?minute|perminute|requestsperminute/.test(quotaIds);
+  const defaultDelay = status !== 429 ? 60_000 : isMinuteQuota ? 60_000 : 15 * 60_000;
+  const delay = isDailyQuota
+    ? Math.max(serverDelay || 0, nextPacificMidnightDelay(now))
+    : serverDelay ?? defaultDelay;
   const cooldownUntil = Math.max(modelCooldowns.get(model) || 0, now + delay);
   modelCooldowns.set(model, cooldownUntil);
   saveModelCooldown(model, cooldownUntil);
-  console.warn(`[models] ${model} în cooldown ${Math.ceil(delay / 1000)}s după HTTP ${status}`);
+  console.warn(`[models] ${model} în cooldown ${Math.ceil(delay / 1000)}s după HTTP ${status}${isDailyQuota ? " (RPD confirmat de quotaId)" : ""}`);
   return true;
 }
 
