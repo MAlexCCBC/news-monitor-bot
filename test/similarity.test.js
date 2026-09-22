@@ -73,6 +73,59 @@ test("Basescu's assessment and PSD's vote plan are distinct Muresan stories", ()
   assert.match(result.zone, /Permis/);
 });
 
+test("two separate events from the same New York visit are not duplicate news", () => {
+  const result = evaluate3ZoneSimilarity(
+    0.846,
+    "Investitorii americani l-au întrebat pe Nicușor Dan când va avea România Guvern. Ce le-a răspuns președintele",
+    "Nicușor Dan a participat la New York la o întâlnire organizată de JPMorgan cu reprezentanți ai unor companii, bănci și fonduri de investiții care investesc în obligațiuni românești. Investitorii au adresat întrebări despre situația politică și financiară a României.",
+    "Planul prezentat de Nicușor Dan în SUA: infrastructura de care România are nevoie și atragerea capitalului american",
+    "Șeful statului a prezentat la un eveniment organizat de Atlantic Council la New York prioritățile României în materie de infrastructură civilă și militară. Nicușor Dan a transmis că discuțiile au vizat infrastructura și modalitățile de finanțare.",
+    0.80
+  );
+
+  assert.equal(result.isDuplicate, false);
+  assert.match(result.zone, /Permis/);
+});
+
+test("a question about a proposed child social-media ban differs from an AI-safety event", () => {
+  const result = evaluate3ZoneSimilarity(
+    0.786,
+    "Ce spune președintele Nicușor Dan, întrebat dacă este de acord cu interzicerea rețelelor sociale pentru copii",
+    "Președintele Nicușor Dan a fost întrebat la New York cum comentează propunerea Comisiei Europene de a interzice accesul la social media pentru copiii sub 13 ani și dacă România ar putea susține proiectul. Declarațiile au fost făcute la o întâlnire cu reprezentanții comunității românești.",
+    "Mirabela Grădinaru, la New York, într-o dezbatere despre noile tehnologii, AI și siguranța copiilor",
+    "Mirabela Grădinaru, partenera președintelui Nicușor Dan, a participat la New York la o dezbatere despre noile tehnologii, AI și siguranța copiilor. Inteligența artificială face parte din viața copiilor și schimbă felul în care învață.",
+    0.80
+  );
+
+  assert.equal(result.isDuplicate, false);
+});
+
+test("different people making statements about the same breaking event are distinct stories", () => {
+  const result = evaluate3ZoneSimilarity(
+    0.841,
+    "Nicușor Dan, mesaj de înțelegere pentru cei care consideră că Georgescu e o victimă a sistemului",
+    "Președintele Nicușor Dan a declarat, la New York, pe tema reținerii lui Călin Georgescu, că este responsabilitatea DIICOT să lămurească faptele și că respectă prezumția de nevinovăție.",
+    "Traian Băsescu, despre reținerea lui Călin Georgescu: Este un spectacol care pare ordonat",
+    "Fostul președinte Traian Băsescu a acuzat spectacolul oferit de Justiție în cazul lui Călin Georgescu, ridicat luni și reținut de procurorii DIICOT. Băsescu a spus că este un spectacol pe care l-a respins și în trecut.",
+    0.80
+  );
+
+  assert.equal(result.isDuplicate, false);
+});
+
+test("cross-outlet headlines for the same quoted Grindeanu statement remain duplicates", () => {
+  const result = evaluate3ZoneSimilarity(
+    0.82,
+    "În ce condiții este scos Călin Georgescu din politică, după Grindeanu",
+    "Sorin Grindeanu a declarat că, dacă va fi găsit vinovat, Călin Georgescu va fi scos din politică. Liderul PSD a comentat și cazul fostului candidat pro-rus.",
+    "Grindeanu: Dacă va fi găsit vinovat, Călin Georgescu va fi scos din politică",
+    "Sorin Grindeanu a spus că, dacă va fi găsit vinovat, Călin Georgescu va fi scos din politică. El a făcut declarația despre fostul candidat pro-rus.",
+    0.80
+  );
+
+  assert.equal(result.isDuplicate, true);
+});
+
 test("shared politician and broad topic do not merge distinct Maia Sandu developments", () => {
   const result = evaluate3ZoneSimilarity(
     0.94,

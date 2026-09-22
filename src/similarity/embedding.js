@@ -244,29 +244,42 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
 
   const titleOverlap = titleWordOverlap(titleA, titleOld);
 
-  // Măsurăm subiectul pe întregul text, nu doar pe titlu. Titlul rămâne un
-  // semnal suplimentar, iar numele/cifrele singure nu pot confirma un eveniment.
+  // Măsurăm atât ancora din titlu, cât și suprapunerea subiectului în corp.
+  // Aceeași persoană/loc/zi și un subiect larg (ex. copii + tehnologie sau
+  // vizita la New York) nu înseamnă aceeași știre.
   const articleA = `${titleA} ${leadA}`;
   const articleB = `${titleOld} ${leadOld}`;
   const stemsA = new Set(getStems(articleA));
   const stemsB = new Set(getStems(articleB));
   const namesA = new Set([...extractEntities(articleA).properNouns].map(stemRo));
   const namesB = new Set([...extractEntities(articleB).properNouns].map(stemRo));
+  const titleStemsA = new Set(getStems(titleA));
+  const titleStemsB = new Set(getStems(titleOld));
+  const titleNamesA = new Set([...extractEntities(titleA).properNouns].map(stemRo));
+  const titleNamesB = new Set([...extractEntities(titleOld).properNouns].map(stemRo));
   let commonTopicWords = 0;
   for (const stem of stemsA) {
     if (stemsB.has(stem) && !namesA.has(stem) && !namesB.has(stem)) commonTopicWords++;
   }
+  let commonTitleTopicWords = 0;
+  for (const stem of titleStemsA) {
+    if (titleStemsB.has(stem) && !titleNamesA.has(stem) && !titleNamesB.has(stem)) commonTitleTopicWords++;
+  }
+  const topicCountA = [...stemsA].filter((stem) => !namesA.has(stem) && !namesB.has(stem)).length;
+  const topicCountB = [...stemsB].filter((stem) => !namesA.has(stem) && !namesB.has(stem)).length;
+  const bodyTopicOverlap = commonTopicWords / Math.max(1, Math.min(topicCountA, topicCountB));
 
   const hasMatchingEntities =
-    (titleOverlap >= 0.60 && commonTopicWords >= 3) ||
-    // Când titlurile sunt formulate diferit, confirmarea vine din vocabularul
-    // articolului întreg, legat de cel puțin o entitate/cifră comună.
-    (commonTopicWords >= 4 && (commonProper >= 1 || commonNumbers >= 1)) ||
-    (titleOverlap >= 0.45 && commonTopicWords >= 3 && (commonProper >= 1 || commonNumbers >= 1));
+    (titleOverlap >= 0.45 && commonTitleTopicWords >= 2 && (commonProper >= 1 || commonNumbers >= 1)) ||
+    // Titluri foarte diferite pot totuși fi aceeași relatare, dar doar când
+    // corpul are suprapunere lexicală densă, nu doar nume și termeni generici.
+    (commonTopicWords >= 8 && bodyTopicOverlap >= 0.35 && (commonProper >= 1 || commonNumbers >= 1));
 
   return {
     hasMatchingEntities,
     titleOverlap,
+    commonTitleTopicWords,
+    bodyTopicOverlap,
     commonTopicWords,
     commonProper,
     commonNumbers,
