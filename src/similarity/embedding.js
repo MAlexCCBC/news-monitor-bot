@@ -241,6 +241,31 @@ function titleWordOverlap(titleA, titleB) {
   return minSize > 0 ? common / minSize : 0;
 }
 
+function normalizedText(text = "") {
+  return text.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+
+function isEditorial(title, body) {
+  return /^(?:opinie|editorial)\b/i.test(normalizedText(title).trim()) ||
+    /^coordonator editorial\b/i.test(normalizedText(body).trim());
+}
+
+function statementSpeaker(title, body) {
+  const text = normalizedText(`${title}\n${articleFocus(body)}`);
+  if (!/\b(?:declar\w*|spun\w*|afirm\w*|reaction\w*|intrebat\w*|mesaj\w*|consider\w*|sustin\w*|vorbit|coment\w*|interviu)\b/i.test(text)) return null;
+  const headline = normalizedText(title).replace(/^(?:(?:video|exclusiv|interviu|stenograme)[\s:.\-]*)+/i, "");
+  const roles = new Set(["presedintele", "presedinta", "premierul", "ministrul", "liderul", "senatorul", "vicepresedintele"]);
+  const organizations = new Set(["republica", "consiliul", "uniunea", "partidul", "comisia", "curtea", "tribunalul", "biroul", "banca"]);
+  // Only explicit headline names count: a name mentioned in the background
+  // may be a third party, not the person whose reaction is being reported.
+  for (const name of headline.match(/\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+){1,2}\b/g) || []) {
+    const parts = name.toLowerCase().split(/\s+/);
+    if (roles.has(parts[0])) parts.shift();
+    if (parts.length >= 2 && !organizations.has(parts[0])) return parts.join(" ");
+  }
+  return null;
+}
+
 export function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
   leadA = cleanArticleContent(leadA);
   leadOld = cleanArticleContent(leadOld);
@@ -323,10 +348,22 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
   // Preserve accents/punctuation here: normalization must not erase negation.
   const bodyNew = cleanArticleContent(leadNew).toLowerCase();
   const bodyOld = cleanArticleContent(leadOld).toLowerCase();
+  if (isEditorial(titleNew, bodyNew) !== isEditorial(titleOld, bodyOld)) {
+    return { isDuplicate: false, score: embSim, zone: "Permis - editorial distinct",
+      reason: "Un editorial poate cita declarațiile știrii fără să fie aceeași relatare" };
+  }
   if (embSim >= threshold && bodyNew.length >= 120 && bodyNew === bodyOld) {
     return { isDuplicate: true, score: embSim, zone: "VERDE", reason: "Corp integral identic" };
   }
   const match = checkKeyEntitiesMatch(titleNew, leadNew, titleOld, leadOld);
+  const speakerNew = statementSpeaker(titleNew, leadNew);
+  const speakerOld = statementSpeaker(titleOld, leadOld);
+  if (match.commonTitleTopicWords < 3 && speakerNew && speakerOld && speakerNew !== speakerOld &&
+      !normalizedText(titleOld).toLowerCase().includes(speakerNew) &&
+      !normalizedText(titleNew).toLowerCase().includes(speakerOld)) {
+    return { isDuplicate: false, score: embSim, zone: "Permis - declarații distincte",
+      reason: "Reacții ale unor vorbitori diferiți, fără suficiente detalii comune despre același eveniment" };
+  }
   // Când titlurile sunt formulate diferit, acceptăm drept ancoră o potrivire
   // puternică în corpurile complete. Pragul semantic suplimentar, minimum 6
   // termeni tematici comuni, overlap minim, titlu tematic și două entități reduc riscul ca

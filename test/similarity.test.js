@@ -3,6 +3,32 @@ import assert from "node:assert/strict";
 
 import { evaluate3ZoneSimilarity, selectSimilarityCandidate } from "../src/similarity/embedding.js";
 
+test("different speakers reacting to a proposed coalition remain separate stories", () => {
+  const background = "Formarea unei majorități presupune negocieri între partide, discuții parlamentare, susținerea unui program comun și stabilirea unui calendar pentru consultări. Variantele de colaborare depind de voturile parlamentarilor și de acordul conducerilor politice.";
+  assert.equal(evaluate3ZoneSimilarity(.810033,
+    "Exclusiv Petrișor Peiu reacționează după ce Sorin Grindeanu a vorbit despre un guvern PSD-AUR: Orice este posibil. Ce condiții pune",
+    "Petrișor Peiu a declarat că o astfel de variantă este posibilă numai dacă sunt respectate regulile democratice.\n\n" + background,
+    "Nicușor Dan mută discuția de la PSD-AUR la testul Mureșan: Mai întâi să vedem dacă trece",
+    "Președintele Nicușor Dan a declarat că trebuie să ne concentrăm dacă nominalizarea va avea succes.\n\n" + background).isDuplicate, false);
+});
+
+test("an explicitly marked editorial may quote a report without being its duplicate", () => {
+  const quotation = "Nicușor Dan a declarat că este responsabilitatea DIICOT să lămurească faptele și că respectă prezumția de nevinovăție. Președintele a explicat că dosarul nu are legătură cu alegerile.";
+  assert.equal(evaluate3ZoneSimilarity(.918,
+    "Georgescu – DIICOT: De unde știe președintele Nicușor Dan că dosarul nu are legătură cu alegerile?",
+    "Coordonator editorial\n\n" + quotation + "\n\nAceastă afirmație ridică o problemă privind separația puterilor.",
+    "Nicușor Dan, după reținerea lui Călin Georgescu: Cei care nu au încredere în justiție sunt 75%",
+    quotation).isDuplicate, false);
+});
+
+test("reversed headline order of two participants does not split the same meeting", () => {
+  assert.equal(evaluate3ZoneSimilarity(.95,
+    "Maia Sandu discută cu Nicușor Dan despre securitatea energetică",
+    "Maia Sandu a declarat după întâlnire că securitatea energetică este prioritară. Cooperarea bilaterală și interconexiunile sunt pe agenda discuțiilor.",
+    "Nicușor Dan discută cu Maia Sandu despre securitatea energetică",
+    "Nicușor Dan a declarat după întâlnire că securitatea energetică este prioritară. Cooperarea bilaterală și interconexiunile sunt pe agenda discuțiilor.").isDuplicate, true);
+});
+
 test("identical substantial articles do not require proper names", () => {
   const body = "furtuna a doborât copaci pe carosabil și a întrerupt alimentarea cu electricitate în mai multe cartiere. echipele de intervenție au degajat străzile și au reparat cablurile avariate.";
   assert.equal(evaluate3ZoneSimilarity(.98, "furtuna a provocat avarii", body,
