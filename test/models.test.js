@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { filterCoolingModels, filterRateLimitedModels, recordModelFailure, recordModelRequest } from "../src/ai/models.js";
+import { describeGeminiError, filterCoolingModels, filterRateLimitedModels, recordModelFailure, recordModelRequest } from "../src/ai/models.js";
 
 test("Gemini 429 cools down only the failed model and respects Retry-After", () => {
   const now = 1_000;
@@ -55,4 +55,22 @@ test("daily and per-minute quota errors get cooldowns matched to their reset win
   assert.deepEqual(filterCoolingModels(["test-minute-quota", "ready"], now + 59_999), ["ready"]);
   assert.deepEqual(filterCoolingModels(["test-minute-quota", "ready"], now + 60_000), ["test-minute-quota", "ready"]);
   assert.deepEqual(filterCoolingModels(["test-daily-quota", "ready"], now + 60_001), ["ready"]);
+});
+
+test("models all in cooldown are skipped instead of retrying the least-cooled model", () => {
+  const now = 200_000;
+  recordModelFailure("test-all-cooldown-a", { response: { status: 429 } }, now);
+  recordModelFailure("test-all-cooldown-b", { response: { status: 429 } }, now);
+
+  assert.deepEqual(filterCoolingModels(["test-all-cooldown-a", "test-all-cooldown-b"], now + 1), []);
+});
+
+test("Gemini error formatting preserves server quota details for diagnosis", () => {
+  assert.equal(
+    describeGeminiError({
+      message: "Request failed with status code 429",
+      response: { status: 429, data: { error: { status: "RESOURCE_EXHAUSTED", message: "Per-day quota exceeded" } } },
+    }),
+    "HTTP 429: RESOURCE_EXHAUSTED: Per-day quota exceeded"
+  );
 });

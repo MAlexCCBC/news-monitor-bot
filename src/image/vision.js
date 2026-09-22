@@ -1,6 +1,6 @@
 import axios from "axios";
 import sharp from "sharp";
-import { filterModels, recordModelFailure, recordModelRequest } from "../ai/models.js";
+import { describeGeminiError, filterModels, recordModelFailure, recordModelRequest } from "../ai/models.js";
 
 // Analiza faciala prin Gemini Vision (multimodal). Folosim Gemini ca motor de:
 //  1. detectie fata -> bounding box pentru crop centrat corect;
@@ -39,6 +39,9 @@ export async function toInlineJpeg(buffer, maxSize = 512) {
 
 async function geminiVision(parts) {
   const models = await filterModels(VISION_MODELS);
+  if (!models.length) {
+    throw new Error("Toate modelele vision sunt temporar în cooldown după erori de cotă.");
+  }
   let lastError;
   for (const model of models) {
     try {
@@ -60,11 +63,11 @@ async function geminiVision(parts) {
     } catch (err) {
       lastError = err;
       recordModelFailure(model, err);
-      console.warn(`[vision] ${model} a esuat (${err.response?.status || err.message})`);
+      console.warn(`[vision] ${model} a eșuat (${describeGeminiError(err)})`);
       continue;
     }
   }
-  throw new Error(`Toate modelele vision au esuat: ${lastError?.message}`);
+  throw new Error(`Toate modelele vision au eșuat: ${describeGeminiError(lastError)}`);
 }
 
 // Detecteaza fata PRINCIPALA si intoarce bounding box-ul in pixeli:

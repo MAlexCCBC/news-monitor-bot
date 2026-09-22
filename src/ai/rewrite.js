@@ -1,5 +1,5 @@
 import axios from "axios";
-import { filterModels, recordModelFailure, recordModelRequest } from "./models.js";
+import { describeGeminiError, filterModels, recordModelFailure, recordModelRequest } from "./models.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
@@ -77,6 +77,9 @@ export function isCompleteRewrite(text, finishReason) {
 
 export async function rewriteArticle(articleText) {
   const models = await filterModels(TEXT_MODELS);
+  if (!models.length) {
+    throw new Error("Toate modelele text sunt temporar în cooldown după erori de cotă; articolul nu a fost trimis către Gemini. Reîncearcă după resetarea cotei.");
+  }
   let lastError;
   for (const model of models) {
     try {
@@ -115,13 +118,10 @@ export async function rewriteArticle(articleText) {
       if (isTimeout) {
         console.warn(`[ai] ${model} a dat timeout (>60s), incerc urmatorul model...`);
       } else {
-        console.warn(`[ai] ${model} a esuat (status ${status || err.message}), incerc urmatorul model...`);
-      }
-      if (status === 429) {
-        await new Promise((r) => setTimeout(r, 2000));
+        console.warn(`[ai] ${model} a eșuat (${describeGeminiError(err)}), încerc următorul model disponibil...`);
       }
       continue;
     }
   }
-  throw new Error(`Toate modelele text au esuat: ${lastError?.message}`);
+  throw new Error(`Toate modelele text au eșuat: ${describeGeminiError(lastError)}`);
 }

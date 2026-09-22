@@ -42,15 +42,23 @@ function retryAfterMs(err, now) {
   return match ? Number(match[1]) * 1000 : null;
 }
 
+export function describeGeminiError(err) {
+  const apiError = err?.response?.data?.error;
+  const message = apiError?.message || err?.message || "eroare necunoscută";
+  const status = err?.response?.status;
+  const reason = apiError?.status || apiError?.code;
+  return [status ? `HTTP ${status}` : null, reason, message].filter(Boolean).join(": ");
+}
+
 // Rate limits and transient service outages are model-specific. Cache them
 // across all Gemini call sites so the next article won't repeat the same error.
 export function recordModelFailure(model, err, now = Date.now()) {
   const status = err?.response?.status;
   if (status !== 429 && status !== 500 && status !== 503) return false;
   const serverDelay = retryAfterMs(err, now);
-  const quotaDetails = JSON.stringify(err?.response?.data?.error?.details || []).toLowerCase();
-  const isDailyQuota = /per[_ ]?day|perday|daily/.test(quotaDetails);
-  const isMinuteQuota = /per[_ ]?minute|perminute|rpm/.test(quotaDetails);
+  const quotaDetails = JSON.stringify(err?.response?.data?.error || {}).toLowerCase();
+  const isDailyQuota = /per[_ ]?day|perday|daily|requestsperday|quota_exceeded/.test(quotaDetails);
+  const isMinuteQuota = /per[_ ]?minute|perminute|rpm|requestsperminute|rate_limit_exceeded/.test(quotaDetails);
   const defaultDelay = status !== 429
     ? 60 * 1000
     : isDailyQuota
@@ -65,9 +73,7 @@ export function recordModelFailure(model, err, now = Date.now()) {
 }
 
 export function filterCoolingModels(models, now = Date.now()) {
-  const available = models.filter((model) => (modelCooldowns.get(model) || 0) <= now);
-  if (available.length) return available;
-  return [...models].sort((a, b) => (modelCooldowns.get(a) || 0) - (modelCooldowns.get(b) || 0)).slice(0, 1);
+  return models.filter((model) => (modelCooldowns.get(model) || 0) <= now);
 }
 
 export function recordModelRequest(model, now = Date.now()) {
@@ -122,6 +128,10 @@ export async function filterModels(preferred) {
   const configured = supported.length ? supported : preferred;
   while (true) {
     const coolingFiltered = filterCoolingModels(configured);
+    if (!coolingFiltered.length) {
+      console.warn(`[models] Toate modelele preferate sunt în cooldown; nu trimitem cereri care ar primi probabil încă un 429.`);
+      return [];
+    }
     const filtered = filterRateLimitedModels(coolingFiltered);
     if (filtered.length) {
       const skipped = configured.length - filtered.length;
