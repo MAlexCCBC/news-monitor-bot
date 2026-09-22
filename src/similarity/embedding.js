@@ -270,7 +270,8 @@ function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
   const bodyTopicOverlap = commonTopicWords / Math.max(1, Math.min(topicCountA, topicCountB));
 
   const hasMatchingEntities =
-    (titleOverlap >= 0.45 && commonTitleTopicWords >= 2 && (commonProper >= 1 || commonNumbers >= 1)) ||
+    (titleOverlap >= 0.60 && commonTitleTopicWords >= 2 && (commonProper >= 1 || commonNumbers >= 1)) ||
+    (titleOverlap >= 0.45 && commonTitleTopicWords >= 3 && (commonProper >= 1 || commonNumbers >= 1)) ||
     // Titluri foarte diferite pot totuși fi aceeași relatare, dar doar când
     // corpul are suprapunere lexicală densă, nu doar nume și termeni generici.
     (commonTopicWords >= 8 && bodyTopicOverlap >= 0.35 && (commonProper >= 1 || commonNumbers >= 1));

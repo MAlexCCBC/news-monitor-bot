@@ -103,10 +103,10 @@ test("a question about a proposed child social-media ban differs from an AI-safe
 test("different people making statements about the same breaking event are distinct stories", () => {
   const result = evaluate3ZoneSimilarity(
     0.841,
-    "Nicușor Dan, mesaj de înțelegere pentru cei care consideră că Georgescu e o victimă a sistemului",
-    "Președintele Nicușor Dan a declarat, la New York, pe tema reținerii lui Călin Georgescu, că este responsabilitatea DIICOT să lămurească faptele și că respectă prezumția de nevinovăție.",
-    "Traian Băsescu, despre reținerea lui Călin Georgescu: Este un spectacol care pare ordonat",
-    "Fostul președinte Traian Băsescu a acuzat spectacolul oferit de Justiție în cazul lui Călin Georgescu, ridicat luni și reținut de procurorii DIICOT. Băsescu a spus că este un spectacol pe care l-a respins și în trecut.",
+    "Nicuşor Dan, mesaj de înţelegere, chiar de simpatie, pentru cei care consideră că fostul candidat Călin Georgescu e o victimă a sistemului: E atributul şi responsabilitatea DIICOT să lămurească faptele",
+    "Preşedintele Nicuşor Dan a declarat, la New York, pe tema reţinerii lui Călin Georgescu, că este responsabilitatea DIICOT să lămurească faptele şi că respectă prezumţia de nevinovăţie.",
+    "Traian Băsescu, despre reținerea lui Călin Georgescu: Este un spectacol care are la bază ceva. Parcă ar fi ordonat",
+    "Fostul preşedinte Traian Băsescu a acuzat spectacolul oferit de Justiţie în cazul lui Călin Georgescu, ridicat luni şi reţinut de procurorii DIICOT. Băsescu a spus că este un spectacol pe care l-a respins şi în trecut.",
     0.80
   );
 

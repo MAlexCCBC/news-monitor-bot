@@ -47,6 +47,35 @@ test("legacy duplicate vectors are reused without another API embedding call", a
   }
 });
 
+test("similarity embeds the incoming story once, not every historical article", async () => {
+  const originalPost = axios.post;
+  const calls = [];
+  axios.post = async (url, requestBody) => {
+    calls.push({ url, requestBody });
+    return { data: { embeddings: requestBody.requests.map(() => ({ values: [1, 0] })) } };
+  };
+
+  const history = Array.from({ length: 250 }, (_, index) => ({
+    url: `https://example.com/${index}`,
+    title: `Articol istoric ${index}`,
+    content: `Conținut istoric ${index}`,
+    embedding: [0, 1],
+    embeddingModel: "gemini-embedding-001",
+    embeddingVersion: "article-full-v1:gemini-embedding-001",
+  }));
+
+  try {
+    const result = await checkSimilarity("Știre nouă\nConținutul articolului nou", history, 0.8);
+
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].requestBody.requests.length, 1);
+    assert.equal(result.reembeddedNews.length, 0);
+    assert.equal(result.embeddingModel, "gemini-embedding-001");
+  } finally {
+    axios.post = originalPost;
+  }
+});
+
 test("fallback embeddings reuse their own space and never re-embed the primary-model history", async () => {
   const originalPost = axios.post;
   const calls = [];
