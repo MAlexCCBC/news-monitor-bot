@@ -29,6 +29,11 @@ db.exec(`
     created_at INTEGER NOT NULL
   );
 
+  CREATE TABLE IF NOT EXISTS ai_model_cooldowns (
+    model TEXT PRIMARY KEY,
+    cooldown_until INTEGER NOT NULL
+  );
+
   CREATE INDEX IF NOT EXISTS idx_news_created ON news_history(created_at);
   CREATE INDEX IF NOT EXISTS idx_image_created ON image_history(created_at);
 `);
@@ -96,11 +101,23 @@ export function getRecentImages(daysBack) {
   return stmt.all(cutoff);
 }
 
+export function getActiveModelCooldowns(now = Date.now()) {
+  return db.prepare(`SELECT model, cooldown_until FROM ai_model_cooldowns WHERE cooldown_until > ?`).all(now);
+}
+
+export function saveModelCooldown(model, cooldownUntil) {
+  db.prepare(`
+    INSERT INTO ai_model_cooldowns (model, cooldown_until) VALUES (?, ?)
+    ON CONFLICT(model) DO UPDATE SET cooldown_until = MAX(cooldown_until, excluded.cooldown_until)
+  `).run(model, cooldownUntil);
+}
+
 export function cleanupOld(hoursBack, daysBackImages) {
   const cutoffNews = Date.now() - hoursBack * 60 * 60 * 1000 * 2; // pastram 2x ca marja
   const cutoffImg = Date.now() - daysBackImages * 24 * 60 * 60 * 1000 * 2;
   db.prepare(`DELETE FROM news_history WHERE created_at < ?`).run(cutoffNews);
   db.prepare(`DELETE FROM image_history WHERE created_at < ?`).run(cutoffImg);
+  db.prepare(`DELETE FROM ai_model_cooldowns WHERE cooldown_until <= ?`).run(Date.now());
 }
 
 // Forteaza scrierea completa pe disc a bazei de date (folosit inainte de a

@@ -1,4 +1,5 @@
 import axios from "axios";
+import { getActiveModelCooldowns, saveModelCooldown } from "../storage/db.js";
 
 // Citim cheia DINAMIC (ESM hoisting - index.js ruleaza dotenv.config() dupa
 // importurile modulelor).
@@ -13,7 +14,8 @@ const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 let cachedModels = null;
 let cachedAt = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000;
-const modelCooldowns = new Map();
+// Persist across GitHub Actions runner restarts via the restored SQLite data branch.
+const modelCooldowns = new Map(getActiveModelCooldowns().map(({ model, cooldown_until: until }) => [model, until]));
 const modelRequestTimes = new Map();
 // Plafon local conservator, cu marjă față de RPM-ul observat în AI Studio.
 // Aliasurile latest primesc același plafon ca familia lor ca să nu ocolească
@@ -67,7 +69,9 @@ export function recordModelFailure(model, err, now = Date.now()) {
         ? 60 * 1000
         : 15 * 60 * 1000;
   const delay = serverDelay ?? defaultDelay;
-  modelCooldowns.set(model, Math.max(modelCooldowns.get(model) || 0, now + delay));
+  const cooldownUntil = Math.max(modelCooldowns.get(model) || 0, now + delay);
+  modelCooldowns.set(model, cooldownUntil);
+  saveModelCooldown(model, cooldownUntil);
   console.warn(`[models] ${model} în cooldown ${Math.ceil(delay / 1000)}s după HTTP ${status}`);
   return true;
 }

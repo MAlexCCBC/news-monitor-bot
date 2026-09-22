@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
+import { getActiveModelCooldowns } from "../src/storage/db.js";
 import { describeGeminiError, filterCoolingModels, filterRateLimitedModels, recordModelFailure, recordModelRequest } from "../src/ai/models.js";
 
 test("Gemini 429 cools down only the failed model and respects Retry-After", () => {
@@ -63,6 +64,15 @@ test("models all in cooldown are skipped instead of retrying the least-cooled mo
   recordModelFailure("test-all-cooldown-b", { response: { status: 429 } }, now);
 
   assert.deepEqual(filterCoolingModels(["test-all-cooldown-a", "test-all-cooldown-b"], now + 1), []);
+});
+
+test("quota cooldowns are persisted for the next GitHub Actions runner", () => {
+  const now = Date.now();
+  recordModelFailure("test-persisted-quota", { response: { status: 429 } }, now);
+
+  assert.ok(getActiveModelCooldowns(now).some(({ model, cooldown_until }) =>
+    model === "test-persisted-quota" && cooldown_until > now
+  ));
 });
 
 test("Gemini error formatting preserves server quota details for diagnosis", () => {
