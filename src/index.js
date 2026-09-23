@@ -54,8 +54,7 @@ import { checkSimilarity, checkSimilarityEmbedding, createArticleEmbedding } fro
 import { prepareArticlePost } from "./ai/prepare-post.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
-import { findImage, processArticleImage } from "./image/search.js";
-import { shouldUseArticleThumbnail } from "./image/policy.js";
+import { findImage } from "./image/search.js";
 import { saveNews, saveAiPost, getRecentNews, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { ARTICLE_HISTORY_HOURS } from "./storage/article-history.js";
 import { persistNow } from "./storage/persist.js";
@@ -521,21 +520,12 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
   let imageResult = null;
   if (speaker) {
     try {
-      imageResult = await timedStage("image_search", () => findImage(speaker, article.title));
+      imageResult = await timedStage("image_search", () => findImage(speaker, article.title, article.imageUrl));
     } catch (e) {
       console.warn("[image] findImage esuat:", e.message);
     }
   } else {
     console.log("[image] Fara persoana care declara - sarim cautarea de portret");
-  }
-
-  // A generic article thumbnail can be an infographic, document, or another
-  // person. Never substitute it when this article has a named speaker.
-  if (!imageResult && shouldUseArticleThumbnail({ speaker, imageUrl: article.imageUrl, title: article.title })) {
-    try {
-      imageResult = await timedStage("article_image", () => processArticleImage(article.imageUrl));
-      console.log("[image] Fallback: imaginea articolului " + article.imageUrl);
-    } catch {}
   }
 
   // 7. Trimitem TIE rezultatul, gata pregatit, pentru aprobare + postare MANUALA.

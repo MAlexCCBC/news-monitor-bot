@@ -2,7 +2,7 @@ import axios from "axios";
 import sharp from "sharp";
 import { getRecentImages, saveImage } from "../storage/db.js";
 import { getFaceBox, verifyCandidate } from "./vision.js";
-import { isVerifiedPersonImageAllowed } from "./policy.js";
+import { isArticleImageCandidate, isVerifiedPersonImageAllowed } from "./policy.js";
 
 const TAVILY_KEY = () => process.env.TAVILY_API_KEY;
 const IMAGE_HISTORY_DAYS = () => Number(process.env.IMAGE_HISTORY_DAYS || 7);
@@ -349,21 +349,6 @@ async function buildCandidate(imgUrl, personName, referenceBuffer) {
   };
 }
 
-// Imaginea ARTICOLULUI insusi (og:image): e deja relevanta contextual, o
-// decupam doar centrat pe fata, fara verificare faciala.
-export async function processArticleImage(imgUrl) {
-  const dims = await downloadImage(imgUrl);
-  if (!dims) return null;
-  const faceBox = await getFaceBox(dims.buffer);
-  return {
-    buffer: await cropPortrait3x4(dims.buffer, faceBox),
-    sourceUrl: imgUrl,
-    note: faceBox
-      ? "Imaginea articolului, decupata centrat pe fata."
-      : "Imaginea articolului, decupata la 3:4.",
-  };
-}
-
 // Flux complet pentru o persoana/subiect:
 //  1. Ia portretul Wikipedia ca REFERINTA faciala (nu il posteaza).
 //  2. Cauta poze pe net (Tavily -> DuckDuckGo -> Bing) cu numele vorbitorului.
@@ -372,7 +357,7 @@ export async function processArticleImage(imgUrl) {
 //     ultimele IMAGE_HISTORY_DAYS zile sunt sarite (fara repetitii).
 //  4. Nimic nou verificat => portretul Wikipedia (daca nu e repetat recent),
 //     apoi reutilizare LRU, iar portretul Wikipedia repetat e ultima rezerva.
-export async function findImage(personOrTopic, articleTitle) {
+export async function findImage(personOrTopic, articleTitle, articleImageUrl = null) {
   const recentImages = getRecentImages(IMAGE_HISTORY_DAYS());
   const usedUrls = new Set(recentImages.map((i) => i.image_url));
   const usedMeta = new Map(recentImages.map((i) => [i.image_url, i]));
@@ -389,7 +374,16 @@ export async function findImage(personOrTopic, articleTitle) {
     referenceFaceBox = await getFaceBox(referenceBuffer);
     if (!referenceFaceBox) {
       console.log("[image] Referinta Wikipedia fara fata detectabila - nu o folosesc");
-      referenceBuffer = null;
+      // This Wikipedia page was selected by an exact person-name match. If
+      // automated face detection misses, use only this source-verified image;
+      // do not compare unrelated candidates against it.
+      const officialImage = {
+        buffer: await cropPortrait3x4(referenceBuffer),
+        sourceUrl: reference.url || null,
+        note: "Imaginea oficială de pe pagina persoanei (Wikipedia); verificarea facială automată nu a fost disponibilă.",
+      };
+      saveImage({ imageUrl: reference.url || "", personOrTopic });
+      return officialImage;
     }
   }
 
@@ -422,6 +416,20 @@ export async function findImage(personOrTopic, articleTitle) {
   // 429 rate limit). Dupa 6 verificari neconcludente, oprim cautarea.
   const MAX_FACE_CHECKS = 6;
   let faceChecks = 0;
+
+  // Try the publisher's own image first, but never trust it merely because
+  // it is an og:image: it must pass the same positive face-identity check as
+  // search results. This recovers relevant portraits without reviving random
+  // screenshots, document scans, or unrelated article photos.
+  if (isArticleImageCandidate({ speaker: personOrTopic, imageUrl: articleImageUrl }) && !usedUrls.has(articleImageUrl)) {
+    seen.add(articleImageUrl);
+    faceChecks++;
+    const candidate = await buildCandidate(articleImageUrl, personOrTopic, referenceBuffer);
+    if (candidate) {
+      saveImage({ imageUrl: articleImageUrl, personOrTopic });
+      return candidate;
+    }
+  }
 
   searchLoop: for (const q of queries) {
     for (const engine of engines) {
