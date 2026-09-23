@@ -76,6 +76,14 @@ export function isCompleteRewrite(text, finishReason) {
   return finishReason === "STOP" && bulletCount >= 3 && hasRequiredEnding;
 }
 
+export function extractFinalRewriteText(candidate) {
+  return (candidate?.content?.parts || [])
+    .filter((part) => part && part.thought !== true && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("")
+    .trim();
+}
+
 export async function rewriteArticle(articleText) {
   const models = await filterModels(TEXT_MODELS);
   if (!models.length) {
@@ -89,11 +97,11 @@ export async function rewriteArticle(articleText) {
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           contents: [{ parts: [{ text: PROMPT_TEMPLATE(articleText) }] }],
+          generationConfig: { thinkingConfig: { includeThoughts: false } },
         },
         {
-          // Fail over quickly during stalled Google responses instead of
-          // holding an article for a full minute on every unavailable model.
-          timeout: 15000,
+          // Deliberately no Axios timeout: allow Gemini to finish even when a
+          // generation is unusually slow rather than failing it locally.
           headers: {
             "x-goog-api-key": GEMINI_KEY(),
             "Content-Type": "application/json",
@@ -101,7 +109,7 @@ export async function rewriteArticle(articleText) {
         }
       ));
       const candidate = res.data.candidates?.[0];
-      const text = candidate?.content?.parts?.map((part) => part.text || "").join("").trim();
+      const text = extractFinalRewriteText(candidate);
       const finishReason = candidate?.finishReason;
       if (!text) throw new Error(`Răspuns gol de la model (finishReason=${finishReason || "necunoscut"})`);
       if (!isCompleteRewrite(text, finishReason)) {
@@ -120,7 +128,7 @@ export async function rewriteArticle(articleText) {
       const reason = describeGeminiError(err);
       failures.push(`${model}: ${reason}`);
       if (isRequestTimeout(err)) {
-        console.warn(`[ai] ${model} a dat timeout (>15s), incerc urmatorul model...`);
+        console.warn(`[ai] ${model} a eșuat la timeout-ul HTTP, încerc următorul model...`);
       } else {
         console.warn(`[ai] ${model} a eșuat (${reason}), încerc următorul model disponibil...`);
       }

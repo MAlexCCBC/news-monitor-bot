@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 
 import db, { getActiveModelCooldowns, saveModelCooldown } from "../src/storage/db.js";
 import { describeGeminiError, eligibleModels, filterCoolingModels, recordModelFailure } from "../src/ai/models.js";
-import { TEXT_MODELS } from "../src/ai/rewrite.js";
+import { extractFinalRewriteText, TEXT_MODELS } from "../src/ai/rewrite.js";
 
 test("rewrite cascade keeps Gemini 3.8 first and excludes retired 2.5 endpoints", () => {
   assert.equal(TEXT_MODELS[0], "gemini-3.8-flash");
@@ -18,6 +18,15 @@ test("eligible model cascade doesn't apply local quota counters and retains supp
   assert.deepEqual(eligibleModels(models, models), models);
   assert.deepEqual(eligibleModels(models, null), models);
   assert.deepEqual(eligibleModels(models, ["not-a-preferred-model"]), models);
+});
+
+test("rewrite output excludes Gemini thought parts and keeps only the final answer", () => {
+  const text = extractFinalRewriteText({ content: { parts: [
+    { text: "Internal planning and draft", thought: true },
+    { text: "🇷🇴 TITLU FINAL\n\nPostarea finală." },
+  ] } });
+  assert.equal(text, "🇷🇴 TITLU FINAL\n\nPostarea finală.");
+  assert.equal(extractFinalRewriteText({ content: { parts: [{ text: "only thought", thought: true }] } }), "");
 });
 
 test("Gemini 429 cools down only the failed model and respects Retry-After", () => {
