@@ -2,34 +2,6 @@ import axios from "axios";
 
 const MAX_RETRIES = 2;
 const MAX_RETRY_DELAY_MS = 60_000;
-const SERVICE_FAILURE_WINDOW_MS = 30_000;
-const SERVICE_CIRCUIT_MS = 30_000;
-const recentUnavailableModels = new Map();
-let serviceCircuitOpenUntil = 0;
-
-export function assertGeminiServiceAvailable(now = Date.now()) {
-  if (now < serviceCircuitOpenUntil) {
-    const waitSeconds = Math.ceil((serviceCircuitOpenUntil - now) / 1000);
-    const error = new Error(`Gemini API pare indisponibilă pe mai multe modele; suspend apelurile noi ${waitSeconds}s ca să evit retry-uri în rafală.`);
-    error.code = "EGEMINI_CIRCUIT_OPEN";
-    error.isGeminiCircuitOpen = true;
-    throw error;
-  }
-}
-
-function noteServiceUnavailable(error, now = Date.now()) {
-  const model = error.config?.url?.match(/\/models\/([^/:]+):/)?.[1];
-  if (!model) return;
-  for (const [name, timestamp] of recentUnavailableModels) {
-    if (now - timestamp > SERVICE_FAILURE_WINDOW_MS) recentUnavailableModels.delete(name);
-  }
-  recentUnavailableModels.set(model, now);
-  if (recentUnavailableModels.size >= 2) {
-    serviceCircuitOpenUntil = now + SERVICE_CIRCUIT_MS;
-    recentUnavailableModels.clear();
-    console.warn("[gemini] HTTP 503 pe mai multe modele; deschid circuitul 30s înainte să reiau cascada.");
-  }
-}
 
 function retryAfterMs(error, now) {
   const headers = error.response?.headers;
@@ -77,16 +49,14 @@ export async function withGeminiRetries(request, {
   let retryNumber = 0;
   while (true) {
     try {
-      assertGeminiServiceAvailable();
       return await request();
     } catch (error) {
       // A 503 is commonly a shared backend-capacity incident, not a model
       // specific transient. Retrying it multiple times before falling back
       // fans out requests across the same overloaded service. Let the caller
-      // try another model once; the cross-model circuit below will stop the
-      // cascade as soon as a second endpoint reports the same outage.
+      // try the next configured model. Every model is attempted at most once
+      // per cascade, and actual failures cool down only that specific model.
       if (error.response?.status === 503) {
-        noteServiceUnavailable(error);
         throw error;
       }
       if (!isTransient(error) || retryNumber >= maxRetries) {

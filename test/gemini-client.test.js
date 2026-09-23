@@ -34,21 +34,3 @@ test("quota and client errors are not retried as transient service failures", as
     assert.equal(requests, 1);
   }
 });
-
-test("repeated 503s across two model endpoints open a short circuit instead of flooding every model", async () => {
-  for (const model of ["outage-model-a", "outage-model-b"]) {
-    await assert.rejects(withGeminiRetries(async () => {
-      const error = new Error("unavailable");
-      error.response = { status: 503, headers: {} };
-      error.config = { url: `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent` };
-      throw error;
-    }, { maxRetries: 0, onRetry: () => {} }), /unavailable/);
-  }
-
-  let requests = 0;
-  await assert.rejects(withGeminiRetries(async () => {
-    requests++;
-    return "should not be sent";
-  }, { onRetry: () => {} }), (error) => error.code === "EGEMINI_CIRCUIT_OPEN");
-  assert.equal(requests, 0, "the next model must not receive a request during a cross-model outage");
-});

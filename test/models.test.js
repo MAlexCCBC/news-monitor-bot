@@ -2,7 +2,23 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import db, { getActiveModelCooldowns, saveModelCooldown } from "../src/storage/db.js";
-import { describeGeminiError, filterCoolingModels, filterRateLimitedModels, recordModelFailure, recordModelRequest } from "../src/ai/models.js";
+import { describeGeminiError, eligibleModels, filterCoolingModels, recordModelFailure } from "../src/ai/models.js";
+import { TEXT_MODELS } from "../src/ai/rewrite.js";
+
+test("rewrite cascade keeps Gemini 3.8 first and includes supported preview and legacy fallbacks", () => {
+  assert.equal(TEXT_MODELS[0], "gemini-3.8-flash");
+  assert.ok(TEXT_MODELS.includes("gemini-3-flash-preview"));
+  assert.ok(TEXT_MODELS.includes("gemini-2.5-flash"));
+  assert.ok(TEXT_MODELS.includes("gemini-2.5-flash-lite"));
+  assert.ok(TEXT_MODELS.indexOf("gemini-3.7-flash") < TEXT_MODELS.indexOf("gemini-3.5-flash-lite"));
+});
+
+test("eligible model cascade doesn't apply local quota counters and retains supported fallbacks", () => {
+  const models = ["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3-flash-preview"];
+  assert.deepEqual(eligibleModels(models, models), models);
+  assert.deepEqual(eligibleModels(models, null), models);
+  assert.deepEqual(eligibleModels(models, ["not-a-preferred-model"]), models);
+});
 
 test("Gemini 429 cools down only the failed model and respects Retry-After", () => {
   const now = 1_000;
@@ -14,12 +30,10 @@ test("Gemini 429 cools down only the failed model and respects Retry-After", () 
   assert.deepEqual(filterCoolingModels(["test-retry-model", "test-ready-model"], now + 2_000), ["test-retry-model", "test-ready-model"]);
 });
 
-test("Gemini 503 receives a temporary cooldown, then becomes eligible again", () => {
+test("Gemini 503 does not persist a cooldown that would hide the model from the next article", () => {
   const now = 10_000;
-  recordModelFailure("test-unavailable-model", { response: { status: 503 } }, now);
-
-  assert.deepEqual(filterCoolingModels(["test-unavailable-model", "test-fallback-model"], now), ["test-fallback-model"]);
-  assert.deepEqual(filterCoolingModels(["test-unavailable-model", "test-fallback-model"], now + 60_000), ["test-unavailable-model", "test-fallback-model"]);
+  assert.equal(recordModelFailure("test-unavailable-model", { response: { status: 503 } }, now), false);
+  assert.deepEqual(filterCoolingModels(["test-unavailable-model", "test-fallback-model"], now), ["test-unavailable-model", "test-fallback-model"]);
 });
 
 test("Gemini 500 receives a short cooldown to prevent repeating transient server errors", () => {
@@ -28,20 +42,6 @@ test("Gemini 500 receives a short cooldown to prevent repeating transient server
 
   assert.deepEqual(filterCoolingModels(["test-internal-error-model", "test-fallback-model"], now), ["test-fallback-model"]);
   assert.deepEqual(filterCoolingModels(["test-internal-error-model", "test-fallback-model"], now + 60_000), ["test-internal-error-model", "test-fallback-model"]);
-});
-
-test("local RPM guard keeps Gemini 3.8 below its observed five-requests-per-minute quota", () => {
-  const now = 50_000;
-  for (let index = 0; index < 4; index++) recordModelRequest("gemini-3.8-flash", now - index * 5_000);
-
-  assert.deepEqual(
-    filterRateLimitedModels(["gemini-3.8-flash", "gemini-3.5-flash-lite"], now),
-    ["gemini-3.5-flash-lite"]
-  );
-  assert.deepEqual(
-    filterRateLimitedModels(["gemini-3.8-flash", "gemini-3.5-flash-lite"], now + 60_000),
-    ["gemini-3.8-flash", "gemini-3.5-flash-lite"]
-  );
 });
 
 test("daily and per-minute quota errors get cooldowns matched to their reset windows", () => {
@@ -69,6 +69,19 @@ test("retry duration in Google's error message is honored when RetryInfo/header 
   }, now);
 
   assert.deepEqual(filterCoolingModels(["test-inline-retry"], now + 1_625), ["test-inline-retry"]);
+});
+
+test("Google's free-tier daily quota metric in the error message overrides its short retry hint", () => {
+  const now = 400_000;
+  recordModelFailure("test-free-tier-daily", {
+    response: {
+      status: 429,
+      data: { error: { status: "RESOURCE_EXHAUSTED", message: "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests, limit: 20, model: gemini-3.8-flash. Please retry in 1.6s." } },
+    },
+  }, now);
+
+  assert.deepEqual(filterCoolingModels(["test-free-tier-daily"], now + 60_000), []);
+  assert.deepEqual(filterCoolingModels(["test-free-tier-daily"], now + 24 * 60 * 60 * 1000), ["test-free-tier-daily"]);
 });
 
 test("legacy heuristic cooldown rows do not suppress models after the corrected rollout", () => {

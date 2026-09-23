@@ -16,16 +16,6 @@ let cachedAt = 0;
 const CACHE_TTL_MS = 10 * 60 * 1000;
 // Persist across GitHub Actions runner restarts via the restored SQLite data branch.
 const modelCooldowns = new Map(getActiveModelCooldowns().map(({ model, cooldown_until: until }) => [model, until]));
-const modelRequestTimes = new Map();
-// Plafon local conservator, cu marjă față de RPM-ul observat în AI Studio.
-// Aliasurile latest primesc același plafon ca familia lor ca să nu ocolească
-// accidental protecția dacă Google le mută pe altă versiune.
-const MODEL_RPM_BUDGETS = new Map([
-  ["gemini-3.8-flash", 4], ["gemini-flash-latest", 4],
-  ["gemini-3.7-flash", 4], ["gemini-3.6-flash", 4], ["gemini-3.5-flash", 4],
-  ["gemini-3.5-flash-lite", 12], ["gemini-3.1-flash-lite", 12], ["gemini-flash-lite-latest", 12],
-  ["gemma-4-31b-it", 24], ["gemma-4-26b-a4b-it", 24],
-]);
 
 function retryAfterMs(err, now) {
   const headers = err.response?.headers;
@@ -68,18 +58,24 @@ export function describeGeminiError(err) {
   return [status ? `HTTP ${status}` : null, reason, message].filter(Boolean).join(": ");
 }
 
-// Rate limits and transient service outages are model-specific. Cache them
-// across all Gemini call sites so the next article won't repeat the same error.
+// Cache explicit 429/500 model failures across calls. 503 is deliberately not
+// cooled down: it can be a shared transient, so the cascade should try every
+// other model and subsequent articles should be allowed to retry it.
 export function recordModelFailure(model, err, now = Date.now()) {
   const status = err?.response?.status;
-  if (status !== 429 && status !== 500 && status !== 503) return false;
+  // A 503 may be a transient shared-backend incident; don't persist a
+  // per-model cooldown that would hide that model from later article attempts.
+  if (status !== 429 && status !== 500) return false;
   const serverDelay = retryAfterMs(err, now);
   const apiError = err?.response?.data?.error || {};
   const violations = (apiError.details || []).flatMap((detail) => detail.violations || []);
   const quotaIds = violations.map((violation) => violation.quotaId || "").join(" ").toLowerCase();
-  // A daily lockout requires an explicit PerDay quota id; generic 429 text or
-  // a near-full dashboard counter is not enough to infer RPD exhaustion.
-  const isDailyQuota = /per[_ ]?day|perday|requestsperday/.test(quotaIds);
+  const quotaMetrics = violations.map((violation) => violation.quotaMetric || violation.quota_metric || "").join(" ").toLowerCase();
+  const quotaEvidence = `${quotaMetrics} ${apiError.message || ""}`.toLowerCase();
+  // Do not infer a daily lockout from generic 429 text; Google also exposes
+  // the free-tier daily request metric in quota violations.
+  const isDailyQuota = /per[_ ]?day|perday|requestsperday/.test(quotaIds) ||
+    (/generate_content_free_tier_requests/.test(quotaEvidence) && !/generate_content_free_tier_requests[^\n]*(?:minute|second)/.test(quotaEvidence));
   const isMinuteQuota = /per[_ ]?minute|perminute|requestsperminute/.test(quotaIds);
   const defaultDelay = status !== 429 ? 60_000 : isMinuteQuota ? 60_000 : 15 * 60_000;
   const delay = isDailyQuota
@@ -96,20 +92,12 @@ export function filterCoolingModels(models, now = Date.now()) {
   return models.filter((model) => (modelCooldowns.get(model) || 0) <= now);
 }
 
-export function recordModelRequest(model, now = Date.now()) {
-  const requests = (modelRequestTimes.get(model) || []).filter((timestamp) => now - timestamp < 60_000);
-  requests.push(now);
-  modelRequestTimes.set(model, requests);
-}
-
-export function filterRateLimitedModels(models, now = Date.now()) {
-  return models.filter((model) => {
-    const budget = MODEL_RPM_BUDGETS.get(model);
-    if (!budget) return true;
-    const requests = (modelRequestTimes.get(model) || []).filter((timestamp) => now - timestamp < 60_000);
-    modelRequestTimes.set(model, requests);
-    return requests.length < budget;
-  });
+export function eligibleModels(preferred, available, now = Date.now()) {
+  const supported = available ? preferred.filter((model) => available.includes(model)) : preferred;
+  // Keep the configured cascade if ListModels is unavailable or temporarily
+  // returns no preferred names; the API call itself is the final authority.
+  const configured = supported.length ? supported : preferred;
+  return filterCoolingModels(configured, now);
 }
 
 export async function listAvailableModels() {
@@ -142,27 +130,9 @@ export async function listAvailableModels() {
 // Daca ListModels nu e disponibil, cascada originala ramane neatinsa.
 export async function filterModels(preferred) {
   const available = await listAvailableModels();
-  const supported = available ? preferred.filter((m) => available.includes(m)) : preferred;
-  // Dacă endpointul de listare nu conține niciun nume preferat, păstrăm
-  // comportamentul fail-open. Cooldown-ul nu trebuie să golească cascada.
-  const configured = supported.length ? supported : preferred;
-  while (true) {
-    const coolingFiltered = filterCoolingModels(configured);
-    if (!coolingFiltered.length) {
-      console.warn(`[models] Toate modelele preferate sunt în cooldown; nu trimitem cereri care ar primi probabil încă un 429.`);
-      return [];
-    }
-    const filtered = filterRateLimitedModels(coolingFiltered);
-    if (filtered.length) {
-      const skipped = configured.length - filtered.length;
-      if (skipped > 0) console.log(`[models] Sărim temporar peste ${skipped} model(e) în cooldown/RPM; folosim ${filtered.join(", ")}`);
-      return filtered;
-    }
-
-    const now = Date.now();
-    const nextSlotAt = Math.min(...coolingFiltered.flatMap((model) => modelRequestTimes.get(model) || []).map((timestamp) => timestamp + 60_000));
-    const waitMs = Math.max(1, nextSlotAt - now);
-    console.log(`[models] Toate modelele din cascadă au atins temporar plafonul RPM; aștept ${Math.ceil(waitMs / 1000)}s pentru următorul slot.`);
-    await new Promise((resolve) => setTimeout(resolve, waitMs));
+  const coolingFiltered = eligibleModels(preferred, available);
+  if (!coolingFiltered.length) {
+    console.warn("[models] Toate modelele au eșuat recent cu erori explicite; reîncercarea va avea loc după cooldown.");
   }
+  return coolingFiltered;
 }

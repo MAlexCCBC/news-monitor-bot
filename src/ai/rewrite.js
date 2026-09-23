@@ -1,27 +1,29 @@
 import axios from "axios";
-import { describeGeminiError, filterModels, recordModelFailure, recordModelRequest } from "./models.js";
-import { assertGeminiServiceAvailable, withGeminiRetries } from "./gemini-client.js";
+import { describeGeminiError, filterModels, recordModelFailure } from "./models.js";
+import { withGeminiRetries } from "./gemini-client.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
 // nivel de modul GEMINI_API_KEY ar fi inca undefined.
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
-// Cascada începe cu modelele premium cerute; apoi trece la lite-uri cu cote
-// zilnice mari înaintea modelelor Flash care au deja limite mici/epuizate.
+// Cascada începe cu modelul preferat, apoi încearcă Flash/Lite/Gemma ca rezerve.
 // gemini-flash-latest e alias care
 // indica mereu cel mai nou flash - plasă de siguranță dacă o versiune dispare.
-// Modelele care dau 404 pe acest cont (gemini-3-flash, 2.5-flash, 2.5-lite)
-// sunt scoase; filterModels le exclude oricum dinamic, la pornire.
-const TEXT_MODELS = [
+// ListModels elimină automat modelele care nu suportă generateContent pe cheia
+// curentă; variantele preview/legacy rămân rezerve dacă sunt disponibile.
+export const TEXT_MODELS = [
   "gemini-3.8-flash",
   "gemini-3.7-flash",
-  "gemini-3.5-flash-lite",
-  "gemini-3.1-flash-lite",
-  "gemma-4-31b-it",
-  "gemma-4-26b-a4b-it",
   "gemini-3.6-flash",
   "gemini-3.5-flash",
+  "gemini-3-flash-preview",
+  "gemini-2.5-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.1-flash-lite",
+  "gemini-2.5-flash-lite",
+  "gemma-4-31b-it",
+  "gemma-4-26b-a4b-it",
   "gemini-flash-lite-latest",
   "gemini-flash-latest",
 ];
@@ -84,8 +86,6 @@ export async function rewriteArticle(articleText) {
   let lastError;
   for (const model of models) {
     try {
-      assertGeminiServiceAvailable();
-      recordModelRequest(model);
       const res = await withGeminiRetries(() => axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
