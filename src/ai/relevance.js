@@ -1,5 +1,6 @@
 import axios from "axios";
 import { filterModels, recordModelFailure, recordModelRequest } from "./models.js";
+import { assertGeminiServiceAvailable, withGeminiRetries } from "./gemini-client.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting).
@@ -59,8 +60,9 @@ export async function isRelevantToRomania(title, excerpt) {
   let lastError;
   for (const model of models) {
     try {
+      assertGeminiServiceAvailable();
       recordModelRequest(model);
-      const res = await axios.post(
+      const res = await withGeminiRetries(() => axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           contents: [{ parts: [{ text: PROMPT_TEMPLATE(title, excerpt) }] }],
@@ -73,7 +75,7 @@ export async function isRelevantToRomania(title, excerpt) {
             "Content-Type": "application/json",
           },
         }
-      );
+      ));
       const text = res.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
       if (!text) throw new Error("Raspuns gol de la model");
 

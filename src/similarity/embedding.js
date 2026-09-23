@@ -1,5 +1,6 @@
 import axios from "axios";
 import { cleanArticleContent, articleFocus } from "../scraper/clean-content.js";
+import { withGeminiRetries } from "../ai/gemini-client.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
@@ -16,7 +17,7 @@ async function getEmbedding(text) {
   let lastError;
   for (const model of EMBEDDING_MODELS) {
     try {
-      const res = await axios.post(
+      const res = await withGeminiRetries(() => axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:embedContent`,
         {
           content: { parts: [{ text: text.slice(0, 8000) }] },
@@ -29,7 +30,7 @@ async function getEmbedding(text) {
             "Content-Type": "application/json",
           },
         }
-      );
+      ));
       return res.data.embedding.values;
     } catch (err) {
       lastError = err;
@@ -73,7 +74,7 @@ async function embedArticleChunks(chunks, preferredModel) {
     : EMBEDDING_MODELS;
   for (const model of models) {
     try {
-      const response = await axios.post(
+      const response = await withGeminiRetries(() => axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:batchEmbedContents`,
         {
           requests: chunks.map((text) => ({
@@ -89,7 +90,7 @@ async function embedArticleChunks(chunks, preferredModel) {
             "Content-Type": "application/json",
           },
         }
-      );
+      ));
       return { embeddings: response.data.embeddings.map((item) => item.values), model };
     } catch (err) {
       lastError = err;

@@ -1,5 +1,6 @@
 import axios from "axios";
 import { describeGeminiError, filterModels, recordModelFailure, recordModelRequest } from "./models.js";
+import { assertGeminiServiceAvailable, withGeminiRetries } from "./gemini-client.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
@@ -83,8 +84,9 @@ export async function rewriteArticle(articleText) {
   let lastError;
   for (const model of models) {
     try {
+      assertGeminiServiceAvailable();
       recordModelRequest(model);
-      const res = await axios.post(
+      const res = await withGeminiRetries(() => axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           contents: [{ parts: [{ text: PROMPT_TEMPLATE(articleText) }] }],
@@ -96,7 +98,7 @@ export async function rewriteArticle(articleText) {
             "Content-Type": "application/json",
           },
         }
-      );
+      ));
       const candidate = res.data.candidates?.[0];
       const text = candidate?.content?.parts?.map((part) => part.text || "").join("").trim();
       const finishReason = candidate?.finishReason;

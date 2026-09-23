@@ -2,6 +2,7 @@ import axios from "axios";
 import sharp from "sharp";
 import { getRecentImages, saveImage } from "../storage/db.js";
 import { getFaceBox, verifyCandidate } from "./vision.js";
+import { isVerifiedPersonImageAllowed } from "./policy.js";
 
 const TAVILY_KEY = () => process.env.TAVILY_API_KEY;
 const IMAGE_HISTORY_DAYS = () => Number(process.env.IMAGE_HISTORY_DAYS || 7);
@@ -301,15 +302,23 @@ function urlMentionsPerson(imgUrl, personName) {
 }
 
 // Descarca, verifica si decupeaza un candidat.
-// referenceBuffer: poza oficiala a vorbitorului (Wikipedia). Daca exista,
-// candidatul e acceptat DOAR daca Gemini confirma aceeasi persoana.
+// referenceBuffer: poza oficiala a vorbitorului (Wikipedia). Candidatul e
+// acceptat numai daca Gemini confirmă identitatea; fără referință sau verdict,
+// nu postăm imaginea.
 // Intoarce null daca imaginea respinsa (persoana diferita / nefaciala / moarta).
 async function buildCandidate(imgUrl, personName, referenceBuffer) {
+  if (!isVerifiedPersonImageAllowed({ hasReference: Boolean(referenceBuffer), samePerson: true })) {
+    console.log(`[image] Respins fără portret de referință verificabil pentru ${personName}: ${imgUrl}`);
+    return null;
+  }
   const dims = await downloadImage(imgUrl);
   if (!dims) return null;
 
-  if (referenceBuffer) {
-    const verdict = await verifyCandidate(referenceBuffer, dims.buffer);
+  const verdict = await verifyCandidate(referenceBuffer, dims.buffer);
+  if (!isVerifiedPersonImageAllowed({ hasReference: true, ...verdict })) {
+    console.log(`[image] Respins (identitatea nu a putut fi confirmată pentru ${personName}): ${imgUrl}`);
+    return null;
+  }
 
     // Respingere pt. text vizibil (watermark, logo post TV, titluri, subtitrari)
     if (verdict.hasText === true) {
@@ -329,8 +338,6 @@ async function buildCandidate(imgUrl, personName, referenceBuffer) {
     } else {
       console.log(`[image] Confirmat facial (${personName}): ${imgUrl}`);
     }
-  }
-
   const faceBox = await getFaceBox(dims.buffer);
   const finalBuffer = await cropPortrait3x4(dims.buffer, faceBox);
   return {
@@ -373,8 +380,8 @@ export async function findImage(personOrTopic, articleTitle) {
   // 1. Referinta faciala + sanity-check: portretul trebuie sa contina o FATA.
   //    Pentru institutii/partide Wikipedia intoarce steme/logo-uri - fara fata
   //    nu are sens sa verificam candidati contra lor si nici sa postam asa ceva
-  //    ca "portret". In acest caz renuntam la referinta (candidatii vor fi
-  //    acceptati pe contextul numelui) si la fallback-ul cu portretul.
+  //    ca "portret". Fără o față de referință validă, nu alegem imagini din
+  //    motoarele de căutare doar după nume sau titlul articolului.
   const reference = await fetchWikipediaReference(personOrTopic);
   let referenceBuffer = reference?.buffer || null;
   let referenceFaceBox = null;
@@ -384,6 +391,11 @@ export async function findImage(personOrTopic, articleTitle) {
       console.log("[image] Referinta Wikipedia fara fata detectabila - nu o folosesc");
       referenceBuffer = null;
     }
+  }
+
+  if (!referenceBuffer) {
+    console.warn(`[image] Nu am un portret oficial verificabil pentru ${personOrTopic}; nu caut imagini alternative care nu pot fi verificate.`);
+    return null;
   }
 
   // 2. Candidati din motoare

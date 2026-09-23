@@ -1,5 +1,6 @@
 import axios from "axios";
 import { filterModels, recordModelFailure, recordModelRequest } from "./models.js";
+import { assertGeminiServiceAvailable, withGeminiRetries } from "./gemini-client.js";
 
 // Extrage DINAMIC numele persoanei care declara, CITIND articolul (titlu +
 // fragment). Nu depinde de liste predefinite si NU intoarce institutii sau
@@ -70,8 +71,9 @@ export async function extractSpeakerFromArticle(title, excerpt, keywordHint = ""
   const models = await filterModels(SPEAKER_MODELS);
   for (const model of models) {
     try {
+      assertGeminiServiceAvailable();
       recordModelRequest(model);
-      const res = await axios.post(
+      const res = await withGeminiRetries(() => axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           contents: [{ parts: [{ text: PROMPT_TEMPLATE(title, excerpt, keywordHint) }] }],
@@ -84,7 +86,7 @@ export async function extractSpeakerFromArticle(title, excerpt, keywordHint = ""
             "Content-Type": "application/json",
           },
         }
-      );
+      ));
       const raw = res.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
       if (!raw) throw new Error("raspuns gol");
 

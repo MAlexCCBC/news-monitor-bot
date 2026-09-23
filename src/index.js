@@ -55,6 +55,7 @@ import { prepareArticlePost } from "./ai/prepare-post.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage, processArticleImage } from "./image/search.js";
+import { shouldUseArticleThumbnail } from "./image/policy.js";
 import { saveNews, saveAiPost, getRecentNews, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { ARTICLE_HISTORY_HOURS } from "./storage/article-history.js";
 import { persistNow } from "./storage/persist.js";
@@ -528,7 +529,9 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
     console.log("[image] Fara persoana care declara - sarim cautarea de portret");
   }
 
-  if (!imageResult && article.imageUrl) {
+  // A generic article thumbnail can be an infographic, document, or another
+  // person. Never substitute it when this article has a named speaker.
+  if (!imageResult && shouldUseArticleThumbnail({ speaker, imageUrl: article.imageUrl, title: article.title })) {
     try {
       imageResult = await timedStage("article_image", () => processArticleImage(article.imageUrl));
       console.log("[image] Fallback: imaginea articolului " + article.imageUrl);
