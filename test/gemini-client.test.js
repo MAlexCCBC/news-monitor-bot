@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { geminiRetryDelay, withGeminiRetries } from "../src/ai/gemini-client.js";
+import { geminiRetryDelay, isRequestTimeout, withGeminiRetries } from "../src/ai/gemini-client.js";
 
 test("Gemini 503 is not retried on the same endpoint before model fallback", async () => {
   let requests = 0;
@@ -17,6 +17,20 @@ test("Gemini 503 is not retried on the same endpoint before model fallback", asy
 
   assert.equal(requests, 1);
   assert.deepEqual(delays, []);
+});
+
+test("client timeouts go straight to model fallback instead of waiting through same-model retries", async () => {
+  let requests = 0;
+  await assert.rejects(withGeminiRetries(async () => {
+    requests++;
+    const error = new Error("timeout of 60000ms exceeded");
+    error.code = "ECONNABORTED";
+    throw error;
+  }, { sleep: async () => assert.fail("timeout must not be retried"), onRetry: () => {} }));
+
+  assert.equal(requests, 1);
+  assert.equal(isRequestTimeout({ code: "ETIMEDOUT" }), true);
+  assert.equal(isRequestTimeout(new Error("timeout of 60000ms exceeded")), true);
 });
 
 test("transient retry honors Google's retry-after hint, capped to one minute", () => {

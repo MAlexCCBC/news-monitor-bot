@@ -63,9 +63,17 @@ export function describeGeminiError(err) {
 // other model and subsequent articles should be allowed to retry it.
 export function recordModelFailure(model, err, now = Date.now()) {
   const status = err?.response?.status;
+  const isTimeout = err?.code === "ECONNABORTED" || err?.code === "ETIMEDOUT" || /timeout/i.test(err?.message || "");
   // A 503 may be a transient shared-backend incident; don't persist a
   // per-model cooldown that would hide that model from later article attempts.
-  if (status !== 429 && status !== 500) return false;
+  if (status !== 429 && status !== 500 && !isTimeout) return false;
+  if (isTimeout) {
+    const cooldownUntil = Math.max(modelCooldowns.get(model) || 0, now + 60_000);
+    modelCooldowns.set(model, cooldownUntil);
+    saveModelCooldown(model, cooldownUntil);
+    console.warn(`[models] ${model} în cooldown 60s după timeout client`);
+    return true;
+  }
   const serverDelay = retryAfterMs(err, now);
   const apiError = err?.response?.data?.error || {};
   const violations = (apiError.details || []).flatMap((detail) => detail.violations || []);

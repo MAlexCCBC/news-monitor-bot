@@ -1,6 +1,6 @@
 import axios from "axios";
 import { describeGeminiError, filterModels, recordModelFailure } from "./models.js";
-import { withGeminiRetries } from "./gemini-client.js";
+import { isRequestTimeout, withGeminiRetries } from "./gemini-client.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
@@ -84,6 +84,7 @@ export async function rewriteArticle(articleText) {
     throw new Error("Toate modelele text sunt temporar în cooldown după erori de cotă; articolul nu a fost trimis către Gemini. Reîncearcă după resetarea cotei.");
   }
   let lastError;
+  const failures = [];
   for (const model of models) {
     try {
       const res = await withGeminiRetries(() => axios.post(
@@ -108,22 +109,23 @@ export async function rewriteArticle(articleText) {
         const hasRequiredEnding = text.endsWith("👇 Așteptăm opinia ta în comentarii!");
         console.warn(`[ai] ${model} a returnat o postare incompletă (finishReason=${finishReason || "necunoscut"}, bullets=${bulletCount}, final=${hasRequiredEnding}); încerc următorul model.`);
         lastError = new Error(`Postare incompletă (finishReason=${finishReason || "necunoscut"})`);
+        failures.push(`${model}: răspuns incomplet (${finishReason || "finishReason lipsă"})`);
         continue;
       }
       console.log(`[ai] Reformatare reusita cu modelul: ${model}`);
       return { text, modelUsed: model };
     } catch (err) {
       lastError = err;
-      const status = err.response?.status;
       recordModelFailure(model, err);
-      const isTimeout = err.code === "ECONNABORTED" || /timeout/i.test(err.message);
-      if (isTimeout) {
+      const reason = describeGeminiError(err);
+      failures.push(`${model}: ${reason}`);
+      if (isRequestTimeout(err)) {
         console.warn(`[ai] ${model} a dat timeout (>60s), incerc urmatorul model...`);
       } else {
-        console.warn(`[ai] ${model} a eșuat (${describeGeminiError(err)}), încerc următorul model disponibil...`);
+        console.warn(`[ai] ${model} a eșuat (${reason}), încerc următorul model disponibil...`);
       }
       continue;
     }
   }
-  throw new Error(`Toate modelele text au eșuat: ${describeGeminiError(lastError)}`);
+  throw new Error(`Toate modelele text au eșuat după ${models.length} încercări: ${failures.join(" | ") || describeGeminiError(lastError)}`);
 }

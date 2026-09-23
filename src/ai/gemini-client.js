@@ -25,10 +25,14 @@ function retryAfterMs(error, now) {
 }
 
 function isTransient(error) {
-  if (error.isGeminiCircuitOpen) return false;
+  if (error.isGeminiCircuitOpen || isRequestTimeout(error)) return false;
   const status = error.response?.status;
   return (status >= 500 && status <= 599) || error.code === "ECONNABORTED" ||
     (!error.response && !["ERR_CANCELED", "ERR_BAD_OPTION", "ERR_BAD_OPTION_VALUE"].includes(error.code));
+}
+
+export function isRequestTimeout(error) {
+  return error?.code === "ECONNABORTED" || error?.code === "ETIMEDOUT" || /timeout/i.test(error?.message || "");
 }
 
 export function geminiRetryDelay(error, retryNumber, random = Math.random, now = Date.now()) {

@@ -36,6 +36,13 @@ test("Gemini 503 does not persist a cooldown that would hide the model from the 
   assert.deepEqual(filterCoolingModels(["test-unavailable-model", "test-fallback-model"], now), ["test-unavailable-model", "test-fallback-model"]);
 });
 
+test("a real client timeout cools down only that model briefly so the next article can use other fallbacks", () => {
+  const now = 12_000;
+  assert.equal(recordModelFailure("test-timeout-model", { code: "ECONNABORTED", message: "timeout of 60000ms exceeded" }, now), true);
+  assert.deepEqual(filterCoolingModels(["test-timeout-model", "test-ready-model"], now), ["test-ready-model"]);
+  assert.deepEqual(filterCoolingModels(["test-timeout-model", "test-ready-model"], now + 60_000), ["test-timeout-model", "test-ready-model"]);
+});
+
 test("Gemini 500 receives a short cooldown to prevent repeating transient server errors", () => {
   const now = 20_000;
   recordModelFailure("test-internal-error-model", { response: { status: 500 } }, now);
