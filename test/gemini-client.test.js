@@ -1,7 +1,22 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { geminiRetryDelay, isRequestTimeout, withGeminiRetries } from "../src/ai/gemini-client.js";
+import { GEMMA4_TIMEOUT_MS, geminiRetryDelay, isRequestTimeout, modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "../src/ai/gemini-client.js";
+
+test("Gemma 4 gets a longer request window and minimal thinking while Gemini behavior stays unchanged", () => {
+  assert.equal(GEMMA4_TIMEOUT_MS, 120_000);
+  assert.equal(modelRequestTimeout("gemma-4-31b-it", 30_000), 120_000);
+  assert.equal(modelRequestTimeout("gemma-4-26b-a4b-it"), 120_000);
+  assert.equal(modelRequestTimeout("gemini-3.8-flash", 30_000), 30_000);
+  assert.equal(modelRequestTimeout("gemini-3.8-flash"), null);
+  assert.deepEqual(modelGenerationConfig("gemma-4-31b-it", { temperature: 0 }), {
+    temperature: 0,
+    thinkingConfig: { includeThoughts: false, thinkingLevel: "minimal" },
+  });
+  assert.deepEqual(modelGenerationConfig("gemini-3.8-flash"), {
+    thinkingConfig: { includeThoughts: false },
+  });
+});
 
 test("Gemini 503 is not retried on the same endpoint before model fallback", async () => {
   let requests = 0;

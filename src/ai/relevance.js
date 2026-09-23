@@ -1,6 +1,6 @@
 import axios from "axios";
 import { filterModels, recordModelFailure } from "./models.js";
-import { withGeminiRetries } from "./gemini-client.js";
+import { modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "./gemini-client.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting).
@@ -64,10 +64,10 @@ export async function isRelevantToRomania(title, excerpt) {
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           contents: [{ parts: [{ text: PROMPT_TEMPLATE(title, excerpt) }] }],
-          generationConfig: { temperature: 0 },
+          generationConfig: modelGenerationConfig(model, { temperature: 0 }),
         },
         {
-          timeout: 30000,
+          timeout: modelRequestTimeout(model, 30000),
           headers: {
             "x-goog-api-key": GEMINI_KEY(),
             "Content-Type": "application/json",

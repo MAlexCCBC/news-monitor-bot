@@ -1,7 +1,7 @@
 import axios from "axios";
 import sharp from "sharp";
 import { describeGeminiError, filterModels, recordModelFailure } from "../ai/models.js";
-import { withGeminiRetries } from "../ai/gemini-client.js";
+import { modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "../ai/gemini-client.js";
 
 // Analiza faciala prin Gemini Vision (multimodal). Folosim Gemini ca motor de:
 //  1. detectie fata -> bounding box pentru crop centrat corect;
@@ -52,9 +52,9 @@ async function geminiVision(parts) {
     try {
       const res = await withGeminiRetries(() => axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
-        { contents: [{ parts }], generationConfig: { temperature: 0 } },
+        { contents: [{ parts }], generationConfig: modelGenerationConfig(model, { temperature: 0 }) },
         {
-          timeout: 60000,
+          timeout: modelRequestTimeout(model, 60000),
           headers: {
             "x-goog-api-key": GEMINI_KEY(),
             "Content-Type": "application/json",

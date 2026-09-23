@@ -1,6 +1,6 @@
 import axios from "axios";
 import { filterModels, recordModelFailure } from "./models.js";
-import { withGeminiRetries } from "./gemini-client.js";
+import { modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "./gemini-client.js";
 
 // Extrage DINAMIC numele persoanei care declara, CITIND articolul (titlu +
 // fragment). Nu depinde de liste predefinite si NU intoarce institutii sau
@@ -75,10 +75,10 @@ export async function extractSpeakerFromArticle(title, excerpt, keywordHint = ""
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           contents: [{ parts: [{ text: PROMPT_TEMPLATE(title, excerpt, keywordHint) }] }],
-          generationConfig: { temperature: 0 },
+          generationConfig: modelGenerationConfig(model, { temperature: 0 }),
         },
         {
-          timeout: 30000,
+          timeout: modelRequestTimeout(model, 30000),
           headers: {
             "x-goog-api-key": GEMINI_KEY(),
             "Content-Type": "application/json",

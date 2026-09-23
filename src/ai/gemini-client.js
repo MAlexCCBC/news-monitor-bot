@@ -2,6 +2,17 @@ import axios from "axios";
 
 const MAX_RETRIES = 2;
 const MAX_RETRY_DELAY_MS = 60_000;
+export const GEMMA4_TIMEOUT_MS = 120_000;
+
+export function modelRequestTimeout(model, fallbackTimeoutMs = null) {
+  return model.startsWith("gemma-4-") ? GEMMA4_TIMEOUT_MS : fallbackTimeoutMs;
+}
+
+export function modelGenerationConfig(model, baseConfig = {}) {
+  const thinkingConfig = { includeThoughts: false };
+  if (model.startsWith("gemma-4-")) thinkingConfig.thinkingLevel = "minimal";
+  return { ...baseConfig, thinkingConfig };
+}
 
 function retryAfterMs(error, now) {
   const headers = error.response?.headers;

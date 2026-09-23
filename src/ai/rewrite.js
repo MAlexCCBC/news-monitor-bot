@@ -1,6 +1,6 @@
 import axios from "axios";
 import { describeGeminiError, filterModels, recordModelFailure } from "./models.js";
-import { isRequestTimeout, withGeminiRetries } from "./gemini-client.js";
+import { isRequestTimeout, modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "./gemini-client.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
@@ -97,11 +97,12 @@ export async function rewriteArticle(articleText) {
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
           contents: [{ parts: [{ text: PROMPT_TEMPLATE(articleText) }] }],
-          generationConfig: { thinkingConfig: { includeThoughts: false } },
+          generationConfig: modelGenerationConfig(model),
         },
         {
-          // Deliberately no Axios timeout: allow Gemini to finish even when a
-          // generation is unusually slow rather than failing it locally.
+          // Gemma 4 gets a longer window; Gemini retains the user's no-timeout
+          // preference for rewrite requests.
+          timeout: modelRequestTimeout(model),
           headers: {
             "x-goog-api-key": GEMINI_KEY(),
             "Content-Type": "application/json",
