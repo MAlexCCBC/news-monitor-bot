@@ -5,6 +5,7 @@ import { createPendingApprovalStore } from "./pending-approvals.js";
 import { createAiPostHistoryStore } from "./ai-post-history.js";
 import { readArticleSimilarityHistory } from "./article-history.js";
 import { sameArticleUrl } from "../utils/article-url.js";
+import { ensureColumn } from "./migrations.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const db = new Database(path.join(__dirname, "../../data.sqlite"));
@@ -43,24 +44,14 @@ db.exec(`
 // Ignore legacy cooldowns created by the old broad quota_exceeded heuristic.
 // Their exact quota window was unknown and they could suppress models that
 // still had daily capacity.
-const cooldownCols = db.prepare(`PRAGMA table_info(ai_model_cooldowns)`).all().map((column) => column.name);
-if (!cooldownCols.includes("cooldown_version")) {
-  db.exec(`ALTER TABLE ai_model_cooldowns ADD COLUMN cooldown_version INTEGER NOT NULL DEFAULT 1`);
-}
-
-const newsCols = db.prepare(`PRAGMA table_info(news_history)`).all().map((column) => column.name);
-if (!newsCols.includes("embedding_model")) db.exec(`ALTER TABLE news_history ADD COLUMN embedding_model TEXT`);
-if (!newsCols.includes("embedding_version")) db.exec(`ALTER TABLE news_history ADD COLUMN embedding_version TEXT`);
+ensureColumn(db, "ai_model_cooldowns", "cooldown_version", "INTEGER NOT NULL DEFAULT 1");
+ensureColumn(db, "news_history", "embedding_model", "TEXT");
+ensureColumn(db, "news_history", "embedding_version", "TEXT");
 
 // Migrare: adaugam coloanele de utilizare a imaginilor la baza existenta
 // (used_count = de cate ori a fost folosita imaginea, last_used = ultima folosire).
-const imgCols = db.prepare(`PRAGMA table_info(image_history)`).all().map((c) => c.name);
-if (!imgCols.includes("used_count")) {
-  db.exec(`ALTER TABLE image_history ADD COLUMN used_count INTEGER NOT NULL DEFAULT 1`);
-}
-if (!imgCols.includes("last_used")) {
-  db.exec(`ALTER TABLE image_history ADD COLUMN last_used INTEGER`);
-}
+ensureColumn(db, "image_history", "used_count", "INTEGER NOT NULL DEFAULT 1");
+ensureColumn(db, "image_history", "last_used", "INTEGER");
 db.exec(`UPDATE image_history SET last_used = created_at WHERE last_used IS NULL`);
 
 export function saveNews({ url, title, content, embedding, embeddingModel = null, embeddingVersion = null }) {
