@@ -216,13 +216,28 @@ async function createApprovalRequest(item) {
     console.log(`[approval] Nu trimit o a doua cerere activă pentru același URL: ${item.url}`);
     return stored;
   }
-  // Persistăm înainte de Telegram send; dacă procesul cade aici, la pornire
-  // restaurăm cererea și îi trimitem din nou mesajul cu butoane.
-  await persistPendingApprovals();
   scheduleApprovalExpiry(stored);
-  const sent = await sendApprovalPrompt(stored);
+  // Marcăm și persistăm încercarea înainte de Telegram. Bot API nu oferă
+  // idempotency key: dacă procesul cade după acceptarea mesajului dar înainte
+  // să salveze message_id, restaurarea nu trebuie să trimită o copie.
+  if (!pendingApprovals.claimMessageSend(id)) return stored;
+  try {
+    await persistPendingApprovals();
+  } catch (err) {
+    pendingApprovals.releaseMessageSendClaim(id);
+    throw err;
+  }
+  let sent;
+  try {
+    sent = await sendApprovalPrompt(stored);
+  } catch (err) {
+    pendingApprovals.markMessageSendUncertain(id);
+    await persistPendingApprovals().catch(() => {});
+    throw err;
+  }
   pendingApprovals.setMessageId(id, sent.message_id);
   const updated = pendingApprovals.get(id);
+  console.log(`[approval] Cererea ${id} trimisă o singură dată (telegram_message_id=${sent.message_id}): ${item.url}`);
   scheduleApprovalExpiry(updated);
   await persistPendingApprovals();
   return updated;
@@ -341,12 +356,34 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
     for (const item of pendingApprovals.listPending()) {
       scheduleApprovalExpiry(item);
       if (item.message_id) continue;
+      if (item.message_send_state !== "not_sent") {
+        console.warn(`[approval restore] Nu retrimit cererea ${item.id} pentru ${item.url}: starea trimiterii este ${item.message_send_state} și Telegram poate să fi livrat deja mesajul. Dacă lipsește din chat, retrimite linkul manual.`);
+        continue;
+      }
+      if (!pendingApprovals.claimMessageSend(item.id)) continue;
       try {
-        const sent = await sendApprovalPrompt(item);
-        pendingApprovals.setMessageId(item.id, sent.message_id);
         await persistPendingApprovals();
       } catch (err) {
-        console.error(`[approval restore] Nu am putut retrimite cererea ${item.id}:`, err.message);
+        pendingApprovals.releaseMessageSendClaim(item.id);
+        console.error(`[approval restore] Nu am putut salva intenția de trimitere pentru cererea ${item.id}; Telegram nu a fost apelat:`, err.message);
+        continue;
+      }
+      let sent;
+      try {
+        sent = await sendApprovalPrompt(item);
+      } catch (err) {
+        pendingApprovals.markMessageSendUncertain(item.id);
+        await persistPendingApprovals().catch(() => {});
+        console.error(`[approval restore] Trimiterea cererii ${item.id} a eșuat sau are rezultat ambiguu; nu o voi retrimite automat:`, err.message);
+        continue;
+      }
+      pendingApprovals.setMessageId(item.id, sent.message_id);
+      try {
+        await persistPendingApprovals();
+      } catch (err) {
+        // setMessageId is reflected in memory and no retry is allowed, even if
+        // persisting the Telegram ID failed. The next recovery marks it unknown.
+        console.error(`[approval restore] Telegram a acceptat cererea ${item.id} (message_id=${sent.message_id}), dar ID-ul nu s-a putut salva în GitHub:`, err.message);
       }
     }
   } finally {

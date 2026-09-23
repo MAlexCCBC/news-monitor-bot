@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import { createPendingApprovalStore } from "./pending-approvals.js";
 import { createAiPostHistoryStore } from "./ai-post-history.js";
 import { readArticleSimilarityHistory } from "./article-history.js";
+import { sameArticleUrl } from "../utils/article-url.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const db = new Database(path.join(__dirname, "../../data.sqlite"));
@@ -83,8 +84,11 @@ export function getRecentNews() {
 }
 
 export function isUrlSeen(url) {
-  const stmt = db.prepare(`SELECT 1 FROM news_history WHERE url = ?`);
-  return !!stmt.get(url);
+  const exact = db.prepare(`SELECT 1 FROM news_history WHERE url = ?`);
+  if (exact.get(url)) return true;
+
+  return db.prepare(`SELECT url FROM news_history WHERE url IS NOT NULL`).all()
+    .some((row) => sameArticleUrl(row.url, url));
 }
 
 export function saveImage({ imageUrl, personOrTopic }) {

@@ -115,6 +115,52 @@ test("only one active article approval can exist per URL", () => {
   db.close();
 });
 
+test("changed publisher slug with the same article ID reuses the active approval", () => {
+  const db = new Database(":memory:");
+  const store = createPendingApprovalStore(db);
+  const firstUrl = "https://www.digi24.ro/stiri/actualitate/ccr-discuta-sesizarea-lui-bolojan-3960029";
+  const updatedUrl = "https://www.digi24.ro/stiri/ccr-a-amanat-sesizarea-lui-bolojan-3960029?utm_source=telegram";
+  const base = {
+    kind: "article",
+    article: { title: "CCR discută sesizarea lui Bolojan", content: "Text" },
+    simResult: { similarity: 0.95 },
+    matchedKeywords: [],
+    expiresAt: Date.now() + ARTICLE_APPROVAL_TTL_MS,
+  };
+
+  const first = store.createOrGet({ ...base, id: "digi-original", url: firstUrl });
+  const updated = store.createOrGet({ ...base, id: "digi-updated", url: updatedUrl });
+  assert.equal(first.created, true);
+  assert.equal(updated.created, false);
+  assert.equal(updated.item.id, "digi-original");
+  assert.equal(store.findActiveByUrl(updatedUrl).id, "digi-original");
+  assert.equal(store.listPending().length, 1);
+  db.close();
+});
+
+test("approval prompt sends are claimed once and ambiguous crash recovery never resends a possible duplicate", () => {
+  const db = new Database(":memory:");
+  const store = createPendingApprovalStore(db);
+  store.create({ id: "send-once", kind: "article", url: "https://example.com/send-once",
+    article: { title: "Titlu", content: "Text" }, simResult: {}, matchedKeywords: [],
+    expiresAt: Date.now() + ARTICLE_APPROVAL_TTL_MS });
+
+  assert.equal(store.claimMessageSend("send-once"), true);
+  assert.equal(store.claimMessageSend("send-once"), false, "concurrent handlers cannot both send a prompt");
+  store.recoverInterrupted();
+  assert.equal(store.get("send-once").message_send_state, "unknown");
+  assert.equal(store.claimMessageSend("send-once"), false, "after restart Telegram may already have delivered it");
+
+  store.create({ id: "normal-send", kind: "article", url: "https://example.com/normal-send",
+    article: { title: "Titlu", content: "Text" }, simResult: {}, matchedKeywords: [],
+    expiresAt: Date.now() + ARTICLE_APPROVAL_TTL_MS });
+  assert.equal(store.claimMessageSend("normal-send"), true);
+  store.setMessageId("normal-send", 4321);
+  assert.equal(store.get("normal-send").message_send_state, "sent");
+  assert.equal(store.claimMessageSend("normal-send"), false);
+  db.close();
+});
+
 test("startup disables legacy duplicate article approvals and exposes them for Telegram cleanup", () => {
   const db = new Database(":memory:");
   createPendingApprovalStore(db);
@@ -162,6 +208,7 @@ test("upgrade extends recent expired one-hour link requests to 12h and reissues 
   assert.equal(restored.state, "pending");
   assert.equal(restored.expires_at, createdAt + ARTICLE_APPROVAL_TTL_MS);
   assert.equal(restored.message_id, null, "a fresh Telegram message with live buttons must be sent");
+  assert.equal(restored.message_send_state, "not_sent");
   assert.equal(upgradedStore.claim("legacy-link-request", createdAt + 11 * 60 * 60 * 1000).state, "processing");
   upgradedDb.close();
   fs.rmSync(dir, { recursive: true, force: true });

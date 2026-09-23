@@ -179,6 +179,14 @@ const GENERIC_TITLE_WORDS = new Set([
   "azi", "astazi", "nou", "noua", "noi", "oficial",
 ]);
 const GENERIC_TITLE_STEMS = new Set([...GENERIC_TITLE_WORDS].map(stemRo));
+const LOW_SPECIFICITY_EVENT_STEMS = new Set([
+  "ccr", "iccj", "sesizare", "sesizari", "conflict", "constitutional",
+  "intalnire", "intalni", "intalnit", "presedinte", "presedinti", "sef", "stat",
+  // Identical political actors plus generic verbs/roles often describe two
+  // separate developments in the same crisis (e.g. a planned meeting vs a
+  // later phone call). These terms alone cannot identify an event.
+  "discut", "premier", "desemnat",
+].map(stemRo));
 
 function stemRo(word) {
   let w = word.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
@@ -200,6 +208,27 @@ function getStems(text) {
     .filter((w) => w.length >= 3 && !STOP_WORDS.has(w))
     .map(stemRo)
     .filter((w) => !GENERIC_TITLE_STEMS.has(w));
+}
+
+function fiveWordShingles(text) {
+  const words = normalizedText(text).toLowerCase().replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/).filter(Boolean);
+  const shingles = new Set();
+  for (let index = 0; index <= words.length - 5; index++) {
+    shingles.add(words.slice(index, index + 5).join(" "));
+  }
+  return shingles;
+}
+
+function fullArticlePhraseCoverage(titleA, bodyA, titleB, bodyB) {
+  const shinglesA = fiveWordShingles(`${titleA}\n${cleanArticleContent(bodyA)}`);
+  const shinglesB = fiveWordShingles(`${titleB}\n${cleanArticleContent(bodyB)}`);
+  if (Math.min(shinglesA.size, shinglesB.size) < 30) return 0;
+  const smaller = shinglesA.size <= shinglesB.size ? shinglesA : shinglesB;
+  const larger = smaller === shinglesA ? shinglesB : shinglesA;
+  let common = 0;
+  for (const phrase of smaller) if (larger.has(phrase)) common++;
+  return common / smaller.size;
 }
 
 const GENERIC_PROPER_NOUNS = new Set([
@@ -251,7 +280,7 @@ function isEditorial(title, body) {
 }
 
 function statementSpeaker(title, body) {
-  const text = normalizedText(`${title}\n${articleFocus(body)}`);
+  const text = normalizedText(`${title}\n${articleFocus(body, title)}`);
   if (!/\b(?:declar\w*|spun\w*|afirm\w*|reaction\w*|intrebat\w*|mesaj\w*|consider\w*|sustin\w*|vorbit|coment\w*|interviu)\b/i.test(text)) return null;
   const headline = normalizedText(title).replace(/^(?:(?:video|exclusiv|interviu|stenograme)[\s:.\-]*)+/i, "");
   const roles = new Set(["presedintele", "presedinta", "premierul", "ministrul", "liderul", "senatorul", "vicepresedintele"]);
@@ -303,24 +332,34 @@ export function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
   }
   let commonTitleTopicWords = 0;
   for (const stem of titleStemsA) {
-    if (titleStemsB.has(stem) && !titleNamesA.has(stem) && !titleNamesB.has(stem)) commonTitleTopicWords++;
+    if (titleStemsB.has(stem) && !titleNamesA.has(stem) && !titleNamesB.has(stem) &&
+        !LOW_SPECIFICITY_EVENT_STEMS.has(stem)) commonTitleTopicWords++;
   }
+  const titleEntitiesA = extractEntities(titleA);
+  const titleEntitiesB = extractEntities(titleOld);
+  const commonTitleEntities = [...titleEntitiesA.properNouns].filter((name) => titleEntitiesB.properNouns.has(name)).length;
+  const commonTitleNumbers = [...titleEntitiesA.numbers].filter((number) => titleEntitiesB.numbers.has(number)).length;
   const topicCountA = [...stemsA].filter((stem) => !namesA.has(stem) && !namesB.has(stem)).length;
   const topicCountB = [...stemsB].filter((stem) => !namesA.has(stem) && !namesB.has(stem)).length;
   const bodyTopicOverlap = commonTopicWords / Math.max(1, Math.min(topicCountA, topicCountB));
-  const focusA = new Set(getStems(articleFocus(leadA)).filter((s) => !namesA.has(s) && !namesB.has(s)));
-  const focusB = new Set(getStems(articleFocus(leadOld)).filter((s) => !namesA.has(s) && !namesB.has(s)));
+  // Use only the first two substantive paragraphs as the event-focus guard;
+  // a shared background section later in two unrelated articles must not
+  // override their different opening developments.
+  const focusA = new Set(getStems(articleFocus(leadA, titleA)).filter((s) => !namesA.has(s) && !namesB.has(s)));
+  const focusB = new Set(getStems(articleFocus(leadOld, titleOld)).filter((s) => !namesA.has(s) && !namesB.has(s)));
   const commonFocusWords = [...focusA].filter((s) => focusB.has(s)).length;
   const focusTopicOverlap = commonFocusWords / Math.max(1, Math.min(focusA.size, focusB.size));
+  const phraseCoverage = fullArticlePhraseCoverage(titleA, leadA, titleOld, leadOld);
 
   const hasMatchingEntities =
-    (titleOverlap >= 0.60 && commonTitleTopicWords >= 2 && (commonProper >= 1 || commonNumbers >= 1)) ||
-    (titleOverlap >= 0.45 && commonTitleTopicWords >= 3 && (commonProper >= 1 || commonNumbers >= 1)) ||
-    // Titluri foarte diferite pot totuși fi aceeași relatare, dar doar când
-    // corpul are suprapunere lexicală densă, nu doar nume și termeni generici.
+    // Ancora de persoană/cifră trebuie să apară chiar în titluri, nu doar în
+    // contextul copiat în corp (care poate menționa aceiași politicieni).
+    (titleOverlap >= 0.60 && commonTitleTopicWords >= 2 && (commonTitleEntities >= 1 || commonTitleNumbers >= 1)) ||
+    (titleOverlap >= 0.45 && commonTitleTopicWords >= 4 && (commonTitleEntities >= 1 || commonTitleNumbers >= 1)) ||
+    // Titlurile pot fi diferite pentru aceeași relatare; atunci dovada trebuie
+    // să vină din primul text editorial real, după eliminarea metadata site-ului.
     (commonTopicWords >= 8 && bodyTopicOverlap >= 0.35 &&
-      commonFocusWords >= 6 && focusTopicOverlap >= 0.28 &&
-      (commonProper >= 1 || commonNumbers >= 1));
+      commonFocusWords >= 6 && focusTopicOverlap >= 0.35);
 
   return {
     hasMatchingEntities,
@@ -330,6 +369,9 @@ export function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
     commonTopicWords,
     commonFocusWords,
     focusTopicOverlap,
+    phraseCoverage,
+    commonTitleEntities,
+    commonTitleNumbers,
     commonProper,
     commonNumbers,
   };
@@ -370,10 +412,18 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
   // simpla acoperire a aceleiași persoane/subiect larg să unească evenimente.
   const strongArticleMatch =
     embSim >= threshold + 0.04 &&
-    match.commonTopicWords >= 6 &&
-    match.bodyTopicOverlap >= 0.18 &&
-    match.commonTitleTopicWords >= 3 &&
-    match.commonProper >= 2;
+    ((match.commonTopicWords >= 5 &&
+      match.bodyTopicOverlap >= 0.18 &&
+      match.commonTitleTopicWords >= 4 &&
+      match.commonProper >= 2) ||
+      // Some outlets copy large chunks of the same wire/reporting while the
+      // headline is entirely different (or one story is inside a roundup).
+      // Require high phrase coverage of the shorter full article plus a strong
+      // topic/focus signal; raw semantic similarity alone remains insufficient.
+      (match.commonTopicWords >= 50 &&
+        match.bodyTopicOverlap >= 0.60 &&
+        match.commonFocusWords >= 10 &&
+        match.phraseCoverage >= 0.70));
 
   // 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
   if (embSim >= threshold) {

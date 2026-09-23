@@ -46,6 +46,99 @@ test("shared political background in long articles cannot override different rep
   assert.equal(result.score, .94, "do not manufacture a different semantic score after arbitration");
 });
 
+test("different CCR cases are not duplicates just because the articles share institutional background", () => {
+  const safeCase = "Data actualizării: 23.09.2026 07:58\n\nUrmărește Digi24 în Google Discover Adaugă Digi24 ca sursă preferată în Google\n\nCurtea Constituțională a României (CCR) ar putea lua o decizie miercuri în cazul sesizării președintelui Camerei Deputaților, Sorin Grindeanu, privind un posibil conflict juridic de natură constituțională între Guvern și Parlament, declanșat prin emiterea Ordonanței de urgență referitoare la Programul SAFE. În sesizare, Grindeanu contestă adoptarea ordonanței după moțiunea de cenzură și cere Curții să verifice limitele constituționale ale Guvernului interimar.";
+  const salaryCase = "Data publicării: 23.09.2026 07:51\n\nUrmărește Digi24 în Google Discover Adaugă Digi24 ca sursă preferată în Google\n\nCurtea Constituțională discută miercuri sesizarea depusă de premierul interimar Ilie Bolojan cu privire la soluționarea unui conflict juridic de natură constituțională între Guvern și Înalta Curte de Casație și Justiție în legătură cu plata restanțelor salariale ale magistraților. Litigiul privește obligația Guvernului de a plăti drepturile salariale restante și penalitățile stabilite de instanță.";
+  const result = evaluate3ZoneSimilarity(.842977,
+    "Sesizarea lui Sorin Grindeanu privind un posibil conflict constituțional între Parlament și Guvern, pe agenda CCR de miercuri",
+    safeCase,
+    "CCR discută sesizarea lui Bolojan privind conflictul constituțional dintre ÎCCJ și Guvern legat de restanțele salariale din justiție",
+    salaryCase);
+
+  assert.equal(result.isDuplicate, false);
+  assert.equal(result.score, .842977);
+
+  const updatedSafeTitle = "CCR a amânat pentru 30 septembrie decizia privind sesizarea lui Sorin Grindeanu referitoare la Programul SAFE";
+  const updatedSafeLead = "Curtea Constituțională a României (CCR) a amânat miercuri, pentru 30 septembrie, luarea unei decizii în cazul sesizării președintelui Camerei Deputaților, Sorin Grindeanu, privind un posibil conflict juridic de natură constituțională între Guvern și Parlament, declanșat prin emiterea Ordonanței de urgență referitoare la Programul SAFE.\n\nSorin Grindeanu a cerut Curții Constituționale să constate existența acestui conflict juridic de natură constituțională între Parlament și Guvern și să stabilească conduita de urmat în vederea restabilirii ordinii constituționale.";
+  const salaryLead = "Curtea Constituţională discută miercuri sesizarea depusă de premierul interimar Ilie Bolojan cu privire la soluţionarea unui conflict juridic de natură constituţională între Guvern şi Înalta Curte de Casaţie şi Justiţie în legătură cu plata restanţelor salariale ale magistraţilor.\n\nSesizarea a fost depusă după ce Instanţa supremă a dat Guvernul în judecată şi a câştigat în primă instanţă, pentru neplata acestor restanţe salariale, apărute ca urmare a unor majorări stabilite retroactiv prin hotărâri judecătoreşti.";
+  const updatedResult = evaluate3ZoneSimilarity(.8456137821840438,
+    updatedSafeTitle, updatedSafeLead,
+    "CCR discută sesizarea lui Bolojan privind conflictul constituțional dintre ÎCCJ și Guvern legat de restanțele salariale din justiție",
+    salaryLead);
+
+  assert.equal(updatedResult.isDuplicate, false, "the real 84.6% false positive must be allowed through");
+  assert.equal(updatedResult.score, .8456137821840438);
+});
+
+test("a later phone call is not merged with an earlier planned meeting just because actors match", () => {
+  const earlierTitle = "Bolojan și Grindeanu, discuții despre noul guvern, fără premierul desemnat. Când se întâlnește Siegfried Mureșan cu social-democrații";
+  const earlierBody = "Ilie Bolojan și Sorin Grindeanu urmau să discute despre noul Guvern, fără participarea premierului desemnat Siegfried Mureșan. Întâlnirea cu Mureșan era așteptată ulterior, în cadrul negocierilor pentru programul de guvernare.";
+  const metTitle = "Grindeanu și Bolojan s-au întâlnit să discute despre premierul desemnat. Liderul PSD a vorbit la telefon cu Siegfried Mureșan";
+  const metBody = "Ilie Bolojan și Sorin Grindeanu s-au întâlnit în această dimineață pentru a discuta despre viitorul Guvern. Separat, liderul PSD a vorbit la telefon cu premierul desemnat Siegfried Mureșan despre programul de guvernare.";
+  const callTitle = "Sorin Grindeanu a discutat cu premierul desemnat, Siegfried Mureșan";
+  const callBody = "Sorin Grindeanu a purtat o convorbire telefonică cu premierul desemnat Siegfried Mureșan despre negocierile pentru guvern și programul de guvernare. Discuția a avut loc după întâlnirea dintre Grindeanu și Ilie Bolojan, la care Mureșan nu a participat.";
+
+  assert.equal(evaluate3ZoneSimilarity(.91997, metTitle, metBody, earlierTitle, earlierBody).isDuplicate, false);
+  assert.equal(evaluate3ZoneSimilarity(.90082, callTitle, callBody, earlierTitle, earlierBody).isDuplicate, false);
+});
+
+test("the same AUR policy proposals across outlets survive headline, photo-caption, and date furniture", () => {
+  const digiTitle = "Ce soluții propune AUR în oglindă cu cele 10 priorități ale PSD pentru guvernare";
+  const hotnewsTitle = "„Decalogul” AUR pentru guvernare. Răspuns în oglindă față de PSD, inclusiv „o diplomație de 360 de grade”";
+  const digiBody = "Parlamentarii AUR au prezentat, marți, prioritățile formațiunii, sub forma unui răspuns la cele 10 propuneri avansate anterior de PSD pentru un viitor program de guvernare, printre acestea fiind scăderea TVA, a impozitelor pe dividende, reducerea numărului de parlamentari la 300, relansarea sectorului energetic, a agriculturii și o diplomație de 360 de grade.\n\nComisiile de specialitate din cadrul AUR au organizat o conferință cu temele Răspunsul AUR la cele 10 priorități propuse de PSD și PNRR și fonduri europene, moderată de deputata Ramona-Ioana Bruynseels.";
+  const hotnewsBody = [
+    "Ramona-Ioana Bruynseels, la Palatul Parlamentului. FOTO: Inquam Photos / Codrin Unici",
+    hotnewsTitle,
+    "Publicat 22.09.2026 20:03",
+    "Urmărește-ne în Google Discover",
+    "Parlamentarii AUR au prezentat, marți, prioritățile formațiunii, sub forma unui răspuns la cele 10 propuneri avansate anterior de PSD pentru un viitor program de guvernare.",
+    "Printre aceste măsuri se află scăderea TVA, a impozitelor pe dividende, reducerea numărului de parlamentari la 300, relansarea sectorului energetic, a agriculturii, precum și o diplomație de 360 de grade.",
+  ].join("\n\n");
+  const result = evaluate3ZoneSimilarity(.966099,
+    digiTitle, digiBody,
+    hotnewsTitle, hotnewsBody);
+
+  assert.equal(result.isDuplicate, true);
+  assert.equal(result.score, .966099);
+});
+
+test("a roundup and a focused report are duplicates when most of the full report is reused", () => {
+  const roundupTitle = "Două conflicte cu mize mari, pe masa CCR. Sesizările făcute de Grindeanu și Bolojan, analizate azi";
+  const focusedTitle = "CCR, decizie crucială: Înalta Curte cere plata restanțelor salariale ale magistraților";
+  const quotedReport = "În luna martie, Înalta Curte de Casație a sesizat Curtea de Apel București, solicitând obligarea Guvernului să achite 4,8 miliarde lei, sume reprezentând restanțe salariale câștigate prin procese sau penalități la aceste restanțe. Ce am constatat foarte repede este că existau mai multe hotărâri judecătorești care stabileau drepturi salariale restante ale magistraților și obligații de plată pentru Guvern.";
+  const roundupBody = [
+    "Curtea Constituțională discută miercuri despre două conflicte juridice majore care pun față în față Guvernul, Parlamentul și Înalta Curte de Casație și Justiție. Pe masa judecătorilor se află sesizarea privind programul SAFE, precum și disputa financiară legată de restanțele salariale ale magistraților.",
+    "Sorin Grindeanu contestă adoptarea ordonanței SAFE de către Guvernul interimar și cere Curții să verifice limitele constituționale ale Executivului.",
+    "CCR discută sesizarea depusă de premierul interimar Ilie Bolojan cu privire la soluționarea unui conflict juridic între Guvern și Înalta Curte de Casație și Justiție, în legătură cu plata restanțelor salariale ale magistraților.",
+    quotedReport,
+  ].join("\n\n");
+  const focusedBody = [
+    "Curtea Constituțională discută sesizarea depusă de premierul interimar Ilie Bolojan privind conflictul dintre Guvern și Înalta Curte de Casație și Justiție, în legătură cu plata restanțelor salariale ale magistraților.",
+    "Guvernul a depus sesizarea după ce Înalta Curte a dat Executivul în judecată și a câștigat în primă instanță pentru neplata restanțelor salariale, apărute ca urmare a unor majorări stabilite retroactiv prin hotărâri judecătorești.",
+    quotedReport,
+    "Ministerul de Finanțe consideră că o astfel de decizie ar aduce atingere separației și echilibrului puterilor în stat și ar crea grave prejudicii bugetului de stat.",
+  ].join("\n\n");
+  const result = evaluate3ZoneSimilarity(.922,
+    roundupTitle, roundupBody,
+    focusedTitle, focusedBody);
+
+  assert.equal(result.isDuplicate, true);
+  assert.equal(result.score, .922);
+});
+
+test("separate Nicușor Dan meetings in New York are not merged by repeated site boilerplate", () => {
+  const presidentsMeeting = "Data publicării: 23.09.2026 09:06\n\nUrmărește Digi24 în Google Discover Adaugă Digi24 ca sursă preferată în Google\n\nPreședintele Nicușor Dan s-a întâlnit, la New York, cu ocazia participării la Adunarea Generală a Națiunilor Unite, cu președintele Senegalului, Bassírou Diomaye Diakhar Faye, și cu președintele Republicii Guineea, Mamadi Doumbouya. Cei trei au discutat despre relațiile bilaterale și cooperarea economică.";
+  const communityEvent = "Data publicării: 22.09.2026 17:36\n\nUrmărește Digi24 în Google Discover Adaugă Digi24 ca sursă preferată în Google\n\nPreședintele Nicușor Dan și partenera lui s-au întâlnit la New York cu membrii comunității românești. Șeful statului a participat și la dezvelirea plăcuței The Queen Marie of Romania Corner, în amintirea vizitei Reginei Maria în Statele Unite.";
+  const result = evaluate3ZoneSimilarity(.821341,
+    "Foto Nicușor Dan s-a întâlnit la New York cu președinții din Senegal și Guineea. Ce au vorbit șefii de stat",
+    presidentsMeeting,
+    "Foto Nicușor Dan a dezvelit plăcuța The Queen Marie of Romania Corner și s-a întâlnit cu românii din New York",
+    communityEvent);
+
+  assert.equal(result.isDuplicate, false);
+  assert.equal(result.score, .821341);
+});
+
 test("generic Romanian headline overlap does not mark unrelated coverage as duplicate", () => {
   const result = evaluate3ZoneSimilarity(
     0.77,

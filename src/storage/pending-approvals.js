@@ -1,3 +1,5 @@
+import { sameArticleUrl } from "../utils/article-url.js";
+
 function decode(row) {
   if (!row) return null;
   return {
@@ -34,11 +36,21 @@ export function createPendingApprovalStore(db) {
       expires_at INTEGER,
       state TEXT NOT NULL DEFAULT 'pending',
       message_id INTEGER,
+      message_send_state TEXT NOT NULL DEFAULT 'not_sent',
       created_at INTEGER NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_pending_approvals_state_expiry
       ON pending_approvals(state, expires_at);
   `);
+
+  // Telegram sendMessage has no idempotency key. Rows that predate this state
+  // and have no message_id are ambiguous after a crash; do not blindly resend
+  // them, since Telegram may already have accepted the message.
+  const approvalCols = db.prepare(`PRAGMA table_info(pending_approvals)`).all().map((column) => column.name);
+  if (!approvalCols.includes("message_send_state")) {
+    db.exec(`ALTER TABLE pending_approvals ADD COLUMN message_send_state TEXT NOT NULL DEFAULT 'unknown'`);
+  }
+  db.exec(`UPDATE pending_approvals SET message_send_state = 'sent' WHERE message_id IS NOT NULL AND message_send_state <> 'sent'`);
 
   // Migrează cererile vechi pentru link-uri la noul termen de 12h. Cererile
   // expirate în ultima fereastră de 12h se reactivează și se retrimit cu
@@ -46,7 +58,7 @@ export function createPendingApprovalStore(db) {
   const migrationNow = Date.now();
   db.prepare(`
     UPDATE pending_approvals
-    SET expires_at = created_at + ?, state = 'pending', message_id = NULL
+    SET expires_at = created_at + ?, state = 'pending', message_id = NULL, message_send_state = 'not_sent'
     WHERE kind = 'article'
       AND state IN ('pending', 'expired')
       AND created_at >= ?
@@ -84,11 +96,11 @@ export function createPendingApprovalStore(db) {
     INSERT INTO pending_approvals (
       id, kind, url, article_json, sim_result_json, matched_keywords_json,
       formatted_post, ai_embedding_json, comparison_url, comparison_title,
-      similarity, expires_at, state, created_at
+      similarity, expires_at, state, message_send_state, created_at
     ) VALUES (
       @id, @kind, @url, @article_json, @sim_result_json, @matched_keywords_json,
       @formatted_post, @ai_embedding_json, @comparison_url, @comparison_title,
-      @similarity, @expires_at, 'pending', @created_at
+      @similarity, @expires_at, 'pending', 'not_sent', @created_at
     )
   `);
 
@@ -96,19 +108,30 @@ export function createPendingApprovalStore(db) {
     return decode(db.prepare("SELECT * FROM pending_approvals WHERE id = ?").get(id));
   }
 
-  const findActiveByUrl = db.prepare(`
-    SELECT * FROM pending_approvals
-    WHERE kind = 'article' AND url = ? AND state IN ('pending', 'processing')
-    ORDER BY created_at, rowid LIMIT 1
+  const findActiveArticleUrls = db.prepare(`
+    SELECT id, url FROM pending_approvals
+    WHERE kind = 'article' AND state IN ('pending', 'processing')
+    ORDER BY created_at, rowid
   `);
+  const findExpiredArticleUrls = db.prepare(`
+    SELECT id, url FROM pending_approvals
+    WHERE kind = 'article' AND state = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?
+  `);
+  const expireById = db.prepare(`UPDATE pending_approvals SET state = 'expired' WHERE id = ? AND state = 'pending'`);
+  const getById = db.prepare(`SELECT * FROM pending_approvals WHERE id = ?`);
+  function findActiveArticleByUrl(url) {
+    const match = findActiveArticleUrls.all().find((row) => sameArticleUrl(row.url, url));
+    return match ? getById.get(match.id) : null;
+  }
+  function expireMatchingArticleUrls(url, now) {
+    for (const row of findExpiredArticleUrls.all(now)) {
+      if (sameArticleUrl(row.url, url)) expireById.run(row.id);
+    }
+  }
   const createTransaction = db.transaction((item) => {
     if (item.kind === "article") {
-      db.prepare(`
-        UPDATE pending_approvals SET state = 'expired'
-        WHERE kind = 'article' AND url = ? AND state = 'pending'
-          AND expires_at IS NOT NULL AND expires_at <= ?
-      `).run(item.url, item.createdAt || Date.now());
-      const existing = findActiveByUrl.get(item.url);
+      expireMatchingArticleUrls(item.url, item.createdAt || Date.now());
+      const existing = findActiveArticleByUrl(item.url);
       if (existing) return { item: decode(existing), created: false };
     }
     insert.run({
@@ -139,12 +162,8 @@ export function createPendingApprovalStore(db) {
     },
 
     findActiveByUrl(url, now = Date.now()) {
-      db.prepare(`
-        UPDATE pending_approvals SET state = 'expired'
-        WHERE kind = 'article' AND url = ? AND state = 'pending'
-          AND expires_at IS NOT NULL AND expires_at <= ?
-      `).run(url, now);
-      return decode(findActiveByUrl.get(url));
+      expireMatchingArticleUrls(url, now);
+      return decode(findActiveArticleByUrl(url));
     },
 
     getStartupDuplicates() {
@@ -162,8 +181,24 @@ export function createPendingApprovalStore(db) {
     },
 
     setMessageId(id, messageId) {
-      db.prepare(`UPDATE pending_approvals SET message_id = ? WHERE id = ? AND state = 'pending'`)
+      db.prepare(`UPDATE pending_approvals SET message_id = ?, message_send_state = 'sent' WHERE id = ? AND state = 'pending'`)
         .run(messageId, id);
+    },
+
+    claimMessageSend(id) {
+      const result = db.prepare(`UPDATE pending_approvals SET message_send_state = 'sending'
+        WHERE id = ? AND state = 'pending' AND message_id IS NULL AND message_send_state = 'not_sent'`).run(id);
+      return result.changes === 1;
+    },
+
+    markMessageSendUncertain(id) {
+      db.prepare(`UPDATE pending_approvals SET message_send_state = 'unknown'
+        WHERE id = ? AND state = 'pending' AND message_id IS NULL AND message_send_state = 'sending'`).run(id);
+    },
+
+    releaseMessageSendClaim(id) {
+      db.prepare(`UPDATE pending_approvals SET message_send_state = 'not_sent'
+        WHERE id = ? AND state = 'pending' AND message_id IS NULL AND message_send_state = 'sending'`).run(id);
     },
 
     listPending(now = Date.now()) {
@@ -203,6 +238,8 @@ export function createPendingApprovalStore(db) {
 
     recoverInterrupted() {
       db.prepare("UPDATE pending_approvals SET state = 'pending' WHERE state = 'processing'").run();
+      db.prepare(`UPDATE pending_approvals SET message_send_state = 'unknown'
+        WHERE state = 'pending' AND message_id IS NULL AND message_send_state = 'sending'`).run();
     },
   };
 }
