@@ -1,5 +1,5 @@
-export function isVerifiedPersonImageAllowed({ hasReference, samePerson, hasText }) {
-  return hasReference === true && samePerson === true && hasText !== true;
+export function isVerifiedPersonImageAllowed({ hasReference, identityByName, samePerson, hasText }) {
+  return (hasReference === true || identityByName === true) && samePerson === true && hasText !== true;
 }
 
 export function isArticleImageCandidate({ speaker, imageUrl }) {

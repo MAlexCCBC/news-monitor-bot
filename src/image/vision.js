@@ -27,6 +27,7 @@ const VISION_MODELS = [
   "gemini-3.5-flash",
   "gemini-flash-latest",
 ];
+let workingVisionModel = null;
 
 // Pregatim imaginea pt. Gemini: JPEG mic (512px max), calitate 80 - requesturi
 // rapide si in limitele de dimensiune ale API-ului inline.
@@ -39,7 +40,10 @@ export async function toInlineJpeg(buffer, maxSize = 512) {
 }
 
 async function geminiVision(parts) {
-  const models = await filterModels(VISION_MODELS);
+  const available = await filterModels(VISION_MODELS);
+  const models = workingVisionModel && available.includes(workingVisionModel)
+    ? [workingVisionModel, ...available.filter((model) => model !== workingVisionModel)]
+    : available;
   if (!models.length) {
     throw new Error("Toate modelele vision sunt temporar în cooldown după erori de cotă.");
   }
@@ -59,6 +63,7 @@ async function geminiVision(parts) {
       ));
       const text = res.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
       if (!text) throw new Error("raspuns gol");
+      workingVisionModel = model;
       return text;
     } catch (err) {
       lastError = err;
@@ -68,6 +73,31 @@ async function geminiVision(parts) {
     }
   }
   throw new Error(`Toate modelele vision au eșuat: ${describeGeminiError(lastError)}`);
+}
+
+// Fallback when Wikipedia has no usable reference portrait: ask Vision to
+// identify the named public figure directly in each candidate. A positive
+// match is required; generic/person-unknown answers are rejected.
+export async function verifyPersonByName(personName, candidateBuffer) {
+  try {
+    const candidate = await toInlineJpeg(candidateBuffer);
+    const text = await geminiVision([
+      { inlineData: candidate },
+      {
+        text: `Identifica strict persoana din fotografie. Persoana căutată este „${personName}”.\nRăspunde EXACT pe două linii:\nPERSOANA: DA sau NU\nTEXT: DA sau NU\n\nPERSOANA este DA numai dacă fața vizibilă este recognoscibilă și poți identifica pozitiv persoana căutată. Dacă imaginea arată altă persoană, o mulțime, un document, o ilustrație, o persoană neidentificabilă sau nu ai certitudine, răspunde NU. Nu deduce identitatea doar din titlu, logo, nume ori context.\nTEXT este DA dacă există titluri, subtitrări, watermark mare sau text suprapus deranjant; altfel NU.`,
+      },
+    ]);
+    const personMatch = text.match(/PERSOANA:\s*(DA|NU)/i);
+    const textMatch = text.match(/TEXT:\s*(DA|NU)/i);
+    if (!personMatch) return { samePerson: null, hasText: null };
+    return {
+      samePerson: personMatch[1].toUpperCase() === "DA",
+      hasText: textMatch ? textMatch[1].toUpperCase() === "DA" : null,
+    };
+  } catch (err) {
+    console.warn(`[vision] verifyPersonByName esuat: ${err.message}`);
+    return { samePerson: null, hasText: null };
+  }
 }
 
 // Detecteaza fata PRINCIPALA si intoarce bounding box-ul in pixeli:

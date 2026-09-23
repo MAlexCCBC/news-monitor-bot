@@ -3,9 +3,13 @@ import assert from "node:assert/strict";
 
 import { isArticleImageCandidate, isVerifiedPersonImageAllowed } from "../src/image/policy.js";
 
-test("a person search result is allowed only after a positive face match against a reference", () => {
+test("person image requires positive identity verification and no visible overlay text", () => {
   assert.equal(isVerifiedPersonImageAllowed({ hasReference: true, samePerson: true, hasText: false }), true);
+  assert.equal(isVerifiedPersonImageAllowed({ hasReference: false, identityByName: true, samePerson: true, hasText: false }), true);
   assert.equal(isVerifiedPersonImageAllowed({ hasReference: false, samePerson: true, hasText: false }), false);
+  assert.equal(isVerifiedPersonImageAllowed({ hasReference: false, identityByName: true, samePerson: null, hasText: null }), false);
+  assert.equal(isVerifiedPersonImageAllowed({ hasReference: false, identityByName: true, samePerson: false, hasText: false }), false);
+  assert.equal(isVerifiedPersonImageAllowed({ hasReference: false, identityByName: true, samePerson: true, hasText: true }), false);
   assert.equal(isVerifiedPersonImageAllowed({ hasReference: true, samePerson: null, hasText: null }), false);
   assert.equal(isVerifiedPersonImageAllowed({ hasReference: true, samePerson: false, hasText: false }), false);
   assert.equal(isVerifiedPersonImageAllowed({ hasReference: true, samePerson: true, hasText: true }), false);
