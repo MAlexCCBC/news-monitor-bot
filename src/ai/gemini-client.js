@@ -80,8 +80,16 @@ export async function withGeminiRetries(request, {
       assertGeminiServiceAvailable();
       return await request();
     } catch (error) {
+      // A 503 is commonly a shared backend-capacity incident, not a model
+      // specific transient. Retrying it multiple times before falling back
+      // fans out requests across the same overloaded service. Let the caller
+      // try another model once; the cross-model circuit below will stop the
+      // cascade as soon as a second endpoint reports the same outage.
+      if (error.response?.status === 503) {
+        noteServiceUnavailable(error);
+        throw error;
+      }
       if (!isTransient(error) || retryNumber >= maxRetries) {
-        if (error.response?.status === 503) noteServiceUnavailable(error);
         throw error;
       }
       retryNumber++;

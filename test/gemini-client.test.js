@@ -3,22 +3,20 @@ import assert from "node:assert/strict";
 
 import { geminiRetryDelay, withGeminiRetries } from "../src/ai/gemini-client.js";
 
-test("transient Gemini 503 retries with bounded exponential backoff before model fallback", async () => {
+test("Gemini 503 is not retried on the same endpoint before model fallback", async () => {
   let requests = 0;
   const delays = [];
-  const result = await withGeminiRetries(async () => {
+  await assert.rejects(withGeminiRetries(async () => {
     requests++;
-    if (requests < 3) throw { response: { status: 503, headers: {} } };
-    return "recovered";
+    throw { response: { status: 503, headers: {} } };
   }, {
     sleep: async (delay) => delays.push(delay),
     random: () => 0.5,
     onRetry: () => {},
-  });
+  }));
 
-  assert.equal(result, "recovered");
-  assert.equal(requests, 3);
-  assert.deepEqual(delays, [1000, 2000]);
+  assert.equal(requests, 1);
+  assert.deepEqual(delays, []);
 });
 
 test("transient retry honors Google's retry-after hint, capped to one minute", () => {

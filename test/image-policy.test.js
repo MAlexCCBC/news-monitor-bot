@@ -11,9 +11,9 @@ test("a person search result is allowed only after a positive face match against
   assert.equal(isVerifiedPersonImageAllowed({ hasReference: true, samePerson: true, hasText: true }), false);
 });
 
-test("article thumbnails are not used as a substitute for a named speaker's portrait", () => {
+test("unverified article thumbnails are never sent as images", () => {
   assert.equal(shouldUseArticleThumbnail({ speaker: "Claudiu Manda", imageUrl: "https://example.com/thumbnail.jpg" }), false);
-  assert.equal(shouldUseArticleThumbnail({ speaker: null, imageUrl: "https://example.com/thumbnail.jpg" }), true);
+  assert.equal(shouldUseArticleThumbnail({ speaker: null, imageUrl: "https://example.com/thumbnail.jpg" }), false);
   assert.equal(shouldUseArticleThumbnail({ speaker: null, title: "Manda: al doilea eurodeputat criticat", imageUrl: "https://example.com/document.jpg" }), false);
   assert.equal(shouldUseArticleThumbnail({ speaker: null, title: "Claudiu Manda a declarat că demisionează", imageUrl: "https://example.com/document.jpg" }), false);
   assert.equal(shouldUseArticleThumbnail({ speaker: null, imageUrl: null }), false);
