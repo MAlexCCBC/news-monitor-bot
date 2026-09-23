@@ -5,11 +5,11 @@ import db, { getActiveModelCooldowns, saveModelCooldown } from "../src/storage/d
 import { describeGeminiError, eligibleModels, filterCoolingModels, recordModelFailure } from "../src/ai/models.js";
 import { TEXT_MODELS } from "../src/ai/rewrite.js";
 
-test("rewrite cascade keeps Gemini 3.8 first and includes supported preview and legacy fallbacks", () => {
+test("rewrite cascade keeps Gemini 3.8 first and excludes retired 2.5 endpoints", () => {
   assert.equal(TEXT_MODELS[0], "gemini-3.8-flash");
   assert.ok(TEXT_MODELS.includes("gemini-3-flash-preview"));
-  assert.ok(TEXT_MODELS.includes("gemini-2.5-flash"));
-  assert.ok(TEXT_MODELS.includes("gemini-2.5-flash-lite"));
+  assert.ok(!TEXT_MODELS.includes("gemini-2.5-flash"));
+  assert.ok(!TEXT_MODELS.includes("gemini-2.5-flash-lite"));
   assert.ok(TEXT_MODELS.indexOf("gemini-3.7-flash") < TEXT_MODELS.indexOf("gemini-3.5-flash-lite"));
 });
 
@@ -49,6 +49,13 @@ test("Gemini 500 receives a short cooldown to prevent repeating transient server
 
   assert.deepEqual(filterCoolingModels(["test-internal-error-model", "test-fallback-model"], now), ["test-fallback-model"]);
   assert.deepEqual(filterCoolingModels(["test-internal-error-model", "test-fallback-model"], now + 60_000), ["test-internal-error-model", "test-fallback-model"]);
+});
+
+test("a retired or unavailable 404 model is skipped for 24 hours", () => {
+  const now = 25_000;
+  assert.equal(recordModelFailure("test-retired-model", { response: { status: 404 } }, now), true);
+  assert.deepEqual(filterCoolingModels(["test-retired-model", "test-fallback-model"], now + 1), ["test-fallback-model"]);
+  assert.deepEqual(filterCoolingModels(["test-retired-model", "test-fallback-model"], now + 24 * 60 * 60 * 1000), ["test-retired-model", "test-fallback-model"]);
 });
 
 test("daily and per-minute quota errors get cooldowns matched to their reset windows", () => {

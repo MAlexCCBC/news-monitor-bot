@@ -18,10 +18,8 @@ export const TEXT_MODELS = [
   "gemini-3.6-flash",
   "gemini-3.5-flash",
   "gemini-3-flash-preview",
-  "gemini-2.5-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
-  "gemini-2.5-flash-lite",
   "gemma-4-31b-it",
   "gemma-4-26b-a4b-it",
   "gemini-flash-lite-latest",
@@ -93,7 +91,9 @@ export async function rewriteArticle(articleText) {
           contents: [{ parts: [{ text: PROMPT_TEMPLATE(articleText) }] }],
         },
         {
-          timeout: 60000,
+          // Fail over quickly during stalled Google responses instead of
+          // holding an article for a full minute on every unavailable model.
+          timeout: 15000,
           headers: {
             "x-goog-api-key": GEMINI_KEY(),
             "Content-Type": "application/json",
@@ -120,7 +120,7 @@ export async function rewriteArticle(articleText) {
       const reason = describeGeminiError(err);
       failures.push(`${model}: ${reason}`);
       if (isRequestTimeout(err)) {
-        console.warn(`[ai] ${model} a dat timeout (>60s), incerc urmatorul model...`);
+        console.warn(`[ai] ${model} a dat timeout (>15s), incerc urmatorul model...`);
       } else {
         console.warn(`[ai] ${model} a eșuat (${reason}), încerc următorul model disponibil...`);
       }

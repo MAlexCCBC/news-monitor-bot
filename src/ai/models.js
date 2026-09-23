@@ -64,6 +64,16 @@ export function describeGeminiError(err) {
 export function recordModelFailure(model, err, now = Date.now()) {
   const status = err?.response?.status;
   const isTimeout = err?.code === "ECONNABORTED" || err?.code === "ETIMEDOUT" || /timeout/i.test(err?.message || "");
+  // A model returning NOT_FOUND is not a transient capacity issue: Google has
+  // retired it or it is unavailable to this key. Persist a one-day skip so
+  // every article does not waste a request on the same dead endpoint.
+  if (status === 404) {
+    const cooldownUntil = Math.max(modelCooldowns.get(model) || 0, now + 24 * 60 * 60 * 1000);
+    modelCooldowns.set(model, cooldownUntil);
+    saveModelCooldown(model, cooldownUntil);
+    console.warn(`[models] ${model} în cooldown 24h după HTTP 404 (model indisponibil)`);
+    return true;
+  }
   // A 503 may be a transient shared-backend incident; don't persist a
   // per-model cooldown that would hide that model from later article attempts.
   if (status !== 429 && status !== 500 && !isTimeout) return false;
