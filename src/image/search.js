@@ -6,6 +6,7 @@ import { isArticleImageCandidate, isVerifiedPersonImageAllowed } from "./policy.
 
 const TAVILY_KEY = () => process.env.TAVILY_API_KEY;
 const IMAGE_HISTORY_DAYS = () => Number(process.env.IMAGE_HISTORY_DAYS || 7);
+let tavilyUnavailableUntil = 0;
 
 // Referinta faciala vine de pe Wikipedia: poza oficiala a persoanei corecte.
 // ATENTIE: e folosita DOAR ca referinta pentru compararea faciala, NU ca
@@ -85,7 +86,7 @@ async function fetchWikipediaReference(personName) {
 
 async function searchTavily(query) {
   const key = TAVILY_KEY();
-  if (!key) return [];
+  if (!key || Date.now() < tavilyUnavailableUntil) return [];
   try {
     const res = await axios.post(
       "https://api.tavily.com/search",
@@ -99,7 +100,15 @@ async function searchTavily(query) {
     );
     return (res.data?.images || []).filter((u) => typeof u === "string" && /^https?:\/\//.test(u));
   } catch (err) {
-    console.warn(`[image] Tavily search indisponibil (${err.response?.status || err.message}), trecem la urmatorul motor...`);
+    const status = err.response?.status;
+    if ([401, 403, 432, 433].includes(status)) {
+      // 432/433 are plan-limit errors, not per-query search failures. Stop
+      // wasting one failed API call for every query/article in this run.
+      tavilyUnavailableUntil = Date.now() + 12 * 60 * 60 * 1000;
+      console.warn(`[image] Tavily indisponibil (${status}); îl sar următoarele 12h și folosesc celelalte surse.`);
+    } else {
+      console.warn(`[image] Tavily search indisponibil (${status || err.message}), trecem la urmatorul motor...`);
+    }
     return [];
   }
 }
@@ -391,11 +400,12 @@ export async function findImage(personOrTopic, articleTitle, articleImageUrl = n
   if (!referenceBuffer) console.warn(`[image] Nu există referință Wikipedia; voi accepta numai imagini în care Vision identifică explicit ${personOrTopic}.`);
 
   // 2. Candidati din motoare
+  const exactPerson = `"${String(personOrTopic).replaceAll('"', "")}"`;
   const queries = [
-    `${personOrTopic} portret`,
-    `${personOrTopic} fotografie oficiala`,
-    `${personOrTopic} Romania stiri`,
-    personOrTopic,
+    `${exactPerson} portret`,
+    `${exactPerson} fotografie oficială`,
+    `${exactPerson} România politician`,
+    exactPerson,
     articleTitle ? articleTitle.slice(0, 100) : null,
   ].filter((q) => q && q.trim());
 
@@ -410,10 +420,11 @@ export async function findImage(personOrTopic, articleTitle, articleImageUrl = n
   const seen = new Set();
   let winner = null;
 
-  // Look through multiple providers/results before falling back. Candidates
-  // are still rejected unless an official face reference or an explicit
-  // positive name-to-image verification confirms the requested person.
-  const MAX_FACE_CHECKS = 24;
+  // Search engines can return dozens of unrelated results for common names
+  // (e.g. Dominic Fritz -> Dominic Toretto/Monaghan). Search quoted names and
+  // verify a small high-ranked set, then use the exact Wikipedia portrait
+  // fallback instead of blocking the serial article queue for minutes.
+  const MAX_FACE_CHECKS = 8;
   let faceChecks = 0;
 
   // Try the publisher's own image first, but never trust it merely because

@@ -58,9 +58,9 @@ export function describeGeminiError(err) {
   return [status ? `HTTP ${status}` : null, reason, message].filter(Boolean).join(": ");
 }
 
-// Cache explicit 429/500 model failures across calls. 503 is deliberately not
-// cooled down: it can be a shared transient, so the cascade should try every
-// other model and subsequent articles should be allowed to retry it.
+// Cache explicit model failures across calls to avoid repeatedly hitting
+// endpoints already returning errors. A short 503 cooldown is a circuit
+// breaker, not a quota counter; all models become eligible again shortly.
 export function recordModelFailure(model, err, now = Date.now()) {
   const status = err?.response?.status;
   const isTimeout = err?.code === "ECONNABORTED" || err?.code === "ETIMEDOUT" || /timeout/i.test(err?.message || "");
@@ -74,9 +74,7 @@ export function recordModelFailure(model, err, now = Date.now()) {
     console.warn(`[models] ${model} în cooldown 24h după HTTP 404 (model indisponibil)`);
     return true;
   }
-  // A 503 may be a transient shared-backend incident; don't persist a
-  // per-model cooldown that would hide that model from later article attempts.
-  if (status !== 429 && status !== 500 && !isTimeout) return false;
+  if (status !== 429 && status !== 500 && status !== 503 && !isTimeout) return false;
   if (isTimeout) {
     const cooldownUntil = Math.max(modelCooldowns.get(model) || 0, now + 60_000);
     modelCooldowns.set(model, cooldownUntil);

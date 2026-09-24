@@ -277,7 +277,7 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
             pending.article.content || "",
             history.filter((entry) => entry.url !== pending.url),
             threshold,
-            { embeddingModel: pending.simResult.embeddingModel }
+            { embeddingModel: pending.simResult.embeddingModel, incomingUrl: pending.url }
           );
           console.log(`[approval recheck] ${pending.url}: ${pending.kind === "ai_text" ? "filtrul AI eliminat" : updated.isDuplicate ? "duplicat păstrat" : "eliberat după reverificare în 24h"}${updated.similarUrl ? ` (${updated.similarityZone}, ${(updated.similarity * 100).toFixed(1)}% vs ${updated.similarUrl})` : ""}`);
           if (updated.isDuplicate && !isUrlSeen(pending.url)) {
@@ -639,7 +639,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       const recentNews = getRecentNews();
       // Păstrăm separatorul ca să delimităm titlul de corpul integral în arbitraj.
       const textToEmbed = `${article.title}\n${article.content || ""}`;
-      simResult = await timedStage("article_similarity", () => checkSimilarity(textToEmbed, recentNews, threshold));
+      simResult = await timedStage("article_similarity", () => checkSimilarity(textToEmbed, recentNews, threshold, url));
 
       if (simResult.isDuplicate) {
         console.log(

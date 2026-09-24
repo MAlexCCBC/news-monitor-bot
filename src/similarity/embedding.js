@@ -13,6 +13,15 @@ const EMBEDDING_MODELS = ["gemini-embedding-001", "gemini-embedding-2"];
 const ARTICLE_EMBEDDING_VERSION_PREFIX = "article-full-v1:";
 const ARTICLE_CHUNK_CHARS = 1800;
 
+export function isSamePublisherSource(leftUrl, rightUrl) {
+  try {
+    const host = (value) => new URL(value).hostname.toLowerCase().replace(/^www\d*\./, "");
+    return host(leftUrl) === host(rightUrl);
+  } catch {
+    return false;
+  }
+}
+
 async function getEmbedding(text) {
   let lastError;
   for (const model of EMBEDDING_MODELS) {
@@ -386,7 +395,7 @@ export function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
  *    Daca titlurile si actiunile sunt complet diferite -> permis direct ca stire noua
  * 3. ZONA ALBA (Score < 0.74) -> Stire noua / permis direct
  */
-export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, leadOld, threshold = 0.80) {
+export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, leadOld, threshold = 0.80, { samePublisher = false } = {}) {
   // An exact, nontrivial article body is evidence even without named people.
   // Preserve accents/punctuation here: normalization must not erase negation.
   const bodyNew = cleanArticleContent(leadNew).toLowerCase();
@@ -395,7 +404,15 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
     return { isDuplicate: false, score: embSim, zone: "Permis - editorial distinct",
       reason: "Un editorial poate cita declarațiile știrii fără să fie aceeași relatare" };
   }
-  if (embSim >= threshold && bodyNew.length >= 120 && bodyNew === bodyOld) {
+  const effectiveThreshold = samePublisher ? Math.max(threshold, 0.97) : threshold;
+  if (samePublisher && bodyNew.length >= 120 && bodyNew === bodyOld) {
+    return { isDuplicate: true, score: embSim, zone: "SURSĂ IDENTICĂ", reason: "Corp integral identic de la aceeași publicație" };
+  }
+  if (samePublisher && embSim < effectiveThreshold) {
+    return { isDuplicate: false, score: embSim, zone: "SURSĂ IDENTICĂ (prag 97%)",
+      reason: "Pentru aceeași publicație, similaritatea trebuie să atingă cel puțin 97%" };
+  }
+  if (embSim >= effectiveThreshold && bodyNew.length >= 120 && bodyNew === bodyOld) {
     return { isDuplicate: true, score: embSim, zone: "VERDE", reason: "Corp integral identic" };
   }
   const match = checkKeyEntitiesMatch(titleNew, leadNew, titleOld, leadOld);
@@ -412,7 +429,7 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
   // termeni tematici comuni, overlap minim, titlu tematic și două entități reduc riscul ca
   // simpla acoperire a aceleiași persoane/subiect larg să unească evenimente.
   const strongArticleMatch =
-    embSim >= threshold + 0.04 &&
+    embSim >= effectiveThreshold + 0.04 &&
     ((match.commonTopicWords >= 5 &&
       match.bodyTopicOverlap >= 0.18 &&
       match.commonTitleTopicWords >= 4 &&
@@ -427,7 +444,7 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
         match.phraseCoverage >= 0.70));
 
   // 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
-  if (embSim >= threshold) {
+  if (embSim >= effectiveThreshold) {
     // Un scor semantic mare nu e suficient dacă titlurile nu confirmă același
     // subiect: știrile din aceeași zi/despre aceeași persoană pot avea embedding-uri apropiate.
     if (!match.hasMatchingEntities && !strongArticleMatch) {
@@ -442,12 +459,12 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
       isDuplicate: true,
       score: embSim,
       zone: "VERDE",
-      reason: `Scor semantic >= ${threshold}; eveniment confirmat prin text`,
+      reason: `Scor semantic >= ${effectiveThreshold}; eveniment confirmat prin text`,
     };
   }
 
   // 2. ZONA GRI (Score intre 0.74 si prag) -> Arbitraj pe entitati / cuvinte cheie
-  if (embSim >= 0.74 && embSim < threshold) {
+  if (embSim >= 0.74 && embSim < effectiveThreshold) {
     if (match.hasMatchingEntities) {
       return {
         isDuplicate: true,
@@ -492,7 +509,7 @@ export function selectSimilarityCandidate(candidates) {
 // Reutilizăm un embedding salvat pentru verificări de restituire/migrare fără
 // apel Gemini suplimentar. `recentNewsWithEmbeddings` trebuie să excludă deja
 // articolul candidat, dacă acesta a fost salvat între timp.
-export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recentNewsWithEmbeddings, threshold = 0.80, { embeddingModel } = {}) {
+export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recentNewsWithEmbeddings, threshold = 0.80, { embeddingModel, incomingUrl } = {}) {
   const candidates = [];
   for (const item of recentNewsWithEmbeddings) {
     if (!compatibleVector(newEmbedding, item, embeddingModel)) continue;
@@ -502,7 +519,9 @@ export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recent
     const leadOld = item.content || "";
 
     const rawSim = cosineSimilarity(newEmbedding, item.embedding);
-    const evalRes = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, titleOld, leadOld, threshold);
+    const evalRes = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, titleOld, leadOld, threshold, {
+      samePublisher: isSamePublisherSource(incomingUrl, item.url),
+    });
 
     candidates.push({ ...evalRes, url: item.url });
   }
@@ -520,7 +539,7 @@ export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recent
 }
 
 // Verifica dacă articolul nou e duplicat pe baza amprentelor întregului articol.
-export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80) {
+export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80, incomingUrl = null) {
   const [titleNew = "", ...leadParts] = newText.split("\n");
   const leadNew = leadParts.join("\n");
   // First compare full-article embeddings against every item in the history.
@@ -538,7 +557,9 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
   const compatibleItems = comparableItems.filter((item) => compatibleVector(newEmbedding, item, embedded.model));
   const candidates = compatibleItems.map((item) => {
     const rawSim = cosineSimilarity(newEmbedding, item.embedding);
-    const result = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, item.title || "", item.content || "", threshold);
+    const result = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, item.title || "", item.content || "", threshold, {
+      samePublisher: isSamePublisherSource(incomingUrl, item.url),
+    });
     return { ...result, url: item.url };
   });
   const best = selectSimilarityCandidate(candidates);

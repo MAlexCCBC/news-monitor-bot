@@ -1,7 +1,29 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { evaluate3ZoneSimilarity, selectSimilarityCandidate } from "../src/similarity/embedding.js";
+import { evaluate3ZoneSimilarity, isSamePublisherSource, selectSimilarityCandidate } from "../src/similarity/embedding.js";
+
+test("same publisher requires 97% similarity and never inflates the reported score", () => {
+  const bodyNew = "Sorin Grindeanu a anunțat că PSD va vota învestirea Guvernului după consultările de luni. Partidul a cerut clarificări privind programul economic și calendarul reformelor.";
+  const bodyOld = "Sorin Grindeanu a spus că PSD va decide după consultările de luni dacă votează învestirea Guvernului. Social-democrații solicită clarificări despre programul economic și calendarul reformelor.";
+  const below = evaluate3ZoneSimilarity(.96,
+    "Grindeanu anunță poziția PSD la votul pentru Guvern", bodyNew,
+    "PSD decide după consultări dacă votează Guvernul", bodyOld, .80, { samePublisher: true });
+  assert.equal(below.isDuplicate, false);
+  assert.equal(below.score, .96);
+
+  const above = evaluate3ZoneSimilarity(.98,
+    "Grindeanu anunță poziția PSD la votul pentru Guvern", bodyNew,
+    "PSD decide după consultări dacă votează Guvernul", bodyOld, .80, { samePublisher: true });
+  assert.equal(above.isDuplicate, true);
+  assert.equal(above.score, .98);
+});
+
+test("publisher matching ignores www but distinguishes different publishers", () => {
+  assert.equal(isSamePublisherSource("https://www.hotnews.ro/a", "https://hotnews.ro/b"), true);
+  assert.equal(isSamePublisherSource("https://hotnews.ro/a", "https://digi24.ro/b"), false);
+  assert.equal(isSamePublisherSource(null, "https://hotnews.ro/b"), false);
+});
 
 test("different speakers reacting to a proposed coalition remain separate stories", () => {
   const background = "Formarea unei majorități presupune negocieri între partide, discuții parlamentare, susținerea unui program comun și stabilirea unui calendar pentru consultări. Variantele de colaborare depind de voturile parlamentarilor și de acordul conducerilor politice.";

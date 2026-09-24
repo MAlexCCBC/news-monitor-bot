@@ -39,10 +39,11 @@ test("Gemini 429 cools down only the failed model and respects Retry-After", () 
   assert.deepEqual(filterCoolingModels(["test-retry-model", "test-ready-model"], now + 2_000), ["test-retry-model", "test-ready-model"]);
 });
 
-test("Gemini 503 does not persist a cooldown that would hide the model from the next article", () => {
+test("Gemini 503 applies a brief circuit-breaker cooldown, not a quota lockout", () => {
   const now = 10_000;
-  assert.equal(recordModelFailure("test-unavailable-model", { response: { status: 503 } }, now), false);
-  assert.deepEqual(filterCoolingModels(["test-unavailable-model", "test-fallback-model"], now), ["test-unavailable-model", "test-fallback-model"]);
+  assert.equal(recordModelFailure("test-unavailable-model", { response: { status: 503 } }, now), true);
+  assert.deepEqual(filterCoolingModels(["test-unavailable-model", "test-fallback-model"], now), ["test-fallback-model"]);
+  assert.deepEqual(filterCoolingModels(["test-unavailable-model", "test-fallback-model"], now + 60_000), ["test-unavailable-model", "test-fallback-model"]);
 });
 
 test("a real client timeout cools down only that model briefly so the next article can use other fallbacks", () => {
