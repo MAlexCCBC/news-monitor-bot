@@ -48,7 +48,7 @@ import { NewMessage } from "telegram/events/index.js";
 import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
-import { matchesKeywords, isPublishedToday, isForeignOnly, hasStrongRomanianContext, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
+import { matchesKeywords, isPublishedToday, hasStrongRomanianPoliticalContext, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
 import { createArticleProcessingPolicy } from "./filter/processing-policy.js";
 import { checkSimilarity, checkSimilarityEmbedding, createArticleEmbedding } from "./similarity/embedding.js";
 import { prepareArticlePost } from "./ai/prepare-post.js";
@@ -617,19 +617,20 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       console.log(`[match] Keywords gasite: ${matchedKeywords.join(", ")}`);
     }
 
-    // 2b. Filtru stiri straine (DINAMIC, cu AI)
-    if (policy.checkForeignRelevance && !hasStrongRomanianContext(essentialText, romanianPersonalities)) {
+    // 2b. Filtru de relevanta politica romaneasca. O stire despre viata privata
+    // a unui politician (ex. un deces in familie) nu este automat politica doar
+    // pentru ca mentioneaza o personalitate romaneasca.
+    if (policy.checkForeignRelevance && !hasStrongRomanianPoliticalContext(article.title, romanianPersonalities)) {
       const relevant = await timedStage("relevance", () => isRelevantToRomania(
         article.title,
         (article.content || "").slice(0, 1500)
       ));
-      const foreign =
-        relevant === null
-          ? isForeignOnly(essentialText, romanianPersonalities)
-          : !relevant;
-      if (foreign) {
-        console.log("[skip] Stire straina fara implicare romaneasca");
-        return { status: "skipped", reason: "Știrea pare străină și fără implicare românească." };
+      if (relevant !== true) {
+        const reason = relevant === false
+          ? "Știrea nu are relevanță politică românească suficientă."
+          : "Nu s-a putut confirma relevanța politică românească (clasificator indisponibil).";
+        console.log(`[skip] ${reason}`);
+        return { status: "skipped", reason };
       }
     }
 

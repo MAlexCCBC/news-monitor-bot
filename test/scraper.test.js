@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { parseArticleHtml } from "../src/scraper/article.js";
+import { buildWordpressArticleHtml, parseArticleHtml } from "../src/scraper/article.js";
 import { articleFocus, cleanArticleContent } from "../src/scraper/clean-content.js";
 
 test("G4Media leaf divs preserve the lead and do not import site furniture", () => {
@@ -17,6 +17,21 @@ test("G4Media leaf divs preserve the lead and do not import site furniture", () 
   assert.ok(article.content.includes(next));
   assert.ok(article.content.includes("Discuțiile continuă"));
   assert.doesNotMatch(article.content, /Donează|Lasă un răspuns|alt articol/);
+});
+
+test("G4Media WordPress REST fallback keeps its title, full body, date, and featured image", () => {
+  const article = parseArticleHtml(buildWordpressArticleHtml({
+    date: "2026-09-27T19:00:00",
+    title: { rendered: "Rogobete critică decizia PSD" },
+    content: { rendered: "<p>Primul paragraf politic, suficient de lung pentru extragere.</p><p>Al doilea paragraf cu detalii.</p>" },
+    _embedded: { "wp:featuredmedia": [{ source_url: "https://cdn.example/image.jpg?size=large&x=1" }] },
+  }), "https://www.g4media.ro/test-rest-fallback.html");
+
+  assert.equal(article.title, "Rogobete critică decizia PSD");
+  assert.equal(article.isoDate, "2026-09-27T19:00:00");
+  assert.match(article.content, /Primul paragraf politic/);
+  assert.match(article.content, /Al doilea paragraf/);
+  assert.equal(article.imageUrl, "https://cdn.example/image.jpg?size=large&x=1");
 });
 
 test("stored donation and cookie blocks do not count as article evidence", () => {

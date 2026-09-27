@@ -96,8 +96,47 @@ async function getWithRetry(url, attempts = 3) {
 }
 
 export async function fetchArticle(url) {
-  const { data: html } = await getWithRetry(url);
-  return parseArticleHtml(html, url);
+  try {
+    const { data: html } = await getWithRetry(url);
+    return parseArticleHtml(html, url);
+  } catch (error) {
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    if (host !== "g4media.ro" || error.response?.status !== 403) throw error;
+
+    // G4Media's public WordPress REST API is often reachable from Actions even
+    // when its HTML frontend returns a datacenter-IP 403. Use the publisher's
+    // own public article representation; don't proxy or evade access controls.
+    const slug = new URL(url).pathname.split("/").filter(Boolean).at(-1);
+    const endpoint = "https://www.g4media.ro/wp-json/wp/v2/posts?slug=" +
+      encodeURIComponent(slug) + "&_embed=wp:featuredmedia";
+    try {
+      const { data } = await axios.get(endpoint, {
+        headers: BROWSER_HEADERS,
+        timeout: 15000,
+      });
+      const post = Array.isArray(data) ? data[0] : null;
+      if (!post?.content?.rendered || !post?.title?.rendered) {
+        throw new Error("endpoint-ul public nu a returnat conținutul articolului");
+      }
+      console.warn(`[scraper] Frontend G4Media a răspuns 403; articol extras prin REST-ul public (${url})`);
+      return parseArticleHtml(buildWordpressArticleHtml(post), url);
+    } catch (fallbackError) {
+      console.error(`[scraper] REST G4Media indisponibil după 403 (${url}): ${fallbackError.message}`);
+      throw error;
+    }
+  }
+}
+
+export function buildWordpressArticleHtml(post) {
+  const featuredImage = post._embedded?.["wp:featuredmedia"]?.[0]?.source_url;
+  const imageMeta = featuredImage
+    ? '<meta property="og:image" content="' + String(featuredImage).replace(/&/g, "&amp;").replace(/"/g, "&quot;") + '">'
+    : "";
+  return '<html><head><meta property="article:published_time" content="' +
+    String(post.date || "").replace(/"/g, "&quot;") + '">' + imageMeta +
+    '</head><body><article><h1>' + post.title.rendered +
+    '</h1><div class="single__text">' + post.content.rendered +
+    '</div></article></body></html>';
 }
 
 export function parseArticleHtml(html, url) {

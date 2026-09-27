@@ -27,6 +27,13 @@ export const CORE_ROMANIAN_POLITICAL_CONTEXT = [
   "Uniunea Salvați România",
 ];
 
+const ROMANIAN_POLITICAL_HEADLINE_SIGNALS = [
+  "psd", "pnl", "usr", "aur", "guvern", "guvernare", "ministru", "ministra",
+  "parlament", "senat", "deputat", "senator", "alegeri", "politic", "politica",
+  "presedinte", "presedinta", "primar", "coalitie", "vot", "lege", "buget",
+  "ordonanta", "legislativ", "opozitie", "majoritate", "campanie",
+];
+
 export function matchesKeywords(text, keywords) {
   const normText = normalize(text);
   const found = keywords.filter((kw) => normText.includes(normalize(kw)));
@@ -89,6 +96,19 @@ export function hasStrongRomanianContext(text, personalities) {
   const norm = normalize(text);
   if (ROMANIA_INDICATORS.some((w) => hasWord(norm, w))) return true;
   return personalities.some((kw) => norm.includes(normalize(kw)));
+}
+
+// Fast-path only unmistakable political headlines with a Romanian subject.
+// Mentioning a Romanian politician alone is not enough: family news such as
+// "Victor Ponta în doliu" must still reach the political-relevance classifier.
+export function hasStrongRomanianPoliticalContext(title, personalities) {
+  const norm = normalize(title || "");
+  const hasRomanianContext = ROMANIA_INDICATORS.some((w) => hasWord(norm, w)) ||
+    personalities.some((kw) => norm.includes(normalize(kw)));
+  const hasPoliticalSignal = ROMANIAN_POLITICAL_HEADLINE_SIGNALS.some((w) =>
+    hasWord(norm, normalize(w.trim()))
+  );
+  return hasRomanianContext && hasPoliticalSignal;
 }
 
 // FALLBACK (doar cand AI-ul de relevanta nu e disponibil): returneaza true daca

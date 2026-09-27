@@ -19,25 +19,29 @@ const CLASSIFY_MODELS = [
 ];
 
 const PROMPT_TEMPLATE = (title, excerpt) => `
-Esti un filtru de relevanta geografica pentru un monitor de stiri politice
+Esti un filtru de relevanta politica pentru un monitor de stiri politice
 romanesti. Primesti TITLUL si un FRAGMENT dintr-un articol publicat intr-un
 canal de stiri in limba romana.
 
-INTREBARE: Subiectul PRINCIPAL al articolului priveste Romania sau
-persoane/interese romanesti?
+INTREBARE: Este articolul in principal despre POLITICA ROMANEASCA sau despre
+un eveniment politic international cu efect direct si substantial asupra
+Romaniei? Nu confunda mentionarea unei persoane romane cu relevanta politica.
 
 Raspunde DA daca:
-- Articolul este despre Romania, politica romaneasca, institutii, oficiali,
-  economie, societate sau evenimente petrecute in Romania; SAU
-- Este o stire internationala DAR cu legatura DIRECTA si SUBSTANTIALA cu
-  Romania (un politician roman comenteaza subiectul, decizia afecteaza direct
-  Romania, implica cetateni romani sau diaspora).
+- Subiectul principal este o decizie, actiune, disputa, declaratie sau evolutie
+  de politica romaneasca (Guvern, Parlament, partide, alegeri, politici publice,
+  oficiali in exercitarea functiei); SAU
+- Este o stire politica internationala cu efect direct si substantial asupra
+  Romaniei sau cu implicarea oficiala a autoritatilor romanesti.
 
 Raspunde NU daca:
 - Articolul este exclusiv despre alte tari sau personaje straine, chiar daca
   este scris in limba romana; SAU
 - Romania apare doar incidental, fara rol real (ex: locatie de summit,
-  comparatie, simpla preluare a unei stiri internationale).
+  comparatie, simpla preluare a unei stiri internationale); SAU
+- Este o stire de viata privata, familie, doliu/deces, accident, crima,
+  divertisment sau sport, chiar daca mentioneaza un politician roman, fara o
+  evolutie politica relevanta ca subiect principal.
 
 TITLU:
 ${title}
@@ -51,8 +55,8 @@ Linia 2: motiv scurt (maxim 15 cuvinte)
 `;
 
 // Intoarce:
-//   true  -> stirea e relevanta pentru Romania (trece mai departe)
-//   false -> stire straina fara legatura romaneasca (se arunca)
+//   true  -> stirea are relevanta politica romaneasca (trece mai departe)
+//   false -> stirea nu are relevanta politica romaneasca (se arunca)
 //   null  -> AI-ul nu a putut decide (toate modelele au esuat) => apelantul
 //            decide ce fallback foloseste.
 export async function isRelevantToRomania(title, excerpt) {
@@ -82,7 +86,7 @@ export async function isRelevantToRomania(title, excerpt) {
       const relevant = verdict.startsWith("DA");
 
       console.log(
-        `[relevanta] ${model}: ${relevant ? "DA (romaneasca)" : "NU (straina)"} - ${reason || "(fara motiv)"}`
+        `[relevanta] ${model}: ${relevant ? "DA (politica romaneasca)" : "NU (fara relevanta politica romaneasca)"} - ${reason || "(fara motiv)"}`
       );
       return relevant;
     } catch (err) {
