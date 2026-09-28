@@ -41,6 +41,34 @@ test("clear Romanian political headlines use the cheap political-context fast pa
     ),
     true,
   );
+  assert.equal(
+    hasStrongRomanianPoliticalContext(
+      "Pare că nu va trece guvernul Mureșan, spune unul dintre miniștrii propuși: E momentul să ne întoarcem la popor",
+      ["Siegfried Mureșan", "Mureșan"],
+    ),
+    true,
+  );
+  assert.equal(
+    hasStrongRomanianPoliticalContext(
+      "Nicușor Dan: UNESCO a reiterat că tehnologia trebuie să servească omul",
+      ["Nicușor Dan"],
+    ),
+    true,
+  );
+  assert.equal(
+    hasStrongRomanianPoliticalContext(
+      "Alexandru Nazare spune că România trebuie să ajusteze politica fiscală",
+      [],
+    ),
+    true,
+  );
+});
+
+test("Republic of Moldova domestic politics requires explicit Romanian relevance", () => {
+  assert.equal(
+    hasStrongRomanianPoliticalContext("Premierul Republicii Moldova anunță următoarea etapă politică", ["Bolojan"]),
+    false,
+  );
 });
 
 test("PNL and USR headlines count as Romanian political context and are not dropped as foreign-only", () => {

@@ -14,6 +14,8 @@ test("link similarity prompt labels the link-to-link comparison and exposes both
   });
 
   assert.match(text, /Comparație între link-uri/);
+  assert.match(text, /scor semantic 91%/);
+  assert.match(text, /nu probabilitate/);
   assert.match(text, /href="https:\/\/news\.example\/current\?id=1&amp;x=2"/);
   assert.match(text, /<a href="https:\/\/news\.example\/current\?id=1&amp;x=2">https:\/\/news\.example\/current\?id=1&amp;x=2<\/a>/);
   assert.match(text, /<a href="https:\/\/news\.example\/previous">https:\/\/news\.example\/previous<\/a>/);

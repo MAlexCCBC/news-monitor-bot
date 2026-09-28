@@ -312,6 +312,22 @@ test("shared politician and broad topic do not merge distinct Maia Sandu develop
   assert.match(result.zone, /Permis/);
 });
 
+test("Kelemen interview stories with different focal developments are not duplicates from shared crisis context alone", () => {
+  const earlyElectionsTitle = "Liderul UDMR spune că anticipatele ar duce AUR la guvernare, într-un apel către PSD și PNL";
+  const earlyElectionsBody = "Parlamentul urmează să voteze miercuri asupra guvernului Siegfried Mureșan. Premierul desemnat a declarat că în momentul de față are doar cele 170 de voturi ale partidelor care îl susțin – PNL, USR și UDMR – și rezultate foarte bune ale discuției cu grupul minorităților.";
+  const investitureTitle = "Kelemen Hunor, despre votul pentru Guvernul Mureșan: Nu avem 233 de voturi. După 5 luni de zile este inadmisibil să nu avem un guvern";
+  const investitureBody = [
+    "„Sigur, noi avem 170 de voturi, nu ajung, dar de aceea au fost discuții cu cei de la PSD, cu cei de la minorități. Să vedem, am pregătit un program de guvernare, zic eu corect, poate un pic mai ambițios decât ar fi trebuit pentru 2 ani de zile, dar asta nu este o problemă până la urmă, fiindcă trebuie să ai un program, cel puțin o viziune și un program pentru o perioadă mai lungă de timp. Și avem, cred, o echipă bună care poate fi votată oricând, de oricine care dorește să existe un guvern cu drepturi și cu puteri depline”, a afirmat Kelemen Hunor.",
+    "Premierul desemnat are la dispoziție cel mult 10 zile de la desemnare pentru a prezenta programul de guvernare și lista Cabinetului. El a spus că, dacă negocierile cu PSD s-ar fi desfășurat diferit, programul ar fi putut fi depus mai târziu.",
+    "„Trebuie enumerate voturile și după, dacă vom vedea că nu e, sigur că președintele va decide. Acum e greu de spus ce se va întâmpla după miercuri dacă pică acest guvern”, a afirmat liderul UDMR.",
+    "„El poate dizolva după consultările cu liderii grupurilor parlamentare și cu președinții celor două camere, dar eu cred că în acest moment dincolo de această condiționalitate îndeplinită vom mai avea cel puțin o încercare, dacă nu două. Trebuie să mai avem încercări fiindcă avem nevoie de un guvern”, a declarat liderul UDMR.",
+  ].join("\n\n");
+  const result = evaluate3ZoneSimilarity(.883, earlyElectionsTitle, earlyElectionsBody, investitureTitle, investitureBody);
+
+  assert.equal(result.isDuplicate, false);
+  assert.equal(result.score, .883);
+});
+
 test("high semantic similarity cannot alone block unrelated titles", () => {
   const result = evaluate3ZoneSimilarity(
     0.9,

@@ -369,7 +369,13 @@ export function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
     // Titlurile pot fi diferite pentru aceeași relatare; atunci dovada trebuie
     // să vină din primul text editorial real, după eliminarea metadata site-ului.
     (commonTopicWords >= 8 && bodyTopicOverlap >= 0.35 &&
-      commonFocusWords >= 6 && focusTopicOverlap >= 0.35);
+      commonFocusWords >= 6 &&
+      (focusTopicOverlap >= 0.50 ||
+        (focusTopicOverlap >= 0.35 && commonTitleTopicWords >= 2) ||
+        phraseCoverage >= 0.70)) ||
+    // If at least 70% of the shorter substantial article is copied verbatim,
+    // that is direct evidence even when a roundup has a different headline.
+    phraseCoverage >= 0.70;
 
   return {
     hasMatchingEntities,
@@ -434,6 +440,13 @@ export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, lea
       match.bodyTopicOverlap >= 0.18 &&
       match.commonTitleTopicWords >= 4 &&
       match.commonProper >= 2) ||
+      // A roundup can have a different headline while reusing a substantial
+      // focused report. Require broad overlap in both complete bodies and the
+      // opening focus, not merely a shared politician or crisis background.
+      (match.commonTopicWords >= 30 &&
+        match.bodyTopicOverlap >= 0.60 &&
+        match.commonFocusWords >= 10 &&
+        match.focusTopicOverlap >= 0.35) ||
       // Some outlets copy large chunks of the same wire/reporting while the
       // headline is entirely different (or one story is inside a roundup).
       // Require high phrase coverage of the shorter full article plus a strong

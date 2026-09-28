@@ -28,10 +28,19 @@ export const CORE_ROMANIAN_POLITICAL_CONTEXT = [
 ];
 
 const ROMANIAN_POLITICAL_HEADLINE_SIGNALS = [
-  "psd", "pnl", "usr", "aur", "guvern", "guvernare", "ministru", "ministra",
-  "parlament", "senat", "deputat", "senator", "alegeri", "politic", "politica",
-  "presedinte", "presedinta", "primar", "coalitie", "vot", "lege", "buget",
-  "ordonanta", "legislativ", "opozitie", "majoritate", "campanie",
+  "psd", "pnl", "usr", "aur", "guvern", "ministr", "parlament", "senat",
+  "deputat", "senator", "aleger", "politic", "presedint", "primar", "coalit",
+  "vot", "legislativ", "opozit", "majoritat", "campan", "buget", "ordonant",
+  "partid",
+];
+const PUBLIC_STATEMENT_SIGNALS = [
+  "declar", "anunt", "spun", "afirm", "critic", "acuz", "reaction", "transmit",
+  "mesaj", "solicit", "cer", "propun", "explic", "sustin", "avertiz", "intervin",
+  "interviu", "pozitie", "reiter",
+];
+const PRIVATE_LIFE_SIGNALS = [
+  "doliu", "murit", "muri", "deces", "deced", "inmormant", "funerar", "mama",
+  "tata", "sotie", "sotul", "fiica", "fiul", "familie", "nunta", "divort",
 ];
 
 export function matchesKeywords(text, keywords) {
@@ -98,17 +107,37 @@ export function hasStrongRomanianContext(text, personalities) {
   return personalities.some((kw) => norm.includes(normalize(kw)));
 }
 
-// Fast-path only unmistakable political headlines with a Romanian subject.
-// Mentioning a Romanian politician alone is not enough: family news such as
-// "Victor Ponta în doliu" must still reach the political-relevance classifier.
-export function hasStrongRomanianPoliticalContext(title, personalities) {
-  const norm = normalize(title || "");
-  const hasRomanianContext = ROMANIA_INDICATORS.some((w) => hasWord(norm, w)) ||
-    personalities.some((kw) => norm.includes(normalize(kw)));
-  const hasPoliticalSignal = ROMANIAN_POLITICAL_HEADLINE_SIGNALS.some((w) =>
-    hasWord(norm, normalize(w.trim()))
-  );
-  return hasRomanianContext && hasPoliticalSignal;
+function hasTokenPrefix(normText, roots) {
+  const words = normText.match(/[a-z0-9]+/g) || [];
+  return roots.some((root) => words.some((word) => word.startsWith(root)));
+}
+
+// Fast-path public political statements by known Romanian figures and
+// unmistakable political events. Match Romanian inflections ("guvernul",
+// "miniștrii", "parlamentului"), not only dictionary forms. Personal-life
+// headlines remain subject to the AI classifier even if a politician is named.
+export function hasStrongRomanianPoliticalContext(text, personalities) {
+  const norm = normalize(text || "");
+  const rawTitle = String(text || "").split("\n", 1)[0];
+  const title = normalize(rawTitle);
+  const privateLifeHeadline = hasTokenPrefix(title, PRIVATE_LIFE_SIGNALS);
+  if (privateLifeHeadline) return false;
+
+  const namedRomanianFigure = personalities.some((name) => norm.includes(normalize(name)));
+  // "Republica Moldova" is a separate state; its domestic politics alone is
+  // not proof of Romanian political relevance. Let the classifier judge it.
+  const isMoldovanStateOnly = /\brepublic(?:a|ii) moldova\b/.test(norm) &&
+    !ROMANIA_INDICATORS.filter((w) => w !== "moldova").some((w) => hasWord(norm, w)) &&
+    !namedRomanianFigure;
+  const hasRomanianContext = (!isMoldovanStateOnly &&
+    ROMANIA_INDICATORS.some((w) => hasWord(norm, w))) || namedRomanianFigure;
+  if (!hasRomanianContext) return false;
+
+  const hasPoliticalSignal = hasTokenPrefix(norm, ROMANIAN_POLITICAL_HEADLINE_SIGNALS);
+  const explicitlyQuotedFigureStatement = namedRomanianFigure && /^[^:\n]{1,80}:\s/.test(rawTitle);
+  const knownFigureMakingPublicStatement = namedRomanianFigure &&
+    (explicitlyQuotedFigureStatement || hasTokenPrefix(norm, PUBLIC_STATEMENT_SIGNALS));
+  return hasPoliticalSignal || knownFigureMakingPublicStatement;
 }
 
 // FALLBACK (doar cand AI-ul de relevanta nu e disponibil): returneaza true daca

@@ -620,7 +620,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     // 2b. Filtru de relevanta politica romaneasca. O stire despre viata privata
     // a unui politician (ex. un deces in familie) nu este automat politica doar
     // pentru ca mentioneaza o personalitate romaneasca.
-    if (policy.checkForeignRelevance && !hasStrongRomanianPoliticalContext(article.title, romanianPersonalities)) {
+    if (policy.checkForeignRelevance && !hasStrongRomanianPoliticalContext(essentialText, romanianPersonalities)) {
       const relevant = await timedStage("relevance", () => isRelevantToRomania(
         article.title,
         (article.content || "").slice(0, 1500)

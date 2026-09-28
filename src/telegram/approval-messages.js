@@ -36,9 +36,10 @@ export function formatApprovalText(item) {
       `<i>Filtrul pe texte AI a fost eliminat. Poți reîncerca trimiterea textului salvat.</i>`;
   }
 
-  return `⏭️ <b>Știre similară (${score})</b>\n\n` +
+  return `⏭️ <b>Posibil duplicat · scor semantic ${score}</b>\n\n` +
     `<b>Comparație între link-uri</b>\n` +
     `<b>Link primit:</b> ${currentLink}\n` +
     `<b>Știre/link similar deja procesat:</b> ${comparisonTitle} — ${comparisonLink}\n\n` +
+    `<i>Procentul este scor semantic, nu probabilitate; verdictul folosește și indicii din titlu și text.</i>\n\n` +
     `<i>Dorești să fie procesată și trimisă oricum? Cererea expiră în 12 ore.</i>`;
 }
