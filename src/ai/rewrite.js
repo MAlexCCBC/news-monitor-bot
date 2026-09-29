@@ -104,14 +104,21 @@ export function validateRewriteGrounding(text, articleText) {
   // example, a political quote inserted into an unrelated court story). Ignore
   // common sentence starters; check the remaining names as contiguous phrases.
   const sentenceStarters = new Set([
-    "in", "dupa", "potrivit", "de", "acest", "aceasta", "contextul", "detalii",
+    "in", "dupa", "potrivit", "conform", "de", "acest", "aceasta", "contextul", "detalii",
     "principalele", "situatia", "procesul", "calendarul", "programul", "rezultatele",
     "reactia", "pozitia", "decizia", "masurile", "oficialii", "autoritatile",
     "presedintele", "liderul", "ministrul", "premierul", "sursa", "romania",
-    // The name detector also matches capitalized institution titles. These
-    // are not person-name evidence: articles often abbreviate the BNR as
-    // „Banca Națională”, while the source uses only „BNR”.
-    "banca", "bancii", "guvernatorul", "guvernatoarea",
+    // The name detector also matches institutions, places, and venues as if
+    // they were people. Sources frequently use acronyms or different inflected
+    // forms (BNR / Banca Națională; Cehia / Republica Cehă), so don't reject a
+    // rewrite on those generic entity labels alone.
+    "banca", "bancii", "guvernatorul", "guvernatoarea", "camera", "camerei",
+    "republica", "republicii", "vila", "comisia", "comisiei", "ministerul",
+    "ministerului", "guvernul", "guvernului", "parlamentul", "parlamentului",
+    "uniunea", "uniunii", "consiliul", "consiliului", "ambasada", "ambasadorul",
+    "ambasadoarea", "curtea", "curtii", "biserica", "bisericii", "orasul",
+    "orasului", "provincia", "provinciei", "statul", "statelor", "institutul",
+    "institutului", "comitetul", "comitetului", "partidul", "partidului",
   ]);
   const names = String(text || "").match(/\b[A-ZĂÂÎȘȚ][a-zăâîșț]+(?:\s+[A-ZĂÂÎȘȚ][a-zăâîșț]+){1,2}\b/g) || [];
   const unsupportedName = names.find((name) => {

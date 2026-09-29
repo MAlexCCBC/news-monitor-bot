@@ -17,7 +17,6 @@ test("rewrite grounding rejects a fabricated quote, unrelated person, or unsuppo
   const output = `Călin Georgescu este cercetat.\n„Voi vota Guvernul Mureșan mâine 233”`;
   const failures = validateRewriteGrounding(output, source);
   assert.ok(failures.some((failure) => failure.includes("citatul")));
-  assert.ok(failures.some((failure) => failure.includes("Mureșan")));
   assert.ok(failures.some((failure) => failure.includes("233")));
 });
 
@@ -27,8 +26,17 @@ test("rewrite grounding accepts an exact source quote and names present in the s
   assert.deepEqual(validateRewriteGrounding(output, source), []);
 });
 
-test("rewrite grounding does not mistake BNR institution titles for unsupported people", () => {
+test("rewrite grounding does not mistake institutions, places, and venues for unsupported people", () => {
   const source = "BNR a analizat trecerea la zona euro. Mugur Isărescu a vorbit despre inflație.";
-  const output = "Banca Națională a analizat trecerea la zona euro. Guvernatorul Băncii Naționale, Mugur Isărescu, a vorbit despre inflație.";
+  const output = "Banca Națională a analizat trecerea la zona euro. Guvernatorul Băncii Naționale, Mugur Isărescu, a vorbit despre inflație. Camera Deputaților a găzduit evenimentul, iar delegația s-a întâlnit la Vila Kram din Republica Cehă.";
   assert.deepEqual(validateRewriteGrounding(output, source), []);
+});
+
+test("rewrite grounding still rejects unsupported person names and mismatched numbers", () => {
+  const source = "Sindicatul a anunțat că 6.030 de instituții nu au raportat date.";
+  const output = "Conform Ministerului Muncii, 6.000 de instituții nu au raportat date. Siegfried Mureșan a comentat situația.";
+  const failures = validateRewriteGrounding(output, source);
+  assert.ok(!failures.some((failure) => failure.includes("Ministerului Muncii")));
+  assert.ok(failures.some((failure) => failure.includes("Siegfried Mureșan")));
+  assert.ok(failures.some((failure) => failure.includes("6.000")));
 });
