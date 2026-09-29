@@ -31,5 +31,6 @@ test("similarity arbitration compares full article text and falls through malfor
   assert.equal(calls, 2);
   assert.match(prompts[0], /Corpul integral nou, inclusiv paragraful de final/);
   assert.match(prompts[0], /Corpul integral vechi, inclusiv paragraful de final/);
+  assert.match(prompts[0], /Aceeași conferință de presă, ședință, vizită sau comunicat NU este suficientă/);
   assert.deepEqual(result.results, [{ verdict: "different", reason: "Fapte diferite" }]);
 });

@@ -27,6 +27,12 @@ test("rewrite grounding accepts an exact source quote and names present in the s
   assert.deepEqual(validateRewriteGrounding(output, source), []);
 });
 
+test("Romanian comma-below at the end of a person's name is not truncated as an ASCII word boundary", () => {
+  const source = "Andrea Chiș, fosta judecătoare propusă pentru funcția de ministru al Justiției, a spus că pensia sa este de 40.000 de lei.";
+  const output = "⚖️ ANDREA CHIȘ A VORBIT DESPRE PENSIA DE SERVICIU\nAndrea Chiș a spus că pensia sa este de 40.000 de lei.";
+  assert.deepEqual(validateRewriteGrounding(output, source), []);
+});
+
 test("rewrite grounding does not mistake institutions, places, and venues for unsupported people", () => {
   const source = "BNR a analizat trecerea la zona euro. Mugur Isărescu a vorbit despre inflație.";
   const output = "Banca Națională a analizat trecerea la zona euro. Guvernatorul Băncii Naționale, Mugur Isărescu, a vorbit despre inflație. Camera Deputaților a găzduit evenimentul, iar delegația s-a întâlnit la Vila Kram din Republica Cehă.";
@@ -68,6 +74,45 @@ test("GPT-6 Luna writer uses Responses API with medium reasoning and logs return
     axios.post = originalPost;
     if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
     else process.env.OPENAI_API_KEY = originalKey;
+  }
+});
+
+test("GPT usage is logged before a billable draft is rejected and Gemini fallback succeeds", async () => {
+  const originalPost = axios.post;
+  const originalGet = axios.get;
+  const originalOpenAiKey = process.env.OPENAI_API_KEY;
+  const originalGeminiKey = process.env.GEMINI_API_KEY;
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  const events = [];
+  process.env.OPENAI_API_KEY = "test-key-not-a-real-secret";
+  process.env.GEMINI_API_KEY = "test-gemini-key";
+  console.log = (message) => events.push(String(message));
+  console.warn = (message) => events.push(String(message));
+  axios.get = async () => ({ data: { models: [{ name: "models/gemini-3.8-flash", supportedGenerationMethods: ["generateContent"] }] } });
+  axios.post = async (url) => url.includes("api.openai.com")
+    ? { data: {
+        status: "completed",
+        output_text: completePost.replace("Contextul articolului.", "Siegfried Mureșan a anunțat o decizie nouă."),
+        usage: { input_tokens: 1707, output_tokens: 1007, output_tokens_details: { reasoning_tokens: 0 } },
+      } }
+    : { data: { candidates: [{ finishReason: "STOP", content: { parts: [{ text: completePost }] } }] } };
+  try {
+    const result = await rewriteArticle("Articol sursă complet.");
+    assert.equal(result.modelUsed, "gemini-3.8-flash");
+    const usageIndex = events.findIndex((line) => line.includes("usage: input=1707, output=1007"));
+    const rejectIndex = events.findIndex((line) => line.includes("a eșuat (Postare cu informații neancorate"));
+    assert.ok(usageIndex >= 0);
+    assert.ok(rejectIndex > usageIndex, "usage must be recorded before grounding triggers fallback");
+  } finally {
+    axios.post = originalPost;
+    axios.get = originalGet;
+    console.log = originalLog;
+    console.warn = originalWarn;
+    if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalOpenAiKey;
+    if (originalGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
+    else process.env.GEMINI_API_KEY = originalGeminiKey;
   }
 });
 
