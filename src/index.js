@@ -50,12 +50,12 @@ import TelegramBot from "node-telegram-bot-api";
 import { fetchArticle } from "./scraper/article.js";
 import { matchesKeywords, isPublishedToday, hasStrongRomanianPoliticalContext, isForeignOnly, isHistoricalRoundup, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
 import { createArticleProcessingPolicy } from "./filter/processing-policy.js";
-import { checkSimilarity, checkSimilarityEmbedding, createArticleEmbedding } from "./similarity/embedding.js";
+import { checkSimilarity, createArticleEmbedding } from "./similarity/embedding.js";
 import { prepareArticlePost } from "./ai/prepare-post.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage } from "./image/search.js";
-import { saveNews, saveAiPost, getRecentNews, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
+import { saveNews, saveAiPost, saveArticleFailure, getRecentNews, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { ARTICLE_HISTORY_HOURS } from "./storage/article-history.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
@@ -263,25 +263,23 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
       await persistPendingApprovals();
     }
     const pendingItems = pendingApprovals.listPending();
-    // Cererile create de vechiul prag permisiv nu trebuie să rămână blocate
-    // după deploy. Revalidăm doar la boot, cu embeddingul deja salvat, fără API.
+    // Cererile de similaritate existente rămân verificabile manual. Nu folosim
+    // embeddingul salvat la boot ca verdict automat și nu consumăm apel Gemini
+    // repetat la fiecare restart pentru aceeași cerere.
     if (recoverInterrupted) {
       const articleApprovals = pendingItems.filter((item) => item.kind === "ai_text" ||
         (item.kind === "article" && item.simResult?.embedding?.length));
       if (articleApprovals.length) {
         const history = getRecentNews();
         for (const pending of articleApprovals) {
-          const updated = pending.kind === "ai_text" ? { isDuplicate: false } : pending.simResult?.aiVerdict === "uncertain"
-            ? pending.simResult
-            : checkSimilarityEmbedding(
-            pending.simResult.embedding,
-            pending.article.title || "",
-            pending.article.content || "",
-            history.filter((entry) => entry.url !== pending.url),
-            threshold,
-            { embeddingModel: pending.simResult.embeddingModel, incomingUrl: pending.url }
-          );
-          console.log(`[approval recheck] ${pending.url}: ${pending.kind === "ai_text" ? "filtrul AI eliminat" : updated.isDuplicate ? "duplicat păstrat" : "eliberat după reverificare în 24h"}${updated.similarUrl ? ` (${updated.similarityZone}, ${(updated.similarity * 100).toFixed(1)}% vs ${updated.similarUrl})` : ""}`);
+          const updated = pending.kind === "ai_text" ? { isDuplicate: false } : {
+            ...pending.simResult,
+            isDuplicate: true,
+            similarityZone: "NECESITĂ VERIFICARE (cerere existentă)",
+            similarityReason: "Cerere de similaritate mai veche; păstrată pentru decizie manuală, fără verdict automat din embedding.",
+            aiVerdict: "uncertain",
+          };
+          console.log(`[approval recheck] ${pending.url}: ${pending.kind === "ai_text" ? "filtrul AI eliminat" : "cererea existentă păstrată pentru verificare manuală"}${updated.similarUrl ? ` (${updated.similarityZone}, ${(updated.similarity * 100).toFixed(1)}% vs ${updated.similarUrl})` : ""}`);
           if (updated.isDuplicate && !isUrlSeen(pending.url)) {
             const comparison = history.find((entry) => entry.url === updated.similarUrl);
             if (pending.comparisonUrl === updated.similarUrl &&
@@ -502,9 +500,29 @@ function extractLink(message) {
 
 // Finalizeaza generarea postarii, cautarea imaginii si trimiterea notificarii
 async function finalizeAndSendArticle(article, url, simResult, matchedKeywords = [], approval = {}) {
+  try {
+    return await deliverAndSaveArticle(article, url, simResult, matchedKeywords, approval);
+  } catch (error) {
+    // Keep a durable, retryable record even if GPT used tokens but validation,
+    // image handling, or Telegram delivery later failed. Failed attempts are
+    // deliberately not added to news_history, so a retry is not suppressed.
+    saveArticleFailure({ url, title: article.title, content: article.content, draft: error.generatedDraft, error: error.message });
+    if (dbPersistBranch) {
+      const saved = await persistNow(dbPersistBranch, { throwOnError: true }).catch((persistError) => {
+        console.error(`[persist] Eșecul articolului ${url} nu a putut fi împins în branch '${dbPersistBranch}': ${persistError.message}`);
+        return false;
+      });
+      if (saved) console.log(`[persist] Încercarea eșuată a fost salvată durabil pentru retry: ${url}`);
+    }
+    throw error;
+  }
+}
+
+async function deliverAndSaveArticle(article, url, simResult, matchedKeywords = [], approval = {}) {
   // 4. Rescriere AI fără verificare de similaritate și fără embedding de text AI.
   const formattedPost = await timedStage("rewrite", () => prepareArticlePost(article, approval));
 
+  try {
   // 6. Sistemul inteligent de imagini. Vorbitorul se determina AI-PRIMAR
   const regexSpeaker = detectSpeaker(article.title, matchedKeywords);
   const aiSpeaker = await timedStage("speaker", () => extractSpeakerFromArticle(
@@ -562,8 +580,15 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
     content: formattedPost,
     embedding: null,
   });
+  if (dbPersistBranch) {
+    await persistNow(dbPersistBranch);
+  }
   console.log("[ok] Trimis pentru aprobare");
   return { status: "done" };
+  } catch (error) {
+    error.generatedDraft ||= formattedPost;
+    throw error;
+  }
 }
 
 async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity = false, forceManual = false } = {}) {

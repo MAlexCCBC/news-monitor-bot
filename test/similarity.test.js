@@ -48,6 +48,25 @@ test("AI uncertainty routes a candidate to human review instead of silently pass
   assert.match(result.similarityZone, /NECESITĂ VERIFICARE/);
 });
 
+test("an embedding-only positive becomes manual review when Gemini cannot arbitrate", () => {
+  const candidate = { url: "https://news.example/old", score: .91, isDuplicate: true, embeddingComparable: true };
+  const result = applySimilarityAiReview([candidate], [candidate], null);
+  assert.equal(result.isDuplicate, true);
+  assert.equal(result.aiVerdict, "uncertain");
+  assert.match(result.similarityZone, /Gemini indisponibil/);
+});
+
+test("an over-cap embedding positive is not allowed to block without a Gemini verdict", () => {
+  const reviewed = { url: "reviewed", score: .91, isDuplicate: true, embeddingComparable: true };
+  const unreviewed = { url: "unreviewed", score: .90, isDuplicate: true, embeddingComparable: true };
+  const result = applySimilarityAiReview(
+    [reviewed, unreviewed], [reviewed], { results: [{ verdict: "different", reason: "Evenimente distincte" }] }
+  );
+  assert.equal(result.url, "unreviewed");
+  assert.equal(result.aiVerdict, "uncertain");
+  assert.match(result.similarityZone, /candidat neanalizat/);
+});
+
 test("AI candidate retrieval includes weak-vector lexical matches and prioritizes local positives", () => {
   const heuristicPositive = { url: "positive", score: .75, isDuplicate: true, embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null };
   const weakVectorLexical = { url: "lexical", score: .40, isDuplicate: false, embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: .72 };
@@ -67,6 +86,14 @@ test("AI candidate retrieval includes weak-vector lexical matches and prioritize
   assert.ok(selected.some((candidate) => candidate.url === "lexical"));
   assert.ok(selected.some((candidate) => candidate.url === "cross-space"));
   assert.equal(selected.length, 5);
+});
+
+test("cross-embedding articles from the same publisher are retrieved for Gemini arbitration", () => {
+  const candidate = {
+    url: "same-publisher", score: 0, isDuplicate: false, embeddingComparable: false,
+    samePublisher: true, lexicalRetrievalScore: .73,
+  };
+  assert.deepEqual(selectAiReviewCandidates([candidate]), [candidate]);
 });
 
 test("AI similarity review can compare across embedding spaces without presenting a fake percentage", () => {

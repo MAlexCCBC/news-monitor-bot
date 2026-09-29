@@ -6,9 +6,11 @@ import { createAiPostHistoryStore } from "./ai-post-history.js";
 import { readArticleSimilarityHistory } from "./article-history.js";
 import { sameArticleUrl } from "../utils/article-url.js";
 import { ensureColumn } from "./migrations.js";
+import { createArticleFailureStore } from "./article-failures.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const db = new Database(path.join(__dirname, "../../data.sqlite"));
+const articleFailures = createArticleFailureStore(db);
 
 db.pragma("journal_mode = DELETE");
 
@@ -60,6 +62,11 @@ export function saveNews({ url, title, content, embedding, embeddingModel = null
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
   stmt.run(url, title, content, JSON.stringify(embedding), embeddingModel, embeddingVersion, Date.now());
+  articleFailures.clear(url);
+}
+
+export function saveArticleFailure(attempt) {
+  articleFailures.save(attempt);
 }
 
 export function saveNewsEmbedding({ url, embedding, embeddingModel, embeddingVersion }) {

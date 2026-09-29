@@ -199,24 +199,34 @@ async function rewriteWithOpenAI(articleText) {
   const text = extractOpenAIRewriteText(response.data);
   if (!text) throw new Error(`Răspuns gol de la OpenAI (status=${response.data?.status || "necunoscut"})`);
   if (response.data?.status && response.data.status !== "completed") {
-    throw new Error(`Răspuns OpenAI incomplet (status=${response.data.status})`);
+    const error = new Error(`Răspuns OpenAI incomplet (status=${response.data.status})`);
+    error.generatedDraft = text;
+    throw error;
   }
-  if (!isCompleteRewrite(text, "STOP")) throw new Error("Postare OpenAI incompletă");
+  if (!isCompleteRewrite(text, "STOP")) {
+    const error = new Error("Postare OpenAI incompletă");
+    error.generatedDraft = text;
+    throw error;
+  }
   const groundingFailures = validateRewriteGrounding(text, articleText);
   if (groundingFailures.length) {
-    throw new Error(`Postare cu informații neancorate: ${groundingFailures.join("; ")}`);
+    const error = new Error(`Postare cu informații neancorate: ${groundingFailures.join("; ")}`);
+    error.generatedDraft = text;
+    throw error;
   }
   return { text, modelUsed: OPENAI_MODEL };
 }
 
 export async function rewriteArticle(articleText) {
   let openAiFailure = null;
+  let openAiDraft = null;
   if (OPENAI_KEY()) {
     try {
       const result = await rewriteWithOpenAI(articleText);
       if (result) return result;
     } catch (err) {
       openAiFailure = `${OPENAI_MODEL}: ${err.response?.status || err.message}`;
+      openAiDraft = err.generatedDraft || null;
       console.warn(`[openai] ${OPENAI_MODEL} a eșuat (${err.response?.status || err.message}); continui cu fallbackurile Gemini.`);
     }
   } else {
@@ -228,7 +238,9 @@ export async function rewriteArticle(articleText) {
   const models = await filterModels(TEXT_MODELS);
   if (!models.length) {
     const prefix = openAiFailure ? `Fallback OpenAI eșuat (${openAiFailure}). ` : "";
-    throw new Error(`${prefix}Toate modelele text sunt temporar în cooldown după erori de cotă; articolul nu a fost trimis către Gemini. Reîncearcă după resetarea cotei.`);
+    const error = new Error(`${prefix}Toate modelele text sunt temporar în cooldown după erori de cotă; articolul nu a fost trimis către Gemini. Reîncearcă după resetarea cotei.`);
+    if (openAiDraft) error.generatedDraft = openAiDraft;
+    throw error;
   }
   let lastError;
   const failures = [];
@@ -285,5 +297,7 @@ export async function rewriteArticle(articleText) {
     }
   }
   const openAiSummary = openAiFailure ? `GPT-6 Luna: ${openAiFailure} | ` : "";
-  throw new Error(`${openAiSummary}Toate modelele text au eșuat după ${models.length} încercări: ${failures.join(" | ") || describeGeminiError(lastError)}`);
+  const error = new Error(`${openAiSummary}Toate modelele text au eșuat după ${models.length} încercări: ${failures.join(" | ") || describeGeminiError(lastError)}`);
+  if (openAiDraft) error.generatedDraft = openAiDraft;
+  throw error;
 }

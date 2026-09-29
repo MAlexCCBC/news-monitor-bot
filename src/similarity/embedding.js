@@ -395,12 +395,9 @@ export function checkKeyEntitiesMatch(titleA, leadA, titleOld, leadOld) {
 }
 
 /**
- * Arhitectura pe 3 Zone de Decizie:
- * 1. ZONA VERDE (Score >= 0.80) -> Duplicat direct
- * 2. ZONA GRI (Score in [0.74, 0.79]) -> Arbitraj pe entitati si cuvinte-cheie din titlu/articol
- *    Daca exista dovezi ale aceluiasi eveniment -> duplicat, pastrand scorul real
- *    Daca titlurile si actiunile sunt complet diferite -> permis direct ca stire noua
- * 3. ZONA ALBA (Score < 0.74) -> Stire noua / permis direct
+ * Embeddings and lexical evidence retrieve/rank candidates only. Gemini's
+ * full-text arbitration is the final duplicate verdict; unresolved positives
+ * are sent for manual review rather than blocked by a vector score.
  */
 export function evaluate3ZoneSimilarity(embSim, titleNew, leadNew, titleOld, leadOld, threshold = 0.80, { samePublisher = false } = {}) {
   // An exact, nontrivial article body is evidence even without named people.
@@ -541,15 +538,17 @@ function lexicalRetrievalScore(title, content, old) {
 
 export function selectAiReviewCandidates(candidates) {
   const vectorCandidates = candidates
-    .filter((item) => item.embeddingComparable &&
+    .filter((item) => (item.embeddingComparable &&
       (item.score >= AI_RETRIEVAL_FLOOR || item.isDuplicate) &&
-      (!item.samePublisher || item.isDuplicate || item.score >= item.samePublisherThreshold))
+      (!item.samePublisher || item.isDuplicate || item.score >= item.samePublisherThreshold)) ||
+      (item.samePublisher && item.isDuplicate))
     .sort((a, b) => b.score - a.score);
   const lexicalCandidates = candidates
     // Lexical retrieval is independent of cosine score: relevant articles can
     // have weak vectors even when they share a compatible embedding space.
-    .filter((item) => item.lexicalRetrievalScore !== null && !item.samePublisher &&
-      (!item.embeddingComparable || item.score < AI_RETRIEVAL_FLOOR))
+    .filter((item) => item.lexicalRetrievalScore !== null &&
+      ((!item.samePublisher && (!item.embeddingComparable || item.score < AI_RETRIEVAL_FLOOR)) ||
+        (item.samePublisher && !item.embeddingComparable)))
     .sort((a, b) => b.lexicalRetrievalScore - a.lexicalRetrievalScore);
   const crossSpaceLexical = lexicalCandidates.filter((item) => !item.embeddingComparable);
   const compatibleLexical = lexicalCandidates.filter((item) => item.embeddingComparable);
@@ -572,7 +571,21 @@ export function selectAiReviewCandidates(candidates) {
 }
 
 export function applySimilarityAiReview(candidates, reviewedCandidates, review) {
-  if (!review?.results?.length) return selectSimilarityCandidate(candidates);
+  if (!review?.results?.length) {
+    // Embeddings retrieve likely matches; they must not make the final
+    // duplicate decision when Gemini could not provide a verdict.
+    const unresolved = candidates.map((candidate) => candidate.isDuplicate
+      ? {
+          ...candidate,
+          similarityZone: "NECESITĂ VERIFICARE (Gemini indisponibil)",
+          similarityReason: "Embeddingul a găsit un posibil candidat, dar Gemini nu a putut verifica dacă este același eveniment.",
+          similarityBasis: candidate.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
+          aiVerdict: "uncertain",
+        }
+      : candidate);
+    return selectSimilarityCandidate(unresolved);
+  }
+  const reviewedCandidateUrls = new Set(reviewedCandidates.map((candidate) => candidate.url));
   const verdictByUrl = new Map(reviewedCandidates.map((candidate, index) => [candidate.url, review.results[index]]));
   const confirmed = candidates.filter((candidate) => verdictByUrl.get(candidate.url)?.verdict === "duplicate");
   if (confirmed.length) {
@@ -603,7 +616,18 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
         aiVerdict: "uncertain",
       };
     }
-    if (verdict?.verdict !== "different") return candidate;
+    if (verdict?.verdict !== "different") {
+      if (candidate.isDuplicate && !reviewedCandidateUrls.has(candidate.url)) {
+        return {
+          ...candidate,
+          similarityZone: "NECESITĂ VERIFICARE (Gemini; candidat neanalizat)",
+          similarityReason: "Embeddingul a găsit un posibil duplicat care nu a încăput în lotul de verificare Gemini.",
+          similarityBasis: candidate.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
+          aiVerdict: "uncertain",
+        };
+      }
+      return candidate;
+    }
     return {
       ...candidate,
       isDuplicate: false,
@@ -683,23 +707,30 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
       embeddingComparable,
       samePublisher,
       samePublisherThreshold: Math.max(threshold, 0.97),
-      lexicalRetrievalScore: samePublisher ? null : lexicalRetrievalScore(titleNew, leadNew, item),
+      lexicalRetrievalScore: samePublisher && embeddingComparable ? null : lexicalRetrievalScore(titleNew, leadNew, item),
     };
   });
   const localBest = selectSimilarityCandidate(candidates);
   const reviewCandidates = selectAiReviewCandidates(candidates);
   let best = localBest;
-  if (reviewCandidates.length && (arbitrate || process.env.GEMINI_API_KEY)) {
-    try {
-      const review = await (arbitrate || arbitrateSimilarity)(
-        { title: titleNew, content: leadNew },
-        reviewCandidates.map(({ title, content }) => ({ title, content }))
-      );
-      // Preserve URL association without ever asking the model to emit URLs.
-      if (review) best = applySimilarityAiReview(candidates, reviewCandidates, review);
-    } catch (error) {
-      console.warn(`[similarity-ai] Arbitraj indisponibil; păstrez verdictul euristic: ${error.message}`);
+  if (reviewCandidates.length) {
+    let review = null;
+    if (arbitrate || process.env.GEMINI_API_KEY) {
+      try {
+        review = await (arbitrate || arbitrateSimilarity)(
+          { title: titleNew, content: leadNew },
+          reviewCandidates.map(({ title, content }) => ({ title, content }))
+        );
+      } catch (error) {
+        console.warn(`[similarity-ai] Arbitraj indisponibil; candidații probabili vor necesita verificare manuală: ${error.message}`);
+      }
+    } else {
+      console.warn("[similarity-ai] GEMINI_API_KEY lipsește; nu folosesc embeddingul ca verdict final.");
     }
+    // Embeddings retrieve candidates only; Gemini decides duplicate vs. different.
+    // Missing/failed AI verdicts remain visible for a human instead of blocking
+    // an article based on cosine similarity alone.
+    best = applySimilarityAiReview(candidates, reviewCandidates, review);
   }
   return {
     ...best,
