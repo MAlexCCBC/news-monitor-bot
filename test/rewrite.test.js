@@ -77,7 +77,7 @@ test("GPT-6 Luna writer uses Responses API with medium reasoning and logs return
   }
 });
 
-test("GPT usage is logged before a billable draft is rejected and Gemini fallback succeeds", async () => {
+test("any non-empty GPT draft is returned without Gemini fallbacks even when checks reject it", async () => {
   const originalPost = axios.post;
   const originalGet = axios.get;
   const originalOpenAiKey = process.env.OPENAI_API_KEY;
@@ -85,25 +85,30 @@ test("GPT usage is logged before a billable draft is rejected and Gemini fallbac
   const originalLog = console.log;
   const originalWarn = console.warn;
   const events = [];
+  let geminiCalls = 0;
   process.env.OPENAI_API_KEY = "test-key-not-a-real-secret";
   process.env.GEMINI_API_KEY = "test-gemini-key";
   console.log = (message) => events.push(String(message));
   console.warn = (message) => events.push(String(message));
-  axios.get = async () => ({ data: { models: [{ name: "models/gemini-3.8-flash", supportedGenerationMethods: ["generateContent"] }] } });
+  axios.get = async () => {
+    throw new Error("Gemini model discovery must not run after GPT returns text");
+  };
   axios.post = async (url) => url.includes("api.openai.com")
     ? { data: {
         status: "completed",
         output_text: completePost.replace("Contextul articolului.", "Siegfried Mureșan a anunțat o decizie nouă."),
         usage: { input_tokens: 1707, output_tokens: 1007, output_tokens_details: { reasoning_tokens: 0 } },
       } }
-    : { data: { candidates: [{ finishReason: "STOP", content: { parts: [{ text: completePost }] } }] } };
+    : (geminiCalls++, { data: { candidates: [{ finishReason: "STOP", content: { parts: [{ text: completePost }] } }] } });
   try {
     const result = await rewriteArticle("Articol sursă complet.");
-    assert.equal(result.modelUsed, "gemini-3.8-flash");
+    assert.equal(result.modelUsed, "gpt-6-luna");
+    assert.match(result.text, /Siegfried Mureșan/);
+    assert.equal(geminiCalls, 0);
     const usageIndex = events.findIndex((line) => line.includes("usage: input=1707, output=1007"));
-    const rejectIndex = events.findIndex((line) => line.includes("a eșuat (Postare cu informații neancorate"));
+    const diagnosticIndex = events.findIndex((line) => line.includes("a generat text; îl trimit fără fallback Gemini"));
     assert.ok(usageIndex >= 0);
-    assert.ok(rejectIndex > usageIndex, "usage must be recorded before grounding triggers fallback");
+    assert.ok(diagnosticIndex > usageIndex, "usage is logged before non-blocking diagnostics");
   } finally {
     axios.post = originalPost;
     axios.get = originalGet;
@@ -113,6 +118,36 @@ test("GPT usage is logged before a billable draft is rejected and Gemini fallbac
     else process.env.OPENAI_API_KEY = originalOpenAiKey;
     if (originalGeminiKey === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = originalGeminiKey;
+  }
+});
+
+test("non-empty GPT text is delivered without fallback even when the API marks it incomplete", async () => {
+  const originalPost = axios.post;
+  const originalGet = axios.get;
+  const originalOpenAiKey = process.env.OPENAI_API_KEY;
+  const originalLog = console.log;
+  const originalWarn = console.warn;
+  process.env.OPENAI_API_KEY = "test-key-not-a-real-secret";
+  console.log = () => {};
+  console.warn = () => {};
+  axios.get = async () => {
+    throw new Error("Gemini model discovery must not run after GPT returns text");
+  };
+  axios.post = async (url) => {
+    assert.equal(url, "https://api.openai.com/v1/responses");
+    return { data: { status: "incomplete", output_text: "Titlu și context parțial." } };
+  };
+  try {
+    const result = await rewriteArticle("Articol sursă complet.");
+    assert.equal(result.modelUsed, "gpt-6-luna");
+    assert.equal(result.text, "Titlu și context parțial.");
+  } finally {
+    axios.post = originalPost;
+    axios.get = originalGet;
+    console.log = originalLog;
+    console.warn = originalWarn;
+    if (originalOpenAiKey === undefined) delete process.env.OPENAI_API_KEY;
+    else process.env.OPENAI_API_KEY = originalOpenAiKey;
   }
 });
 

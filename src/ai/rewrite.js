@@ -194,25 +194,22 @@ async function rewriteWithOpenAI(articleText) {
     }
   );
   // Log usage immediately after the API response, before completeness or
-  // grounding validation can reject output that was still billable.
+  // diagnostics run; any non-empty GPT draft is sent without invoking another
+  // paid model, even when the response is incomplete or local checks complain.
   logOpenAiUsage(response.data?.usage);
   const text = extractOpenAIRewriteText(response.data);
   if (!text) throw new Error(`Răspuns gol de la OpenAI (status=${response.data?.status || "necunoscut"})`);
+  const diagnostics = [];
   if (response.data?.status && response.data.status !== "completed") {
-    const error = new Error(`Răspuns OpenAI incomplet (status=${response.data.status})`);
-    error.generatedDraft = text;
-    throw error;
+    diagnostics.push(`status=${response.data.status}`);
   }
-  if (!isCompleteRewrite(text, "STOP")) {
-    const error = new Error("Postare OpenAI incompletă");
-    error.generatedDraft = text;
-    throw error;
+  if (!isCompleteRewrite(text, response.data?.status === "completed" ? "STOP" : response.data?.status)) {
+    diagnostics.push("postarea nu trece verificarea de completitudine");
   }
   const groundingFailures = validateRewriteGrounding(text, articleText);
-  if (groundingFailures.length) {
-    const error = new Error(`Postare cu informații neancorate: ${groundingFailures.join("; ")}`);
-    error.generatedDraft = text;
-    throw error;
+  if (groundingFailures.length) diagnostics.push(...groundingFailures);
+  if (diagnostics.length) {
+    console.warn(`[openai] ${OPENAI_MODEL} a generat text; îl trimit fără fallback Gemini în ciuda verificărilor: ${diagnostics.join("; ")}`);
   }
   return { text, modelUsed: OPENAI_MODEL };
 }
