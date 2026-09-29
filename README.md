@@ -32,7 +32,8 @@ pune-l la `NOTIFY_CHAT_ID`. Trimite-i botului tau nou creat un `/start` mesaj
 
 ### 3. Ia cheile API rămase
 
-- **Gemini**: https://aistudio.google.com/apikey -> `GEMINI_API_KEY`
+- **Gemini**: https://aistudio.google.com/apikey -> `GEMINI_API_KEY` (embeddinguri, relevanță și arbitraj de similaritate)
+- **OpenAI API**: https://platform.openai.com/api-keys -> `OPENAI_API_KEY` (redactare cu GPT-6 Luna, reasoning medium)
 - **Tavily**: din contul tau Tavily -> `TAVILY_API_KEY`
 
 ⚠️ **Important**: nu trimite niciodata aceste chei prin chat/mesaje. Pune-le
@@ -83,7 +84,7 @@ depășești, următoarea opțiune ieftină e un VPS de ~5€/lună (Hetzner).
 Proiectul are un workflow în `.github/workflows/bot.yml`. Pentru el, adaugă
 TOATE variabilele din `.env` ca **GitHub Secrets** (Settings -> Secrets and
 variables -> Actions), cu aceleași nume (incluzând `TG_SESSION`, `CHANNELS`,
-`KEYWORDS`, `ROMANIAN_PERSONALITIES`, etc.), apoi rulează workflow-ul manual
+`KEYWORDS`, `ROMANIAN_PERSONALITIES`, `OPENAI_API_KEY`, etc.), apoi rulează workflow-ul manual
 din tab-ul Actions -> Bot -> Run workflow.
 
 ⚠️ **Limitări**: un job GitHub Actions se oprește automat după ~5-6 ore și
@@ -105,9 +106,12 @@ real e mai potrivit Railway/VPS, nu Actions.
    Istoricul nu se retrimite la Gemini. Scorul semantic este verificat cu
    dovezi despre eveniment din titlu și corp; pasajele de context comune nu
    sunt suficiente dacă începuturile articolelor descriu dezvoltări diferite.
-   O posibilă repetare cere confirmare în chat. Aceste reguli sunt euristice,
-   iar procentul afișat este scor de apropiere, nu probabilitate de duplicat.
-6. Reformatează cu Gemini text (cascadă automată de modele dacă unul dă rate-limit sau timeout)
+   Candidații plauzibili sunt comparați de Gemini pe articolele complete, cu
+   modelele Lite primele și fallback la restul modelelor text. Arbitrajul AI
+   poate corecta duplicate false și duplicate ratate; dacă Gemini nu răspunde,
+   verdictul local rămâne fallback. O posibilă repetare cere confirmare în chat.
+   Procentul afișat este scor semantic, nu probabilitate de duplicat.
+6. Reformatează cu GPT-6 Luna la reasoning medium; dacă nu există cheia OpenAI sau cererea eșuează, folosește cascada Gemini configurată.
 7. Caută o imagine (Tavily -> Bing HTML -> Wikimedia Commons -> Wikipedia -> DuckDuckGo),
    verifică facial + anti-text cu AI, decupează la format portret 3:4 centrat pe față,
    evită refolosirea recentă
@@ -138,9 +142,10 @@ Pe GitHub Actions, baza de date se restaurează și se salvează în branch-ul
 Indiferent de `KEYWORDS`, sunt păstrate și știrile despre Mureșan, Bolojan,
 PNL, USR și politică; setările existente rămân active în plus.
 
-Pentru cererile text Gemini încearcă mai întâi `gemini-3.8-flash`, apoi
-modelele fallback configurate; modelele indisponibile pe cheia API curentă
-sunt filtrate dinamic.
+Pentru arbitrajul de similaritate Gemini încearcă mai întâi modelele Flash Lite,
+cu cote zilnice mai mari, apoi fallbackurile disponibile pe cheia curentă.
+Răspunsurile Gemini nu sunt folosite la redactarea principală dacă GPT-6 Luna
+reușește.
 
 ## Ce poți edita ușor
 

@@ -51,3 +51,17 @@ test("legacy AI text retries no longer display a similarity gate", () => {
   assert.match(text, /reîncerca trimiterea/);
   assert.doesNotMatch(text, /pare similar|Comparație|88%|news\.example\/previous/);
 });
+
+test("cross-embedding AI duplicate is not misleadingly displayed as semantic similarity 0%", () => {
+  const text = formatApprovalText({
+    kind: "article",
+    url: "https://news.example/current",
+    article: { title: "Articol nou" },
+    comparisonUrl: "https://news.example/old",
+    comparisonTitle: "Articol anterior",
+    similarity: 0,
+    simResult: { similarityBasis: "ai_cross_embedding" },
+  });
+  assert.match(text, /confirmat prin AI/);
+  assert.doesNotMatch(text, /0%/);
+});

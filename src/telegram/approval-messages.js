@@ -22,7 +22,12 @@ function clickableUrl(value) {
 export function formatApprovalText(item) {
   const title = escapeHtml(item.article?.title || "(fără titlu)");
   const comparisonTitle = escapeHtml(item.comparisonTitle || "Știre anterioară");
-  const score = `${(Number(item.similarity || 0) * 100).toFixed(0)}%`;
+  const score = item.simResult?.similarityBasis === "ai_cross_embedding"
+    ? "confirmat prin AI"
+    : `${(Number(item.similarity || 0) * 100).toFixed(0)}%${item.simResult?.similarityBasis === "semantic_ai" ? " · confirmat prin AI" : ""}`;
+  const comparisonNote = item.simResult?.similarityBasis === "ai_cross_embedding"
+    ? "Verdict AI bazat pe comparația textelor integrale; vectorii de embedding provin din modele incompatibile."
+    : "Scorul semantic este apropierea vectorilor, nu probabilitate; decizia include comparația articolelor complete.";
   const currentLink = clickableUrl(item.url);
   // Older pending requests may predate the dedicated comparison_url field;
   // the similarity result already persisted the candidate URL in that case.
@@ -40,6 +45,6 @@ export function formatApprovalText(item) {
     `<b>Comparație între link-uri</b>\n` +
     `<b>Link primit:</b> ${currentLink}\n` +
     `<b>Știre/link similar deja procesat:</b> ${comparisonTitle} — ${comparisonLink}\n\n` +
-    `<i>Procentul este scor semantic, nu probabilitate; verdictul folosește și indicii din titlu și text.</i>\n\n` +
+    `<i>${comparisonNote}</i>\n\n` +
     `<i>Dorești să fie procesată și trimisă oricum? Cererea expiră în 12 ore.</i>`;
 }

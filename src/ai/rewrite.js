@@ -6,6 +6,9 @@ import { isRequestTimeout, modelGenerationConfig, modelRequestTimeout, withGemin
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
 // nivel de modul GEMINI_API_KEY ar fi inca undefined.
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
+const OPENAI_KEY = () => process.env.OPENAI_API_KEY;
+const OPENAI_MODEL = "gpt-6-luna";
+let missingOpenAiKeyLogged = false;
 
 // Cascada începe cu modelul preferat, apoi încearcă Flash/Lite/Gemma ca rezerve.
 // gemini-flash-latest e alias care
@@ -141,7 +144,78 @@ export function extractFinalRewriteText(candidate) {
     .trim();
 }
 
+export function extractOpenAIRewriteText(response) {
+  if (typeof response?.output_text === "string") return response.output_text.trim();
+  return (response?.output || [])
+    .filter((item) => item?.type === "message")
+    .flatMap((item) => item.content || [])
+    .filter((part) => part?.type === "output_text" && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("")
+    .trim();
+}
+
+async function rewriteWithOpenAI(articleText) {
+  const apiKey = OPENAI_KEY();
+  if (!apiKey) return null;
+  const response = await axios.post(
+    "https://api.openai.com/v1/responses",
+    {
+      model: OPENAI_MODEL,
+      reasoning: { effort: "medium" },
+      max_output_tokens: 6000,
+      input: PROMPT_TEMPLATE(articleText),
+    },
+    {
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+    }
+  );
+  const text = extractOpenAIRewriteText(response.data);
+  if (!text) throw new Error(`Răspuns gol de la OpenAI (status=${response.data?.status || "necunoscut"})`);
+  if (response.data?.status && response.data.status !== "completed") {
+    throw new Error(`Răspuns OpenAI incomplet (status=${response.data.status})`);
+  }
+  if (!isCompleteRewrite(text, "STOP")) throw new Error("Postare OpenAI incompletă");
+  const groundingFailures = validateRewriteGrounding(text, articleText);
+  if (groundingFailures.length) {
+    throw new Error(`Postare cu informații neancorate: ${groundingFailures.join("; ")}`);
+  }
+  const usage = response.data?.usage;
+  if (usage) {
+    const inputTokens = Number(usage.input_tokens || 0);
+    const outputTokens = Number(usage.output_tokens || 0);
+    const reasoningTokens = Number(usage.output_tokens_details?.reasoning_tokens || 0);
+    const cachedInputTokens = Number(usage.input_tokens_details?.cached_tokens || 0);
+    const longContext = inputTokens > 272_000;
+    const inputRate = longContext ? 0.20 : 0.10;
+    const cachedInputRate = longContext ? 0.02 : 0.01;
+    const outputRate = longContext ? 0.75 : 0.50;
+    const estimatedUsd = Math.max(0, inputTokens - cachedInputTokens) * inputRate / 1_000_000 +
+      cachedInputTokens * cachedInputRate / 1_000_000 + outputTokens * outputRate / 1_000_000;
+    console.log(`[openai] ${OPENAI_MODEL} reușit: input=${inputTokens}, output=${outputTokens}, reasoning=${reasoningTokens}, cost_est=$${estimatedUsd.toFixed(6)}`);
+  } else {
+    console.log(`[openai] Reformatare reușită cu ${OPENAI_MODEL}; API-ul nu a returnat usage.`);
+  }
+  return { text, modelUsed: OPENAI_MODEL };
+}
+
 export async function rewriteArticle(articleText) {
+  if (OPENAI_KEY()) {
+    try {
+      const result = await rewriteWithOpenAI(articleText);
+      if (result) return result;
+    } catch (err) {
+      console.warn(`[openai] ${OPENAI_MODEL} a eșuat (${err.response?.status || err.message}); continui cu fallbackurile Gemini.`);
+    }
+  } else {
+    if (!missingOpenAiKeyLogged) {
+      console.warn("[openai] OPENAI_API_KEY lipsește; continui direct cu fallbackurile Gemini.");
+      missingOpenAiKeyLogged = true;
+    }
+  }
   const models = await filterModels(TEXT_MODELS);
   if (!models.length) {
     throw new Error("Toate modelele text sunt temporar în cooldown după erori de cotă; articolul nu a fost trimis către Gemini. Reîncearcă după resetarea cotei.");

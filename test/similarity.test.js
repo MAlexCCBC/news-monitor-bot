@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { evaluate3ZoneSimilarity, isSamePublisherSource, selectSimilarityCandidate } from "../src/similarity/embedding.js";
+import { applySimilarityAiReview, evaluate3ZoneSimilarity, isSamePublisherSource, selectSimilarityCandidate } from "../src/similarity/embedding.js";
 
 test("same publisher requires 97% similarity and never inflates the reported score", () => {
   const bodyNew = "Sorin Grindeanu a anunțat că PSD va vota învestirea Guvernului după consultările de luni. Partidul a cerut clarificări privind programul economic și calendarul reformelor.";
@@ -17,6 +17,30 @@ test("same publisher requires 97% similarity and never inflates the reported sco
     "PSD decide după consultări dacă votează Guvernul", bodyOld, .80, { samePublisher: true });
   assert.equal(above.isDuplicate, true);
   assert.equal(above.score, .98);
+});
+
+test("AI similarity review can veto a false positive without changing the semantic score", () => {
+  const local = [{ url: "https://news.example/old", score: .91, isDuplicate: true, embeddingComparable: true, similarityZone: "VERDE" }];
+  const result = applySimilarityAiReview(local, [{ url: local[0].url }], { results: [{ verdict: "different", reason: "Evenimente distincte" }] });
+  assert.equal(result.isDuplicate, false);
+  assert.equal(result.score, .91);
+  assert.equal(result.similarityZone, "AI RESPINS (evenimente diferite)");
+});
+
+test("AI similarity review can recover a false negative from a semantically retrieved article", () => {
+  const local = [{ url: "https://news.example/old", score: .69, isDuplicate: false, embeddingComparable: true }];
+  const result = applySimilarityAiReview(local, [{ url: local[0].url }], { results: [{ verdict: "duplicate", reason: "Aceeași decizie, titlu reformulat" }] });
+  assert.equal(result.isDuplicate, true);
+  assert.equal(result.score, .69);
+  assert.equal(result.similarityBasis, "semantic_ai");
+});
+
+test("AI similarity review can compare across embedding spaces without presenting a fake percentage", () => {
+  const local = [{ url: "https://news.example/old", score: 0, isDuplicate: false, embeddingComparable: false, lexicalRetrievalScore: .71 }];
+  const result = applySimilarityAiReview(local, [{ url: local[0].url }], { results: [{ verdict: "duplicate", reason: "Același eveniment" }] });
+  assert.equal(result.isDuplicate, true);
+  assert.equal(result.score, 0);
+  assert.equal(result.similarityBasis, "ai_cross_embedding");
 });
 
 test("publisher matching ignores www but distinguishes different publishers", () => {

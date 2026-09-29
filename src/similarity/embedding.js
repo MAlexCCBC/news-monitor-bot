@@ -1,5 +1,6 @@
 import axios from "axios";
 import { cleanArticleContent, articleFocus } from "../scraper/clean-content.js";
+import { arbitrateSimilarity } from "./ai-arbitrator.js";
 import { withGeminiRetries } from "../ai/gemini-client.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
@@ -519,6 +520,79 @@ export function selectSimilarityCandidate(candidates) {
   return bestDuplicate || bestOverall || { isDuplicate: false, score: 0, url: null };
 }
 
+const AI_RETRIEVAL_FLOOR = 0.62;
+const AI_REVIEW_LIMIT = 3;
+
+function lexicalRetrievalScore(title, content, old) {
+  const evidence = checkKeyEntitiesMatch(title, content, old.title || "", old.content || "");
+  const sameHeadlineFocus = evidence.titleOverlap >= 0.30 && evidence.commonTitleTopicWords >= 2 &&
+    (evidence.commonTitleEntities >= 1 || evidence.commonTitleNumbers >= 1);
+  const sameOpeningDevelopment = evidence.commonFocusWords >= 6 && evidence.focusTopicOverlap >= 0.30 &&
+    evidence.commonTopicWords >= 8;
+  if (!sameHeadlineFocus && !sameOpeningDevelopment && evidence.phraseCoverage < 0.40) return null;
+  return Math.max(
+    evidence.phraseCoverage,
+    sameHeadlineFocus ? 0.5 + evidence.titleOverlap / 2 : 0,
+    sameOpeningDevelopment ? 0.45 + evidence.focusTopicOverlap / 2 : 0,
+  );
+}
+
+function selectAiReviewCandidates(candidates) {
+  const vectorCandidates = candidates
+    .filter((item) => item.embeddingComparable &&
+      (item.score >= AI_RETRIEVAL_FLOOR || item.isDuplicate) &&
+      (!item.samePublisher || item.isDuplicate || item.score >= item.samePublisherThreshold))
+    .sort((a, b) => b.score - a.score);
+  const lexicalCandidates = candidates
+    .filter((item) => !item.embeddingComparable && item.lexicalRetrievalScore !== null && !item.samePublisher)
+    .sort((a, b) => b.lexicalRetrievalScore - a.lexicalRetrievalScore);
+  // Reserve one comparison slot for text-retrieved candidates from a different
+  // embedding space, so a primary->fallback model switch doesn't silently make
+  // all of the primary model's saved history invisible.
+  const selected = vectorCandidates.slice(0, Math.min(2, AI_REVIEW_LIMIT));
+  for (const candidate of lexicalCandidates) {
+    if (selected.length >= AI_REVIEW_LIMIT) break;
+    selected.push(candidate);
+  }
+  for (const candidate of vectorCandidates) {
+    if (selected.length >= AI_REVIEW_LIMIT) break;
+    if (!selected.includes(candidate)) selected.push(candidate);
+  }
+  return selected;
+}
+
+export function applySimilarityAiReview(candidates, reviewedCandidates, review) {
+  if (!review?.results?.length) return selectSimilarityCandidate(candidates);
+  const verdictByUrl = new Map(reviewedCandidates.map((candidate, index) => [candidate.url, review.results[index]]));
+  const confirmed = candidates.filter((candidate) => verdictByUrl.get(candidate.url)?.verdict === "duplicate");
+  if (confirmed.length) {
+    const best = confirmed.sort((a, b) => {
+      if (a.embeddingComparable !== b.embeddingComparable) return a.embeddingComparable ? -1 : 1;
+      return (b.score || b.lexicalRetrievalScore || 0) - (a.score || a.lexicalRetrievalScore || 0);
+    })[0];
+    const result = verdictByUrl.get(best.url);
+    return {
+      ...best,
+      isDuplicate: true,
+      similarityZone: best.embeddingComparable ? "AI CONFIRMAT (embedding + articol complet)" : "AI CONFIRMAT (articole complete; spații de embedding diferite)",
+      similarityReason: result.reason || "Modelul AI a confirmat că articolele relatează același eveniment.",
+      similarityBasis: best.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
+    };
+  }
+  const resolved = candidates.map((candidate) => {
+    const verdict = verdictByUrl.get(candidate.url);
+    if (verdict?.verdict !== "different") return candidate;
+    return {
+      ...candidate,
+      isDuplicate: false,
+      similarityZone: "AI RESPINS (evenimente diferite)",
+      similarityReason: verdict.reason || "Modelul AI a stabilit că articolele relatează evenimente diferite.",
+      similarityBasis: "semantic_ai",
+    };
+  });
+  return selectSimilarityCandidate(resolved);
+}
+
 // Reutilizăm un embedding salvat pentru verificări de restituire/migrare fără
 // apel Gemini suplimentar. `recentNewsWithEmbeddings` trebuie să excludă deja
 // articolul candidat, dacă acesta a fost salvat între timp.
@@ -544,15 +618,17 @@ export function checkSimilarityEmbedding(newEmbedding, titleNew, leadNew, recent
     isDuplicate: best.isDuplicate,
     similarity: best.score,
     similarUrl: best.url,
-    similarityZone: best.zone || null,
-    similarityReason: best.reason || null,
+    similarityZone: best.similarityZone || best.zone || null,
+    similarityReason: best.similarityReason || best.reason || null,
     embedding: newEmbedding, // o salvam ca sa n-o mai calculam a doua oara
     embeddingModel,
   };
 }
 
 // Verifica dacă articolul nou e duplicat pe baza amprentelor întregului articol.
-export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80, incomingUrl = null) {
+export async function checkSimilarity(newText, recentNewsWithEmbeddings, threshold = 0.80, incomingUrl = null, {
+  arbitrate = null,
+} = {}) {
   const [titleNew = "", ...leadParts] = newText.split("\n");
   const leadNew = leadParts.join("\n");
   // First compare full-article embeddings against every item in the history.
@@ -568,22 +644,49 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
   const newEmbedding = embedded.embeddings[0];
   const reembeddedNews = [];
   const compatibleItems = comparableItems.filter((item) => compatibleVector(newEmbedding, item, embedded.model));
-  const candidates = compatibleItems.map((item) => {
-    const rawSim = cosineSimilarity(newEmbedding, item.embedding);
+  const compatibleUrls = new Set(compatibleItems.map((item) => item.url));
+  const candidates = comparableItems.map((item) => {
+    const embeddingComparable = compatibleUrls.has(item.url);
+    const samePublisher = isSamePublisherSource(incomingUrl, item.url);
+    const rawSim = embeddingComparable ? cosineSimilarity(newEmbedding, item.embedding) : 0;
     const result = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, item.title || "", item.content || "", threshold, {
-      samePublisher: isSamePublisherSource(incomingUrl, item.url),
+      samePublisher,
     });
-    return { ...result, url: item.url };
+    return {
+      ...result,
+      url: item.url,
+      title: item.title || "",
+      content: item.content || "",
+      score: rawSim,
+      embeddingComparable,
+      samePublisher,
+      samePublisherThreshold: Math.max(threshold, 0.97),
+      lexicalRetrievalScore: embeddingComparable ? null : lexicalRetrievalScore(titleNew, leadNew, item),
+    };
   });
-  const best = selectSimilarityCandidate(candidates);
+  const localBest = selectSimilarityCandidate(candidates);
+  const reviewCandidates = selectAiReviewCandidates(candidates);
+  let best = localBest;
+  if (reviewCandidates.length && (arbitrate || process.env.GEMINI_API_KEY)) {
+    try {
+      const review = await (arbitrate || arbitrateSimilarity)(
+        { title: titleNew, content: leadNew },
+        reviewCandidates.map(({ title, content }) => ({ title, content }))
+      );
+      // Preserve URL association without ever asking the model to emit URLs.
+      if (review) best = applySimilarityAiReview(candidates, reviewCandidates, review);
+    } catch (error) {
+      console.warn(`[similarity-ai] Arbitraj indisponibil; păstrez verdictul euristic: ${error.message}`);
+    }
+  }
   return {
     ...best,
     // Păstrăm forma de rezultat folosită de index.js și de mesajele de
     // aprobare; altfel `score/url/zone` deveneau 0% și link indisponibil.
     similarity: best.score,
     similarUrl: best.url,
-    similarityZone: best.zone || null,
-    similarityReason: best.reason || null,
+    similarityZone: best.similarityZone || best.zone || null,
+    similarityReason: best.similarityReason || best.reason || null,
     embedding: newEmbedding,
     embeddingModel: embedded.model,
     embeddingVersion: embedded.version,

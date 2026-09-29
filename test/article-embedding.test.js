@@ -104,6 +104,45 @@ test("similarity embeds the incoming story once, not every historical article", 
   }
 });
 
+test("AI similarity arbitration receives full candidate articles and can recover a local false negative", async () => {
+  const originalPost = axios.post;
+  const incomingBody = `Text integral nou despre evenimentul concret. ${"Finalul articolului nou. ".repeat(30)}MARCAJ_FINAL_NOU`;
+  const previousBody = `Text integral anterior despre același eveniment. ${"Finalul articolului anterior. ".repeat(30)}MARCAJ_FINAL_ANTERIOR`;
+  let reviewed;
+  axios.post = async (_url, requestBody) => ({
+    data: { embeddings: requestBody.requests.map(() => ({ values: requestBody.requests.length ? [1, 0] : [1, 0] })) },
+  });
+  try {
+    const result = await checkSimilarity(
+      `Titlu reformulat despre eveniment\n${incomingBody}`,
+      [{
+        url: "https://news.example/previous",
+        title: "Relatarea anterioară a faptului",
+        content: previousBody,
+        embedding: [0.8, 0.6],
+        embeddingModel: "gemini-embedding-001",
+        embeddingVersion: "article-full-v1:gemini-embedding-001",
+      }],
+      0.8,
+      "https://other.example/current",
+      {
+        arbitrate: async (incoming, candidates) => {
+          reviewed = { incoming, candidates };
+          return { model: "test-lite", results: [{ verdict: "duplicate", reason: "Aceeași dezvoltare" }] };
+        },
+      }
+    );
+    assert.match(reviewed.incoming.content, /MARCAJ_FINAL_NOU/);
+    assert.match(reviewed.candidates[0].content, /MARCAJ_FINAL_ANTERIOR/);
+    assert.equal(result.isDuplicate, true);
+    assert.equal(result.similarityBasis, "semantic_ai");
+    assert.equal(result.similarUrl, "https://news.example/previous");
+    assert.match(result.similarityZone, /AI CONFIRMAT/);
+  } finally {
+    axios.post = originalPost;
+  }
+});
+
 test("fallback embeddings reuse their own space and never re-embed the primary-model history", async () => {
   const originalPost = axios.post;
   const calls = [];
