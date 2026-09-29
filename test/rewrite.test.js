@@ -26,3 +26,9 @@ test("rewrite grounding accepts an exact source quote and names present in the s
   const output = `Sorin Grindeanu a făcut declarații.\n„Nu am de ce să mă ascund”, Sorin Grindeanu, lider PSD.`;
   assert.deepEqual(validateRewriteGrounding(output, source), []);
 });
+
+test("rewrite grounding does not mistake BNR institution titles for unsupported people", () => {
+  const source = "BNR a analizat trecerea la zona euro. Mugur Isărescu a vorbit despre inflație.";
+  const output = "Banca Națională a analizat trecerea la zona euro. Guvernatorul Băncii Naționale, Mugur Isărescu, a vorbit despre inflație.";
+  assert.deepEqual(validateRewriteGrounding(output, source), []);
+});

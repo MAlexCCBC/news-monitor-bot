@@ -108,6 +108,10 @@ export function validateRewriteGrounding(text, articleText) {
     "principalele", "situatia", "procesul", "calendarul", "programul", "rezultatele",
     "reactia", "pozitia", "decizia", "masurile", "oficialii", "autoritatile",
     "presedintele", "liderul", "ministrul", "premierul", "sursa", "romania",
+    // The name detector also matches capitalized institution titles. These
+    // are not person-name evidence: articles often abbreviate the BNR as
+    // „Banca Națională”, while the source uses only „BNR”.
+    "banca", "bancii", "guvernatorul", "guvernatoarea",
   ]);
   const names = String(text || "").match(/\b[A-ZĂÂÎȘȚ][a-zăâîșț]+(?:\s+[A-ZĂÂÎȘȚ][a-zăâîșț]+){1,2}\b/g) || [];
   const unsupportedName = names.find((name) => {
