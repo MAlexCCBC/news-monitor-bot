@@ -76,6 +76,52 @@ export function isCompleteRewrite(text, finishReason) {
   return finishReason === "STOP" && bulletCount >= 3 && hasRequiredEnding;
 }
 
+function normalizeGroundingText(text = "") {
+  return String(text).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim();
+}
+
+function sourceContainsPhrase(source, value) {
+  const phrase = normalizeGroundingText(value);
+  return phrase.length > 0 && (` ${source} `).includes(` ${phrase} `);
+}
+
+// A complete-looking post can still contain a quote or a second story that
+// was never in the scraped article. Keep these checks local: no extra API call,
+// and fail over to another writer model instead of publishing unsupported text.
+export function validateRewriteGrounding(text, articleText) {
+  const source = normalizeGroundingText(articleText);
+  const failures = [];
+  const quotes = [...String(text || "").matchAll(/[„“"]([^”"\n]{12,})[”"]/g)].map((match) => match[1]);
+  for (const quote of quotes) {
+    if (!sourceContainsPhrase(source, quote)) {
+      failures.push("citatul nu apare în articolul-sursă");
+      break;
+    }
+  }
+
+  // Proper-name pairs are strong signals of cross-article contamination (for
+  // example, a political quote inserted into an unrelated court story). Ignore
+  // common sentence starters; check the remaining names as contiguous phrases.
+  const sentenceStarters = new Set([
+    "in", "dupa", "potrivit", "de", "acest", "aceasta", "contextul", "detalii",
+    "principalele", "situatia", "procesul", "calendarul", "programul", "rezultatele",
+    "reactia", "pozitia", "decizia", "masurile", "oficialii", "autoritatile",
+    "presedintele", "liderul", "ministrul", "premierul", "sursa", "romania",
+  ]);
+  const names = String(text || "").match(/\b[A-ZĂÂÎȘȚ][a-zăâîșț]+(?:\s+[A-ZĂÂÎȘȚ][a-zăâîșț]+){1,2}\b/g) || [];
+  const unsupportedName = names.find((name) => {
+    const normalized = normalizeGroundingText(name);
+    return !sentenceStarters.has(normalized.split(" ")[0]) && !sourceContainsPhrase(source, name);
+  });
+  if (unsupportedName) failures.push(`numele „${unsupportedName}” nu apare în articolul-sursă`);
+
+  const outputNumbers = String(text || "").match(/\b\d+(?:[.,]\d+)?\b/g) || [];
+  const unsupportedNumber = outputNumbers.find((value) => !sourceContainsPhrase(source, value));
+  if (unsupportedNumber) failures.push(`numărul „${unsupportedNumber}” nu apare în articolul-sursă`);
+  return failures;
+}
+
 export function extractFinalRewriteText(candidate) {
   return (candidate?.content?.parts || [])
     .filter((part) => part && part.thought !== true && typeof part.text === "string")
@@ -119,6 +165,13 @@ export async function rewriteArticle(articleText) {
         console.warn(`[ai] ${model} a returnat o postare incompletă (finishReason=${finishReason || "necunoscut"}, bullets=${bulletCount}, final=${hasRequiredEnding}); încerc următorul model.`);
         lastError = new Error(`Postare incompletă (finishReason=${finishReason || "necunoscut"})`);
         failures.push(`${model}: răspuns incomplet (${finishReason || "finishReason lipsă"})`);
+        continue;
+      }
+      const groundingFailures = validateRewriteGrounding(text, articleText);
+      if (groundingFailures.length) {
+        lastError = new Error(`Postare cu informații neancorate: ${groundingFailures.join("; ")}`);
+        failures.push(`${model}: ${lastError.message}`);
+        console.warn(`[ai] ${model} a adăugat informații neconfirmate (${groundingFailures.join("; ")}); încerc următorul model.`);
         continue;
       }
       console.log(`[ai] Reformatare reusita cu modelul: ${model}`);

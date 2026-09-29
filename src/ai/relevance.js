@@ -25,20 +25,27 @@ canal de stiri in limba romana.
 
 INTREBARE: Este articolul in principal despre POLITICA ROMANEASCA sau despre
 un eveniment politic international cu efect direct si substantial asupra
-Romaniei? Nu confunda mentionarea unei persoane romane cu relevanta politica.
+Romaniei? Cere dovada din subiectul principal, nu doar dintr-o mențiune în treacăt.
 
 Raspunde DA daca:
 - Subiectul principal este o decizie, actiune, disputa, declaratie sau evolutie
   de politica romaneasca (Guvern, Parlament, partide, alegeri, politici publice,
   oficiali in exercitarea functiei); SAU
 - Este o stire politica internationala cu efect direct si substantial asupra
-  Romaniei sau cu implicarea oficiala a autoritatilor romanesti.
+  Romaniei, demonstrat printr-o decizie/actiune a autoritatilor romane ori un
+  efect concret explicit asupra Romaniei. Un posibil efect indirect/geografic
+  sau simpla vecinatate cu Romania NU este suficienta.
 
 Raspunde NU daca:
 - Articolul este exclusiv despre alte tari sau personaje straine, chiar daca
   este scris in limba romana; SAU
 - Romania apare doar incidental, fara rol real (ex: locatie de summit,
   comparatie, simpla preluare a unei stiri internationale); SAU
+- Este retrospectiva, calendar istoric, aniversare, istorie sau o retrospectivă
+  de arhivă, chiar dacă subiectul istoric a fost politic; SAU
+- Este în principal cultură, patrimoniu, restaurare de clădiri, lifestyle,
+  eveniment local sau administrație de rutină, fără dispută politică, decizie
+  de politică publică ori declarație politică relevantă; SAU
 - Este o stire de viata privata, familie, doliu/deces, accident, crima,
   divertisment sau sport, chiar daca mentioneaza un politician roman, fara o
   evolutie politica relevanta ca subiect principal.
@@ -82,8 +89,11 @@ export async function isRelevantToRomania(title, excerpt) {
       if (!text) throw new Error("Raspuns gol de la model");
 
       const verdict = text.split("\n")[0].trim().toUpperCase();
+      if (verdict !== "DA" && verdict !== "NU") {
+        throw new Error(`Verdict de relevanță neconform: ${verdict.slice(0, 40)}`);
+      }
       const reason = text.split("\n").slice(1).join(" ").trim();
-      const relevant = verdict.startsWith("DA");
+      const relevant = verdict === "DA";
 
       console.log(
         `[relevanta] ${model}: ${relevant ? "DA (politica romaneasca)" : "NU (fara relevanta politica romaneasca)"} - ${reason || "(fara motiv)"}`

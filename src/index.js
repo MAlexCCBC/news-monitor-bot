@@ -48,7 +48,7 @@ import { NewMessage } from "telegram/events/index.js";
 import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
-import { matchesKeywords, isPublishedToday, hasStrongRomanianPoliticalContext, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
+import { matchesKeywords, isPublishedToday, hasStrongRomanianPoliticalContext, isForeignOnly, isHistoricalRoundup, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
 import { createArticleProcessingPolicy } from "./filter/processing-policy.js";
 import { checkSimilarity, checkSimilarityEmbedding, createArticleEmbedding } from "./similarity/embedding.js";
 import { prepareArticlePost } from "./ai/prepare-post.js";
@@ -540,7 +540,7 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
     await timedStage("telegram_delivery", async () => {
       if (cleanPost) await notifyPlain(cleanPost);
       await notifyPlain(
-        `Sursa: ${url}\n\n⚠️ Nu am gasit imagine noua automat, cauta manual pentru: ${speaker || "eveniment"}`
+        `Sursa: ${url}\n\n⚠️ Nu am găsit o imagine verificată automat. Caută manual după subiect: ${speaker || article.title || "știre"}`
       );
     });
   }
@@ -620,6 +620,19 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     // 2b. Filtru de relevanta politica romaneasca. O stire despre viata privata
     // a unui politician (ex. un deces in familie) nu este automat politica doar
     // pentru ca mentioneaza o personalitate romaneasca.
+    if (policy.checkForeignRelevance && isHistoricalRoundup(article.title, url)) {
+      const reason = "Retrospectivă/arhivă istorică, nu știre politică actuală.";
+      console.log(`[skip] ${reason}`);
+      return { status: "skipped", reason };
+    }
+
+    const relevanceText = `${article.title}\n${(article.content || "").slice(0, 1500)}`;
+    if (policy.checkForeignRelevance && isForeignOnly(relevanceText, romanianPersonalities)) {
+      const reason = "Știre exclusiv externă, fără implicare sau impact românesc explicit.";
+      console.log(`[skip] ${reason}`);
+      return { status: "skipped", reason };
+    }
+
     if (policy.checkForeignRelevance && !hasStrongRomanianPoliticalContext(essentialText, romanianPersonalities)) {
       const relevant = await timedStage("relevance", () => isRelevantToRomania(
         article.title,

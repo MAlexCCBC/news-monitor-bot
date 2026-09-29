@@ -6,6 +6,7 @@ import {
   CORE_ROMANIAN_POLITICAL_CONTEXT,
   hasStrongRomanianContext,
   hasStrongRomanianPoliticalContext,
+  isHistoricalRoundup,
   isForeignOnly,
   matchesKeywords,
 } from "../src/filter/keywords.js";
@@ -76,4 +77,15 @@ test("PNL and USR headlines count as Romanian political context and are not drop
     assert.equal(hasStrongRomanianContext(headline, CORE_ROMANIAN_POLITICAL_CONTEXT), true);
     assert.equal(isForeignOnly(headline, CORE_ROMANIAN_POLITICAL_CONTEXT), false);
   }
+});
+
+test("historical roundups and archive retrospectives are excluded from current-news processing", () => {
+  assert.equal(isHistoricalRoundup("Digistoria - cele mai importante evenimente petrecute pe 29 septembrie", "https://www.digi24.ro/digistoria/digistoria-cele-mai-importante-evenimente"), true);
+  assert.equal(isHistoricalRoundup("Mediafax 35: 1996 – prima alternanță democratică", "https://www.mediafax.ro/mediafax-35/mediafax-35-1996"), true);
+  assert.equal(isHistoricalRoundup("Grindeanu anunță o plângere penală", "https://hotnews.ro/politica/2360790"), false);
+});
+
+test("foreign-only security stories are identifiable without a Romanian link", () => {
+  assert.equal(isForeignOnly("O dronă rusă a avariat un punct de frontieră ucrainean la granița cu Polonia", []), true);
+  assert.equal(isForeignOnly("România convoacă ambasadorul Rusiei după incidentul de la graniță", []), false);
 });

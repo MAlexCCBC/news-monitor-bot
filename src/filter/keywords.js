@@ -43,6 +43,19 @@ const PRIVATE_LIFE_SIGNALS = [
   "tata", "sotie", "sotul", "fiica", "fiul", "familie", "nunta", "divort",
 ];
 
+// Archive/anniversary formats routinely mention Romanian elections and public
+// officials while describing decades-old events. They are not current news
+// candidates for this monitor, even if the article happens to contain political
+// vocabulary in its first paragraphs.
+export function isHistoricalRoundup(title = "", url = "") {
+  const normalizedTitle = normalize(title);
+  let pathname = "";
+  try { pathname = new URL(url).pathname.toLowerCase(); } catch {}
+  return /\/digistoria\//.test(pathname) ||
+    /\b(?:digistoria|cele mai importante evenimente petrecute|evenimente petrecute pe|in aceasta zi|acum [0-9]+ de ani)\b/.test(normalizedTitle) ||
+    /\/mediafax-35\//.test(pathname);
+}
+
 export function matchesKeywords(text, keywords) {
   const normText = normalize(text);
   const found = keywords.filter((kw) => normText.includes(normalize(kw)));
