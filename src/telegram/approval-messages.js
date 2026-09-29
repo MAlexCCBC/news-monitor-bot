@@ -22,12 +22,17 @@ function clickableUrl(value) {
 export function formatApprovalText(item) {
   const title = escapeHtml(item.article?.title || "(fără titlu)");
   const comparisonTitle = escapeHtml(item.comparisonTitle || "Știre anterioară");
+  const needsManualReview = item.simResult?.aiVerdict === "uncertain";
   const score = item.simResult?.similarityBasis === "ai_cross_embedding"
-    ? "confirmat prin AI"
-    : `${(Number(item.similarity || 0) * 100).toFixed(0)}%${item.simResult?.similarityBasis === "semantic_ai" ? " · confirmat prin AI" : ""}`;
+    ? (needsManualReview ? "neclar; verificare manuală" : "confirmat prin AI")
+    : `${(Number(item.similarity || 0) * 100).toFixed(0)}%${needsManualReview ? " · verdict AI neclar" : item.simResult?.similarityBasis === "semantic_ai" ? " · confirmat prin AI" : ""}`;
   const comparisonNote = item.simResult?.similarityBasis === "ai_cross_embedding"
-    ? "Verdict AI bazat pe comparația textelor integrale; vectorii de embedding provin din modele incompatibile."
-    : "Scorul semantic este apropierea vectorilor, nu probabilitate; decizia include comparația articolelor complete.";
+    ? (needsManualReview
+      ? "Modelele nu au putut decide dacă textele integrale descriu același eveniment; verifică ambele linkuri înainte de alegere."
+      : "Verdict AI bazat pe comparația textelor integrale; vectorii de embedding provin din modele incompatibile.")
+    : (needsManualReview
+      ? "Scorul semantic este apropierea vectorilor, nu probabilitate; comparația AI a rămas neconcludentă, deci este necesară verificarea manuală."
+      : "Scorul semantic este apropierea vectorilor, nu probabilitate; decizia include comparația articolelor complete.");
   const currentLink = clickableUrl(item.url);
   // Older pending requests may predate the dedicated comparison_url field;
   // the similarity result already persisted the candidate URL in that case.
@@ -41,7 +46,7 @@ export function formatApprovalText(item) {
       `<i>Filtrul pe texte AI a fost eliminat. Poți reîncerca trimiterea textului salvat.</i>`;
   }
 
-  return `⏭️ <b>Posibil duplicat · scor semantic ${score}</b>\n\n` +
+  return `${needsManualReview ? "❔" : "⏭️"} <b>${needsManualReview ? "Similaritate neclară — verificare manuală" : `Posibil duplicat · scor semantic ${score}`}</b>\n\n` +
     `<b>Comparație între link-uri</b>\n` +
     `<b>Link primit:</b> ${currentLink}\n` +
     `<b>Știre/link similar deja procesat:</b> ${comparisonTitle} — ${comparisonLink}\n\n` +

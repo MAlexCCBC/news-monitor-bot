@@ -521,7 +521,9 @@ export function selectSimilarityCandidate(candidates) {
 }
 
 const AI_RETRIEVAL_FLOOR = 0.62;
-const AI_REVIEW_LIMIT = 3;
+// One batched Gemini request can review more candidates without spending
+// additional RPD. Keep the list bounded for unusually long stories.
+const AI_REVIEW_LIMIT = 5;
 
 function lexicalRetrievalScore(title, content, old) {
   const evidence = checkKeyEntitiesMatch(title, content, old.title || "", old.content || "");
@@ -537,24 +539,32 @@ function lexicalRetrievalScore(title, content, old) {
   );
 }
 
-function selectAiReviewCandidates(candidates) {
+export function selectAiReviewCandidates(candidates) {
   const vectorCandidates = candidates
     .filter((item) => item.embeddingComparable &&
       (item.score >= AI_RETRIEVAL_FLOOR || item.isDuplicate) &&
       (!item.samePublisher || item.isDuplicate || item.score >= item.samePublisherThreshold))
     .sort((a, b) => b.score - a.score);
   const lexicalCandidates = candidates
-    .filter((item) => !item.embeddingComparable && item.lexicalRetrievalScore !== null && !item.samePublisher)
+    // Lexical retrieval is independent of cosine score: relevant articles can
+    // have weak vectors even when they share a compatible embedding space.
+    .filter((item) => item.lexicalRetrievalScore !== null && !item.samePublisher &&
+      (!item.embeddingComparable || item.score < AI_RETRIEVAL_FLOOR))
     .sort((a, b) => b.lexicalRetrievalScore - a.lexicalRetrievalScore);
-  // Reserve one comparison slot for text-retrieved candidates from a different
-  // embedding space, so a primary->fallback model switch doesn't silently make
-  // all of the primary model's saved history invisible.
-  const selected = vectorCandidates.slice(0, Math.min(2, AI_REVIEW_LIMIT));
-  for (const candidate of lexicalCandidates) {
+  const crossSpaceLexical = lexicalCandidates.filter((item) => !item.embeddingComparable);
+  const compatibleLexical = lexicalCandidates.filter((item) => item.embeddingComparable);
+  // Prioritize likely false positives for AI veto, while preserving one
+  // cross-embedding and one weak-vector lexical retrieval slot for recall.
+  const selected = vectorCandidates.filter((item) => item.isDuplicate).slice(0, Math.max(0, AI_REVIEW_LIMIT - 2));
+  for (const candidate of [crossSpaceLexical[0], compatibleLexical[0]].filter(Boolean)) {
     if (selected.length >= AI_REVIEW_LIMIT) break;
-    selected.push(candidate);
+    if (!selected.includes(candidate)) selected.push(candidate);
   }
   for (const candidate of vectorCandidates) {
+    if (selected.length >= AI_REVIEW_LIMIT) break;
+    if (!selected.includes(candidate)) selected.push(candidate);
+  }
+  for (const candidate of lexicalCandidates) {
     if (selected.length >= AI_REVIEW_LIMIT) break;
     if (!selected.includes(candidate)) selected.push(candidate);
   }
@@ -581,6 +591,18 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
   }
   const resolved = candidates.map((candidate) => {
     const verdict = verdictByUrl.get(candidate.url);
+    if (verdict?.verdict === "uncertain") {
+      return {
+        ...candidate,
+        // Similarity gates lead to human approval, not automatic rejection.
+        // Keep an ambiguous likely match visible instead of silently passing it.
+        isDuplicate: true,
+        similarityZone: "NECESITĂ VERIFICARE (AI incert)",
+        similarityReason: verdict.reason || "Comparația AI nu a putut stabili dacă este același eveniment; verifică manual.",
+        similarityBasis: candidate.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
+        aiVerdict: "uncertain",
+      };
+    }
     if (verdict?.verdict !== "different") return candidate;
     return {
       ...candidate,
@@ -661,7 +683,7 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
       embeddingComparable,
       samePublisher,
       samePublisherThreshold: Math.max(threshold, 0.97),
-      lexicalRetrievalScore: embeddingComparable ? null : lexicalRetrievalScore(titleNew, leadNew, item),
+      lexicalRetrievalScore: samePublisher ? null : lexicalRetrievalScore(titleNew, leadNew, item),
     };
   });
   const localBest = selectSimilarityCandidate(candidates);

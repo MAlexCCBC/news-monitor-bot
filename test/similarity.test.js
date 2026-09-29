@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { applySimilarityAiReview, evaluate3ZoneSimilarity, isSamePublisherSource, selectSimilarityCandidate } from "../src/similarity/embedding.js";
+import { applySimilarityAiReview, evaluate3ZoneSimilarity, isSamePublisherSource, selectAiReviewCandidates, selectSimilarityCandidate } from "../src/similarity/embedding.js";
 
 test("same publisher requires 97% similarity and never inflates the reported score", () => {
   const bodyNew = "Sorin Grindeanu a anunțat că PSD va vota învestirea Guvernului după consultările de luni. Partidul a cerut clarificări privind programul economic și calendarul reformelor.";
@@ -33,6 +33,40 @@ test("AI similarity review can recover a false negative from a semantically retr
   assert.equal(result.isDuplicate, true);
   assert.equal(result.score, .69);
   assert.equal(result.similarityBasis, "semantic_ai");
+});
+
+test("AI uncertainty routes a candidate to human review instead of silently passing it", () => {
+  const candidate = {
+    url: "https://news.example/old", score: .66, isDuplicate: false,
+    embeddingComparable: true, similarityZone: "ALBA",
+  };
+  const result = applySimilarityAiReview(
+    [candidate], [candidate], { results: [{ verdict: "uncertain", reason: "Leadurile sunt incomplete" }] }
+  );
+  assert.equal(result.isDuplicate, true);
+  assert.equal(result.aiVerdict, "uncertain");
+  assert.match(result.similarityZone, /NECESITĂ VERIFICARE/);
+});
+
+test("AI candidate retrieval includes weak-vector lexical matches and prioritizes local positives", () => {
+  const heuristicPositive = { url: "positive", score: .75, isDuplicate: true, embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null };
+  const weakVectorLexical = { url: "lexical", score: .40, isDuplicate: false, embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: .72 };
+  const crossSpaceLexical = { url: "cross-space", score: 0, isDuplicate: false, embeddingComparable: false, samePublisher: false, lexicalRetrievalScore: .61 };
+  const highVectorDistractor = { url: "distractor", score: .94, isDuplicate: false, embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null };
+  const selected = selectAiReviewCandidates([
+    highVectorDistractor,
+    ...Array.from({ length: 5 }, (_, index) => ({
+      url: `distractor-${index}`, score: .90 - index * .01, isDuplicate: false,
+      embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null,
+    })),
+    weakVectorLexical,
+    crossSpaceLexical,
+    heuristicPositive,
+  ]);
+  assert.equal(selected[0].url, "positive");
+  assert.ok(selected.some((candidate) => candidate.url === "lexical"));
+  assert.ok(selected.some((candidate) => candidate.url === "cross-space"));
+  assert.equal(selected.length, 5);
 });
 
 test("AI similarity review can compare across embedding spaces without presenting a fake percentage", () => {

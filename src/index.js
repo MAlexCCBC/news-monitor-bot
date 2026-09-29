@@ -271,7 +271,9 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
       if (articleApprovals.length) {
         const history = getRecentNews();
         for (const pending of articleApprovals) {
-          const updated = pending.kind === "ai_text" ? { isDuplicate: false } : checkSimilarityEmbedding(
+          const updated = pending.kind === "ai_text" ? { isDuplicate: false } : pending.simResult?.aiVerdict === "uncertain"
+            ? pending.simResult
+            : checkSimilarityEmbedding(
             pending.simResult.embedding,
             pending.article.title || "",
             pending.article.content || "",

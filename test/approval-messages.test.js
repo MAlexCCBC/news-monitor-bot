@@ -65,3 +65,15 @@ test("cross-embedding AI duplicate is not misleadingly displayed as semantic sim
   assert.match(text, /confirmat prin AI/);
   assert.doesNotMatch(text, /0%/);
 });
+
+test("an uncertain AI comparison is clearly presented for manual review", () => {
+  const text = formatApprovalText({
+    kind: "article", url: "https://news.example/current",
+    article: { title: "Articol nou" }, comparisonUrl: "https://news.example/old",
+    comparisonTitle: "Articol anterior", similarity: 0,
+    simResult: { similarityBasis: "ai_cross_embedding", aiVerdict: "uncertain" },
+  });
+  assert.match(text, /Similaritate neclară — verificare manuală/);
+  assert.match(text, /Modelele nu au putut decide/);
+  assert.doesNotMatch(text, /confirmat prin AI/);
+});
