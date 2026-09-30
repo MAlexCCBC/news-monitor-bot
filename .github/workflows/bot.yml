@@ -40,13 +40,12 @@ jobs:
     permissions:
       contents: write
       actions: write
-    # O SINGURA instanta de bot: daca dai Run din nou cat timp botul ruleaza,
-    # instanta veche e oprita curat (isi persista baza de date la oprire) si
-    # cea noua preia. Fara asta, doua rulari simultan pe acelasi TG_SESSION
-    # sunt respinse de Telegram cu 406 AUTH_KEY_DUPLICATED.
+    # O SINGURA instanta de bot: run-urile noi asteapta run-ul curent, nu il
+    # anuleaza. Astfel deployment-urile nu intrerup procesarea/articolele, iar
+    # aceeasi sesiune Telegram nu este folosita de doua run-uri simultan.
     concurrency:
       group: news-bot-run
-      cancel-in-progress: true
+      cancel-in-progress: false
     env:
       TG_API_ID: ${{ secrets.TG_API_ID }}
       TG_API_HASH: ${{ secrets.TG_API_HASH }}

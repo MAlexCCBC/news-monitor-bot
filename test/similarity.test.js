@@ -27,6 +27,15 @@ test("AI similarity review can veto a false positive without changing the semant
   assert.equal(result.similarityZone, "AI RESPINS (evenimente diferite)");
 });
 
+test("a verified new development in the same crisis is not blocked as a duplicate", () => {
+  const local = [{ url: "https://news.example/old", score: .89, isDuplicate: true, embeddingComparable: true }];
+  const result = applySimilarityAiReview(local, [{ url: local[0].url }], {
+    results: [{ verdict: "new_development", reason: "Anunțarea unei noi date de desemnare, nu simpla așteptare a pașilor următori." }],
+  });
+  assert.equal(result.isDuplicate, false);
+  assert.equal(result.similarityZone, "AI RESPINS (informație nouă)");
+});
+
 test("AI similarity review can recover a false negative from a semantically retrieved article", () => {
   const local = [{ url: "https://news.example/old", score: .69, isDuplicate: false, embeddingComparable: true }];
   const result = applySimilarityAiReview(local, [{ url: local[0].url }], { results: [{ verdict: "duplicate", reason: "Aceeași decizie, titlu reformulat" }] });

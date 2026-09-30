@@ -24,7 +24,15 @@ test("similarity arbitration compares full article text and falls through malfor
       callModel: async (_model, prompt) => {
         prompts.push(prompt);
         calls++;
-        return { data: { candidates: [{ content: { parts: [{ text: calls === 1 ? "not json" : '{"results":[{"id":1,"verdict":"different","reason":"Fapte diferite"}]}' }] } }] } };
+        return { data: { candidates: [{ content: { parts: [{ text: calls === 1 ? "not json" : JSON.stringify({ results: [{
+          id: 1,
+          verdict: "different",
+          reason: "Articolele descriu fapte diferite.",
+          incoming_fact: { actor: "corpul nou", action: "este integral", object: "paragraful nou", stage: "final nou" },
+          candidate_fact: { actor: "corpul vechi", action: "este integral", object: "paragraful vechi", stage: "final vechi" },
+          incoming_evidence: "Corpul integral nou, inclusiv paragraful de final.",
+          candidate_evidence: "Corpul integral vechi, inclusiv paragraful de final.",
+        }] }) }] } }] } };
       },
     }
   );
@@ -34,7 +42,7 @@ test("similarity arbitration compares full article text and falls through malfor
   assert.match(prompts[0], /Aceeași conferință de presă, ședință, vizită sau comunicat NU este suficientă/);
   assert.match(prompts[0], /identifică mai întâi în minte faptul central/);
   assert.match(prompts[0], /Motivul trebuie să numească pe scurt faptul comun concret/);
-  assert.deepEqual(result.results, [{ verdict: "different", reason: "Fapte diferite" }]);
+  assert.deepEqual(result.results, [{ verdict: "different", reason: "Articolele descriu fapte diferite." }]);
 });
 
 test("similarity arbitration assigns explicit candidate IDs and distinguishes a visit announcement from its later outcome", async () => {
@@ -51,7 +59,15 @@ test("similarity arbitration assigns explicit candidate IDs and distinguishes a 
           data: {
             candidates: [{
               content: {
-                parts: [{ text: '{"results":[{"id":1,"verdict":"different","reason":"Primul anunță agenda, al doilea relatează întâlnirea desfășurată și discuțiile."}]}' }],
+                parts: [{ text: JSON.stringify({ results: [{
+                  id: 1,
+                  verdict: "different",
+                  reason: "Primul anunță agenda, al doilea relatează întâlnirea și discuțiile desfășurate.",
+                  incoming_fact: { actor: "Nicușor Dan", action: "relatează întâlnire", object: "securitatea regională", stage: "întâlnire desfășurată" },
+                  candidate_fact: { actor: "Nicușor Dan", action: "anunță agendă", object: "întâlnire cu președintele ceh", stage: "plan înaintea întâlnirii" },
+                  incoming_evidence: "Întâlnirea a avut loc astăzi, iar cei doi au discutat securitatea regională.",
+                  candidate_evidence: "Agenda anunțată include o întâlnire cu președintele ceh.",
+                }] }) }],
               },
             }],
           },
@@ -62,4 +78,75 @@ test("similarity arbitration assigns explicit candidate IDs and distinguishes a 
   assert.match(capturedPrompt, /CANDIDAT ID 1/);
   assert.match(capturedPrompt, /faptul central/);
   assert.equal(result.results[0].verdict, "different");
+});
+
+test("a generic duplicate verdict about the post-vote context is downgraded when event facts differ", () => {
+  const incoming = {
+    title: "Nicușor Dan anunță că luni va nominaliza un nou nume de prim-ministru, după consultări cu partidele",
+    content: "Președintele Nicușor Dan a anunțat că va avea luni dimineață consultări la Cotroceni și luni după-amiază va nominaliza o propunere de premier.",
+  };
+  const candidate = {
+    title: "Siegfried Mureșan: Așteptăm să vedem din partea președintelui României care sunt următorii pași / Radu Miruță: Nu vom lăsa ca PSD să se urce iarăși cu picioarele pe finanțele României",
+    content: "Siegfried Mureșan a declarat miercuri, după votul din Parlament, că PNL așteaptă să vadă din partea președintelui Nicușor Dan care sunt pașii următori. Radu Miruță a declarat că USR va continua colaborarea cu PNL.",
+  };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "duplicate",
+    reason: "Aceleași declarații oficiale imediate după vot.",
+    incoming_fact: { actor: "Nicușor Dan", action: "anunță consultări și desemnare", object: "va consulta partidele și va nominaliza luni un premier", stage: "plan viitor" },
+    candidate_fact: { actor: "Siegfried Mureșan", action: "așteaptă pași", object: "pașii următori ai președintelui", stage: "reacție după vot" },
+    incoming_evidence: "luni dimineață consultări la Cotroceni și luni după-amiază va nominaliza o propunere de premier",
+    candidate_evidence: "PNL așteaptă să vadă din partea președintelui Nicușor Dan care sunt pașii următori",
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "uncertain");
+  assert.match(result[0].reason, /Acțiunile centrale extrase diferă/);
+});
+
+test("a positive full-text duplicate requires exact evidence and matching event facts", () => {
+  const incoming = {
+    title: "Dan Motreanu: anticipatele pot schimba realitatea politică",
+    content: "Secretarul general al PNL, Dan Motreanu, a spus că alegerile anticipate pot schimba realitatea politică.",
+  };
+  const candidate = {
+    title: "Motreanu afirmă că alegerile anticipate pot schimba scena politică",
+    content: "Dan Motreanu, secretarul general al PNL, a declarat că alegerile anticipate pot schimba realitatea politică.",
+  };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    reason: "Aceeași declarație a lui Dan Motreanu despre efectul anticipatelor.",
+    incoming_fact: { actor: "Dan Motreanu", action: "afirmă schimbarea realității politice", object: "alegerile anticipate", stage: "declarație despre anticipate" },
+    candidate_fact: { actor: "Dan Motreanu", action: "afirmă schimbarea realității politice", object: "alegerile anticipate", stage: "declarație despre anticipate" },
+    incoming_evidence: "alegerile anticipate pot schimba realitatea politică",
+    candidate_evidence: "alegerile anticipate pot schimba realitatea politică",
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "duplicate");
+});
+
+test("duplicate evidence that is not an exact article excerpt becomes uncertain", () => {
+  const incoming = { title: "Anunțul oficial despre o decizie nouă", content: "Autoritățile au anunțat o decizie nouă privind proiectul." };
+  const candidate = { title: "Autoritățile anunță decizia", content: "A fost prezentată o hotărâre diferită." };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "duplicate",
+    reason: "Aceeași decizie.",
+    incoming_fact: { actor: "Autoritățile", action: "anunță decizia", object: "decizia nouă", stage: "anunț" },
+    candidate_fact: { actor: "Autoritățile", action: "anunță decizia", object: "decizia nouă", stage: "anunț" },
+    incoming_evidence: "Aceeași hotărâre a fost aprobată astăzi de autorități",
+    candidate_evidence: "Aceeași hotărâre a fost aprobată astăzi de autorități",
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "uncertain");
+  assert.match(result[0].reason, /Fragmentele de probă nu sunt citate exact/);
+});
+
+test("a negative verdict without traceable evidence becomes uncertain instead of silently missing a duplicate", () => {
+  const incoming = { title: "Anunțul despre proiectul X", content: "Primarul a anunțat astăzi că proiectul X va începe luni, după aprobarea bugetului." };
+  const candidate = { title: "Primarul anunță începerea proiectului X", content: "Proiectul X începe luni după ce bugetul a fost aprobat, a spus primarul." };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "different",
+    reason: "Formulările sunt diferite.",
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "uncertain");
+  assert.match(result[0].reason, /Lipsește fișa faptului central/);
 });

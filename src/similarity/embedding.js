@@ -628,7 +628,7 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
         aiVerdict: "uncertain",
       };
     }
-    if (verdict?.verdict !== "different") {
+    if (!["different", "new_development", "related_context"].includes(verdict?.verdict)) {
       if (candidate.isDuplicate && !reviewedCandidateUrls.has(candidate.url)) {
         return {
           ...candidate,
@@ -643,8 +643,9 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
     return {
       ...candidate,
       isDuplicate: false,
-      similarityZone: "AI RESPINS (evenimente diferite)",
-      similarityReason: verdict.reason || "Modelul AI a stabilit că articolele relatează evenimente diferite.",
+      similarityZone: verdict.verdict === "new_development" ? "AI RESPINS (informație nouă)" :
+        verdict.verdict === "related_context" ? "AI RESPINS (doar context comun)" : "AI RESPINS (evenimente diferite)",
+      similarityReason: verdict.reason || "Modelul AI a stabilit că articolele relatează informații distincte.",
       similarityBasis: "semantic_ai",
     };
   });
