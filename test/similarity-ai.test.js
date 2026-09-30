@@ -32,5 +32,34 @@ test("similarity arbitration compares full article text and falls through malfor
   assert.match(prompts[0], /Corpul integral nou, inclusiv paragraful de final/);
   assert.match(prompts[0], /Corpul integral vechi, inclusiv paragraful de final/);
   assert.match(prompts[0], /Aceeași conferință de presă, ședință, vizită sau comunicat NU este suficientă/);
+  assert.match(prompts[0], /identifică mai întâi în minte faptul central/);
+  assert.match(prompts[0], /Motivul trebuie să numească pe scurt faptul comun concret/);
   assert.deepEqual(result.results, [{ verdict: "different", reason: "Fapte diferite" }]);
+});
+
+test("similarity arbitration assigns explicit candidate IDs and distinguishes a visit announcement from its later outcome", async () => {
+  let capturedPrompt = "";
+  const result = await arbitrateSimilarity(
+    { title: "Dan s-a întâlnit cu președintele ceh", content: "Întâlnirea a avut loc astăzi, iar cei doi au discutat securitatea regională." },
+    [{ title: "Dan pleacă mâine în Cehia", content: "Agenda anunțată include o întâlnire cu președintele ceh." }],
+    {
+      models: ["test-model"],
+      modelFilter: async (models) => models,
+      callModel: async (_model, prompt) => {
+        capturedPrompt = prompt;
+        return {
+          data: {
+            candidates: [{
+              content: {
+                parts: [{ text: '{"results":[{"id":1,"verdict":"different","reason":"Primul anunță agenda, al doilea relatează întâlnirea desfășurată și discuțiile."}]}' }],
+              },
+            }],
+          },
+        };
+      },
+    }
+  );
+  assert.match(capturedPrompt, /CANDIDAT ID 1/);
+  assert.match(capturedPrompt, /faptul central/);
+  assert.equal(result.results[0].verdict, "different");
 });

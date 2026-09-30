@@ -67,7 +67,7 @@ test("an over-cap embedding positive is not allowed to block without a Gemini ve
   assert.match(result.similarityZone, /candidat neanalizat/);
 });
 
-test("AI candidate retrieval includes weak-vector lexical matches and prioritizes local positives", () => {
+test("AI candidate retrieval reserves room for lexical evidence and prioritizes local positives", () => {
   const heuristicPositive = { url: "positive", score: .75, isDuplicate: true, embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null };
   const weakVectorLexical = { url: "lexical", score: .40, isDuplicate: false, embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: .72 };
   const crossSpaceLexical = { url: "cross-space", score: 0, isDuplicate: false, embeddingComparable: false, samePublisher: false, lexicalRetrievalScore: .61 };
@@ -85,7 +85,58 @@ test("AI candidate retrieval includes weak-vector lexical matches and prioritize
   assert.equal(selected[0].url, "positive");
   assert.ok(selected.some((candidate) => candidate.url === "lexical"));
   assert.ok(selected.some((candidate) => candidate.url === "cross-space"));
-  assert.equal(selected.length, 5);
+  assert.equal(selected.length, 8);
+});
+
+test("strong embedding positives cannot crowd every lexical match out of Gemini's review batch", () => {
+  const embeddingPositives = Array.from({ length: 10 }, (_, index) => ({
+    url: `embedding-${index}`, score: .95 - index * .005, isDuplicate: true,
+    embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null,
+  }));
+  const exactEventByText = {
+    url: "same-event-lexical", score: .64, isDuplicate: false,
+    embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: .91,
+  };
+  const selected = selectAiReviewCandidates([...embeddingPositives, exactEventByText]);
+
+  assert.equal(selected.length, 8);
+  assert.ok(selected.includes(exactEventByText), "Gemini must see a strong article-text match even among many high-vector candidates");
+  assert.ok(selected.filter((candidate) => candidate.isDuplicate).length < 8,
+    "a strong lexical match must retain a place even when many vector positives are present");
+});
+
+test("Gemini's candidate batch reserves slots for the newest articles independently of similarity scores", () => {
+  const olderVectorMatches = Array.from({ length: 10 }, (_, index) => ({
+    url: `vector-${index}`, score: .92 - index * .01, isDuplicate: true,
+    embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null,
+  }));
+  const newest = {
+    url: "newest", score: .20, isDuplicate: false,
+    embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null,
+    historyRecencyRank: 0,
+  };
+  const nextNewest = {
+    url: "next-newest", score: .18, isDuplicate: false,
+    embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null,
+    historyRecencyRank: 1,
+  };
+  const selected = selectAiReviewCandidates([...olderVectorMatches, newest, nextNewest]);
+
+  assert.equal(selected.length, 8);
+  assert.ok(selected.includes(newest));
+  assert.ok(selected.includes(nextNewest));
+});
+
+test("Gemini still compares recent full-text stories when neither retrieval signal finds a match", () => {
+  const recentStories = Array.from({ length: 10 }, (_, index) => ({
+    url: `recent-${index}`, title: `Recent story ${index}`, content: `Full text ${index}`,
+    score: 0, isDuplicate: false, embeddingComparable: false,
+    samePublisher: false, lexicalRetrievalScore: null, historyRecencyRank: index,
+  }));
+  const selected = selectAiReviewCandidates(recentStories);
+
+  assert.equal(selected.length, 8);
+  assert.deepEqual(selected.map((candidate) => candidate.url), recentStories.slice(0, 8).map((candidate) => candidate.url));
 });
 
 test("cross-embedding articles from the same publisher are retrieved for Gemini arbitration", () => {

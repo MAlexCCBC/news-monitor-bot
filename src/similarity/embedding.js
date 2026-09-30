@@ -519,8 +519,10 @@ export function selectSimilarityCandidate(candidates) {
 
 const AI_RETRIEVAL_FLOOR = 0.62;
 // One batched Gemini request can review more candidates without spending
-// additional RPD. Keep the list bounded for unusually long stories.
-const AI_REVIEW_LIMIT = 5;
+// additional RPD. Reserve room for lexical matches as well as embedding
+// positives so a semantically similar but factually different story cannot
+// crowd out the actual same-event report.
+const AI_REVIEW_LIMIT = 8;
 
 function lexicalRetrievalScore(title, content, old) {
   const evidence = checkKeyEntitiesMatch(title, content, old.title || "", old.content || "");
@@ -544,29 +546,39 @@ export function selectAiReviewCandidates(candidates) {
       (item.samePublisher && item.isDuplicate))
     .sort((a, b) => b.score - a.score);
   const lexicalCandidates = candidates
-    // Lexical retrieval is independent of cosine score: relevant articles can
-    // have weak vectors even when they share a compatible embedding space.
-    .filter((item) => item.lexicalRetrievalScore !== null &&
-      ((!item.samePublisher && (!item.embeddingComparable || item.score < AI_RETRIEVAL_FLOOR)) ||
-        (item.samePublisher && !item.embeddingComparable)))
+    // Keep lexical evidence independent of vector score. A strong vector
+    // match is not a reason to omit another article whose title/opening facts
+    // are a closer match to the event being reported.
+    .filter((item) => Number.isFinite(item.lexicalRetrievalScore))
     .sort((a, b) => b.lexicalRetrievalScore - a.lexicalRetrievalScore);
-  const crossSpaceLexical = lexicalCandidates.filter((item) => !item.embeddingComparable);
-  const compatibleLexical = lexicalCandidates.filter((item) => item.embeddingComparable);
-  // Prioritize likely false positives for AI veto, while preserving one
-  // cross-embedding and one weak-vector lexical retrieval slot for recall.
-  const selected = vectorCandidates.filter((item) => item.isDuplicate).slice(0, Math.max(0, AI_REVIEW_LIMIT - 2));
-  for (const candidate of [crossSpaceLexical[0], compatibleLexical[0]].filter(Boolean)) {
-    if (selected.length >= AI_REVIEW_LIMIT) break;
-    if (!selected.includes(candidate)) selected.push(candidate);
-  }
-  for (const candidate of vectorCandidates) {
-    if (selected.length >= AI_REVIEW_LIMIT) break;
-    if (!selected.includes(candidate)) selected.push(candidate);
-  }
-  for (const candidate of lexicalCandidates) {
-    if (selected.length >= AI_REVIEW_LIMIT) break;
-    if (!selected.includes(candidate)) selected.push(candidate);
-  }
+  const selected = [];
+  const selectedUrls = new Set();
+  const addCandidates = (list, limit = AI_REVIEW_LIMIT) => {
+    let added = 0;
+    for (const candidate of list) {
+      if (selected.length >= AI_REVIEW_LIMIT || added >= limit) break;
+      const key = candidate.url || candidate;
+      if (selectedUrls.has(key)) continue;
+      selected.push(candidate);
+      selectedUrls.add(key);
+      added++;
+    }
+  };
+
+  // Let Gemini inspect likely false positives, but do not let them monopolize
+  // the batch. Independent headline/body matches and a small recency sample
+  // get their own retrieval budget even when embeddings miss the event.
+  const recentCandidates = candidates
+    .filter((item) => Number.isFinite(item.historyRecencyRank))
+    .sort((a, b) => a.historyRecencyRank - b.historyRecencyRank);
+  addCandidates(vectorCandidates.filter((item) => item.isDuplicate), 3);
+  addCandidates(lexicalCandidates, 3);
+  addCandidates(recentCandidates, 2);
+  addCandidates(vectorCandidates);
+  addCandidates(lexicalCandidates);
+  // If embedding and lexical retrieval found too few candidates, still let
+  // Gemini inspect recent full-text articles instead of silently skipping AI.
+  addCandidates(recentCandidates);
   return selected;
 }
 
@@ -681,7 +693,7 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
   // Titles/entities are a verdict guard, not a retrieval filter: using them to
   // select candidates here misses the same event when editors phrase headlines
   // differently.
-  const comparableItems = recentNewsWithEmbeddings.filter((item) => item.embedding?.length);
+  const historyItems = recentNewsWithEmbeddings;
   // Embed only the incoming story. Stored vectors are compared locally; never
   // re-embed history in the hot path. Gemini embedding spaces differ by model,
   // so use only vectors from the model that actually succeeded. Older records
@@ -689,9 +701,9 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
   const embedded = await embedArticles([{ title: titleNew, content: leadNew }]);
   const newEmbedding = embedded.embeddings[0];
   const reembeddedNews = [];
-  const compatibleItems = comparableItems.filter((item) => compatibleVector(newEmbedding, item, embedded.model));
+  const compatibleItems = historyItems.filter((item) => compatibleVector(newEmbedding, item, embedded.model));
   const compatibleUrls = new Set(compatibleItems.map((item) => item.url));
-  const candidates = comparableItems.map((item) => {
+  const candidates = historyItems.map((item, historyRecencyRank) => {
     const embeddingComparable = compatibleUrls.has(item.url);
     const samePublisher = isSamePublisherSource(incomingUrl, item.url);
     const rawSim = embeddingComparable ? cosineSimilarity(newEmbedding, item.embedding) : 0;
@@ -706,6 +718,7 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
       score: rawSim,
       embeddingComparable,
       samePublisher,
+      historyRecencyRank,
       samePublisherThreshold: Math.max(threshold, 0.97),
       lexicalRetrievalScore: samePublisher && embeddingComparable ? null : lexicalRetrievalScore(titleNew, leadNew, item),
     };
