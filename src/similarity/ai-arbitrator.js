@@ -18,6 +18,7 @@ export const SIMILARITY_AI_MODELS = [
   "gemma-4-26b-a4b-it",
   "gemini-flash-latest",
 ];
+const MAX_SIMILARITY_MODEL_ATTEMPTS = 3;
 
 function articleBlock(article) {
   const evidenceUnits = [article.title || "(fără titlu)", ...(article.content || "").split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean)];
@@ -294,29 +295,7 @@ function validateDifferentEvidence(result, incoming, candidate) {
   return null;
 }
 
-function retryableEvidenceReason(reason = "") {
-  return [
-    "Referințele de probă nu indică unități valide",
-    "Nu există o fișă completă a faptului central",
-    "Lipsește fișa completă a faptului central",
-    "Lipsește fișa faptului central necesară",
-    "Fragmentele exacte nu susțin suficient fișele",
-    "Fragmentele exacte nu susțin suficiente indicii textuale comune",
-    "Fragmentele citate nu au suficiente indicii textuale comune",
-    "Un verdict de duplicat trebuie susținut și de corpul ambelor articole",
-    "O diferență între evenimente trebuie susținută și de corpul ambelor articole",
-  ].some((problem) => reason.includes(problem));
-}
-
-function mergeCandidateResults(baseResults, candidateIndexes, retryResults) {
-  const merged = [...baseResults];
-  candidateIndexes.forEach((originalIndex, retryIndex) => {
-    merged[originalIndex] = retryResults[retryIndex];
-  });
-  return merged;
-}
-
-export function parseSimilarityReview(rawText, candidateCount, incoming = null, candidates = []) {
+export function parseSimilarityReview(rawText, candidateCount, incoming = null, candidates = [], { allowPartial = false } = {}) {
   const raw = String(rawText || "").trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   const firstBrace = raw.indexOf("{");
   const lastBrace = raw.lastIndexOf("}");
@@ -333,6 +312,7 @@ export function parseSimilarityReview(rawText, candidateCount, incoming = null, 
     const id = Number(result?.id);
     if (!Number.isInteger(id) || id < 1 || id > candidateCount || byId.has(id) ||
         !["same_report", "duplicate", "new_development", "related_context", "different", "uncertain"].includes(result?.verdict)) {
+      if (allowPartial) continue;
       throw new Error("Arbitrajul AI a returnat un verdict sau ID nevalid");
     }
     let verdict = result.verdict;
@@ -370,7 +350,7 @@ export function parseSimilarityReview(rawText, candidateCount, incoming = null, 
       }
       : { verdict, reason });
   }
-  if (byId.size !== candidateCount) throw new Error("Arbitrajul AI a omis candidați");
+  if (!allowPartial && byId.size !== candidateCount) throw new Error("Arbitrajul AI a omis candidați");
   return Array.from({ length: candidateCount }, (_, index) => byId.get(index + 1));
 }
 
@@ -394,54 +374,68 @@ export async function arbitrateSimilarity(incoming, candidates, {
   callModel = requestGemini,
 } = {}) {
   if (!candidates.length) return null;
-  const prompt = comparisonPrompt(incoming, candidates);
   const eligible = await modelFilter(models);
-  let bestEvidenceReview = null;
-  let evidenceFallbacksRemaining = 1;
-  let nextAttemptPrompt = prompt;
-  let attemptCandidateIndexes = candidates.map((_, index) => index);
-  let fallbackBaseResults = null;
-  for (const model of eligible) {
+  const resolvedResults = Array(candidates.length).fill(null);
+  const lastUncertainResults = Array(candidates.length).fill(null);
+  const checksByCandidate = Array.from({ length: candidates.length }, () => []);
+  let unresolvedIndexes = candidates.map((_, index) => index);
+  let attempted = 0;
+  while (eligible.length && unresolvedIndexes.length && attempted < MAX_SIMILARITY_MODEL_ATTEMPTS) {
+    const model = eligible[attempted++];
+    const attemptCandidateIndexes = [...unresolvedIndexes];
+    const attemptCandidates = attemptCandidateIndexes.map((index) => candidates[index]);
+    let prompt = comparisonPrompt(incoming, attemptCandidates);
+    if (attempted > 1) {
+      prompt += `\n\nREVERIFICARE DOAR PERECHILE NECLARE:\nAcestea sunt singurele perechi fără un verdict validat; rezultatele deja validate nu se reiau. Compară din nou textele integrale furnizate și emite un verdict susținut de cel puțin un paragraf de corp (E2 sau mai mare) din ambele articole. Citează numai ID-uri E# existente pentru candidatul respectiv; E1 este titlul, nu dovadă. Nu presupune că un răspuns anterior este corect și nu analiza alte perechi.`;
+    }
     let response;
     try {
-      response = await callModel(model, nextAttemptPrompt);
+      response = await callModel(model, prompt);
     } catch (error) {
       recordModelFailure(model, error);
       console.warn(`[similarity-ai] ${model} a eșuat (${describeGeminiError(error)}); încerc fallbackul următor.`);
       continue;
     }
     try {
-      const attemptCandidates = attemptCandidateIndexes.map((index) => candidates[index]);
       const attemptResults = parseSimilarityReview(
-        responseText(response.data), attemptCandidates.length, incoming, attemptCandidates
+        responseText(response.data), attemptCandidates.length, incoming, attemptCandidates, { allowPartial: true }
       );
-      const results = fallbackBaseResults
-        ? mergeCandidateResults(fallbackBaseResults, attemptCandidateIndexes, attemptResults)
-        : attemptResults;
-      console.log(`[similarity-ai] Comparație full-text reușită cu ${model} pentru ${attemptCandidates.length} candidat/candidați.`);
-      const retryableIndexes = results.flatMap((result, index) =>
-        result.verdict === "uncertain" && retryableEvidenceReason(result.reason) ? [index] : []
-      );
-      const retryableEvidenceCount = retryableIndexes.length;
-      if (retryableEvidenceCount) {
-        if (!bestEvidenceReview || retryableEvidenceCount < bestEvidenceReview.retryableEvidenceCount) {
-          bestEvidenceReview = { model, results, retryableEvidenceCount };
+      let resolvedThisRound = 0;
+      for (let localIndex = 0; localIndex < attemptResults.length; localIndex++) {
+        const result = attemptResults[localIndex];
+        if (!result) continue;
+        const originalIndex = attemptCandidateIndexes[localIndex];
+        checksByCandidate[originalIndex].push({
+          model,
+          verdict: result.modelVerdict || result.verdict,
+          validatedVerdict: result.verdict,
+          duplicateProbability: result.duplicateProbability ?? null,
+          reason: result.modelReason || result.reason,
+        });
+        const retained = {
+          ...result,
+          modelChecks: [...checksByCandidate[originalIndex]],
+        };
+        if (result.verdict === "uncertain") {
+          lastUncertainResults[originalIndex] = retained;
+        } else {
+          resolvedResults[originalIndex] = retained;
+          resolvedThisRound++;
         }
-        if (evidenceFallbacksRemaining > 0) {
-          evidenceFallbacksRemaining--;
-          fallbackBaseResults = results;
-          attemptCandidateIndexes = retryableIndexes;
-          const retryCandidates = attemptCandidateIndexes.map((index) => candidates[index]);
-          nextAttemptPrompt = `${comparisonPrompt(incoming, retryCandidates)}\n\nREVERIFICARE STRICTĂ A REFERINȚELOR:\nAnalizezi numai candidații de mai sus, fiecare cu ID-urile E# proprii. Răspunsul anterior nu a putut fi validat. E1 este titlul și nu poate fi folosit ca dovadă. Pentru fiecare verdict definit, citează cel puțin un paragraf de corp (E2 sau mai mare) din ambele articole; folosește numai ID-uri existente. Susține separat faptul central și diferența sau concordanța concretă. Dacă dovezile din corp nu permit validarea, răspunde "uncertain"; nu inventa referințe.`;
-          console.warn(`[similarity-ai] ${model}: dovezi incomplete/nevalide pentru ${retryableEvidenceCount} candidat/candidați; reanalizez doar aceste perechi cu un fallback Gemini.`);
-          continue;
-        }
-        return { model: bestEvidenceReview.model, results: bestEvidenceReview.results };
       }
-      return { model, results };
+      unresolvedIndexes = unresolvedIndexes.filter((index) => !resolvedResults[index]);
+      console.log(`[similarity-ai] ${model}: ${resolvedThisRound}/${attemptCandidateIndexes.length} candidat/candidați rezolvați; ${unresolvedIndexes.length} rămân pentru fallback.`);
     } catch (error) {
       console.warn(`[similarity-ai] ${model}: ${error.message}; încerc fallbackul următor.`);
     }
   }
-  return bestEvidenceReview ? { model: bestEvidenceReview.model, results: bestEvidenceReview.results } : null;
+  const results = candidates.map((_, index) => resolvedResults[index] || lastUncertainResults[index] || {
+    verdict: "uncertain",
+    reason: "Niciun model disponibil nu a returnat un verdict complet și validat pentru această pereche.",
+    modelChecks: [...checksByCandidate[index]],
+  });
+  return {
+    model: [...new Set(checksByCandidate.flat().map((check) => check.model))].join(",") || null,
+    results,
+  };
 }

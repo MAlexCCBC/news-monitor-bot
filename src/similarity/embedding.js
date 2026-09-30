@@ -624,6 +624,7 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
       similarityBasis: best.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
       aiVerdict: "duplicate",
       aiSimilarityProbability: result.duplicateProbability,
+      aiChecks: result.modelChecks || [],
     };
   }
   const resolved = candidates.map((candidate) => {
@@ -641,6 +642,7 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
         aiSuggestedVerdict: verdict.modelVerdict,
         aiRationale: verdict.modelReason,
         aiSimilarityProbability: verdict.duplicateProbability,
+        aiChecks: verdict.modelChecks || [],
       };
     }
     if (!["different", "new_development", "related_context"].includes(verdict?.verdict)) {

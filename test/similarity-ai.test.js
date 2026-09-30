@@ -9,6 +9,10 @@ test("similarity review parser requires one valid decision per candidate", () =>
     { verdict: "different", reason: "Alt eveniment" },
     { verdict: "duplicate", reason: "Aceeași relatare" },
   ]);
+  assert.deepEqual(parseSimilarityReview('{"results":[{"id":2,"verdict":"different","reason":"Alt eveniment"}]}', 2, null, [], { allowPartial: true }), [
+    undefined,
+    { verdict: "different", reason: "Alt eveniment" },
+  ]);
   assert.throws(() => parseSimilarityReview('{"results":[{"id":1,"verdict":"duplicate"}]}', 2), /a omis candidați/);
   assert.throws(() => parseSimilarityReview('{"results":[{"id":1,"verdict":"yes"}]}', 1), /verdict/);
 });
@@ -48,7 +52,7 @@ test("similarity arbitration compares full article text and falls through malfor
   assert.doesNotMatch(prompts[0], /"incoming_evidence_ids":\["E1"\]/);
   assert.match(prompts[0], /E1 este doar titlul, niciodată dovadă/);
   assert.match(prompts[0], /duplicate_probability/);
-  assert.deepEqual(result.results, [{ verdict: "different", reason: "Articolele descriu fapte diferite." }]);
+  assert.deepEqual(result.results.map(({ verdict, reason }) => ({ verdict, reason })), [{ verdict: "different", reason: "Articolele descriu fapte diferite." }]);
 });
 
 test("invalid evidence references trigger one Gemini fallback and preserve the best abstention if needed", async () => {
@@ -76,13 +80,13 @@ test("invalid evidence references trigger one Gemini fallback and preserve the b
   });
   assert.equal(calls, 2);
   assert.doesNotMatch(prompts[0], /REVERIFICARE STRICTĂ A REFERINȚELOR/);
-  assert.match(prompts[1], /REVERIFICARE STRICTĂ A REFERINȚELOR/);
-  assert.match(prompts[1], /citează cel puțin un paragraf de corp \(E2 sau mai mare\)/);
-  assert.equal(result.model, "gemini-citation-b");
+  assert.match(prompts[1], /REVERIFICARE DOAR PERECHILE NECLARE/);
+  assert.match(prompts[1], /susținut de cel puțin un paragraf de corp \(E2 sau mai mare\)/);
+  assert.equal(result.model, "gemini-citation-a,gemini-citation-b");
   assert.equal(result.results[0].verdict, "duplicate");
 });
 
-test("evidence fallback retries only the candidates whose citations failed and preserves other decisions", async () => {
+test("partial Gemini results are retained and only candidates without a valid verdict are retried", async () => {
   const incoming = {
     title: "Guvernul anunță reducerea TVA la alimente",
     content: "Guvernul României anunță reducerea taxei pe valoarea adăugată pentru alimente, printr-un proiect publicat luni.",
@@ -113,10 +117,10 @@ test("evidence fallback retries only the candidates whose citations failed and p
       prompts.push(prompt);
       calls++;
       const results = calls === 1
-        ? [
-          { ...same, incoming_evidence_ids: ["E1"], candidate_evidence_ids: ["E1"] },
+        ? [same]
+        : [
           {
-            id: 2,
+            id: 1,
             verdict: "different",
             reason: "Primul articol descrie TVA la alimente, al doilea accize la combustibil.",
             incoming_fact: { actor: "Guvernul României", action: "anunță reducerea", object: "taxa pe valoarea adăugată pentru alimente", stage: "proiect publicat luni" },
@@ -124,16 +128,42 @@ test("evidence fallback retries only the candidates whose citations failed and p
             incoming_evidence_ids: ["E2"],
             candidate_evidence_ids: ["E2"],
           },
-        ]
-        : [same];
+        ];
       return { data: { candidates: [{ content: { parts: [{ text: JSON.stringify({ results }) }] } }] } };
     },
   });
   assert.equal(calls, 2);
-  assert.match(prompts[1], /REVERIFICARE STRICTĂ A REFERINȚELOR/);
+  assert.match(prompts[1], /REVERIFICARE DOAR PERECHILE NECLARE/);
   assert.match(prompts[1], /CANDIDAT ID 1/);
-  assert.doesNotMatch(prompts[1], /majorarea accizelor la combustibil/);
+  assert.doesNotMatch(prompts[1], /Proiectul Guvernului reduce taxa pe alimente/);
+  assert.match(prompts[1], /majorarea accizelor la combustibil/);
   assert.deepEqual(result.results.map(({ verdict }) => verdict), ["duplicate", "different"]);
+  assert.equal(result.results[0].modelChecks[0].model, "gemini-focus-a");
+  assert.equal(result.results[1].modelChecks[0].model, "gemini-focus-b");
+});
+
+test("uncertain pairs get at most three independent model checks", async () => {
+  const attemptedModels = [];
+  const result = await arbitrateSimilarity(
+    { title: "Articol nou", content: "Conținutul complet al articolului nou." },
+    [{ title: "Candidat", content: "Conținutul complet al candidatului." }],
+    {
+      models: ["model-a", "model-b", "model-c", "model-d"],
+      modelFilter: async (models) => models,
+      callModel: async (model) => {
+        attemptedModels.push(model);
+        return { data: { candidates: [{ content: { parts: [{ text: JSON.stringify({ results: [{
+          id: 1,
+          verdict: "uncertain",
+          duplicate_probability: 50,
+          reason: `Nu pot decide cu ${model}.`,
+        }] }) }] } }] } };
+      },
+    }
+  );
+  assert.deepEqual(attemptedModels, ["model-a", "model-b", "model-c"]);
+  assert.equal(result.results[0].verdict, "uncertain");
+  assert.equal(result.results[0].modelChecks.length, 3);
 });
 
 test("similarity arbitration routes an unsupported visit-stage distinction to manual review", async () => {
