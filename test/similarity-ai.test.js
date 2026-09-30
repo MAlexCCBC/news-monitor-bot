@@ -47,6 +47,7 @@ test("similarity arbitration compares full article text and falls through malfor
   assert.match(prompts[0], /"incoming_evidence_ids":\["E2"\],"candidate_evidence_ids":\["E2"\]/);
   assert.doesNotMatch(prompts[0], /"incoming_evidence_ids":\["E1"\]/);
   assert.match(prompts[0], /E1 este doar titlul, niciodată dovadă/);
+  assert.match(prompts[0], /duplicate_probability/);
   assert.deepEqual(result.results, [{ verdict: "different", reason: "Articolele descriu fapte diferite." }]);
 });
 
@@ -183,6 +184,7 @@ test("a generic duplicate verdict about the post-vote context is downgraded when
   const result = parseSimilarityReview(JSON.stringify({ results: [{
     id: 1,
     verdict: "duplicate",
+    duplicate_probability: 94,
     reason: "Aceleași declarații oficiale imediate după vot.",
     incoming_fact: { actor: "Nicușor Dan", action: "anunță consultări și desemnare", object: "va consulta partidele și va nominaliza luni un premier", stage: "plan viitor" },
     candidate_fact: { actor: "Siegfried Mureșan", action: "așteaptă pași", object: "pașii următori ai președintelui", stage: "reacție după vot" },
@@ -190,6 +192,8 @@ test("a generic duplicate verdict about the post-vote context is downgraded when
     candidate_evidence_ids: ["E2"],
   }] }), 1, incoming, [candidate]);
   assert.equal(result[0].verdict, "uncertain");
+  assert.equal(result[0].modelVerdict, "duplicate");
+  assert.equal(result[0].duplicateProbability, 94);
   assert.match(result[0].reason, /Acțiunile centrale extrase diferă/);
 });
 
@@ -410,6 +414,29 @@ test("shared actor words cannot substitute for missing action, object, and stage
   }] }), 1, incoming, [candidate]);
   assert.equal(result[0].verdict, "uncertain");
   assert.match(result[0].reason, /nu susțin suficient fișele/);
+});
+
+test("same Nicușor Dan statement across two outlets keeps Gemini probability with evidence-backed duplicate", () => {
+  const hotnews = {
+    title: "Nicușor Dan, despre alegerile anticipate: Nu ne jucăm cu soarta țării",
+    content: "Nicușor Dan a respins alegerile anticipate. A spus că ar urma cinci luni fără rectificare bugetară și a citat mesajul investitorilor: nu alegeri anticipate. „Nu ne jucăm cu soarta acestei țări ca să vedem ce iese dintr-o alegere.”",
+  };
+  const digi24 = {
+    title: "Șeful statului: alegerile anticipate sună bine, dar în practică nu putem face rectificare",
+    content: "Nicușor Dan a spus că alegerile anticipate ar însemna cinci luni fără rectificare bugetară și că mesajul primit de la investitori a fost «nu alegeri anticipate». „Nu ne jucăm de-a soarta acestei țări ca să vedem ce iese dintr-o alegere.”",
+  };
+  const [result] = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    duplicate_probability: 98,
+    reason: "Ambele articole redau aceeași declarație despre respingerea anticipatelor și lipsa rectificării bugetare timp de cinci luni.",
+    incoming_fact: { actor: "Nicușor Dan", action: "respinge alegerile anticipate", object: "cinci luni fără rectificare bugetară", stage: "declarație după eșecul Guvernului Mureșan" },
+    candidate_fact: { actor: "Nicușor Dan", action: "respinge alegerile anticipate", object: "cinci luni fără rectificare bugetară", stage: "declarație după eșecul Guvernului Mureșan" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+  }] }), 1, hotnews, [digi24]);
+  assert.equal(result.verdict, "duplicate");
+  assert.equal(result.duplicateProbability, 98);
 });
 
 test("paragraph evidence references reject duplicate IDs, title-only support, and out-of-range units", () => {

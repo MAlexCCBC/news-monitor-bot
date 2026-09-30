@@ -660,7 +660,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
           }
         }
         console.log(
-          `[similar] ${simResult.similarityZone}: ${(simResult.similarity * 100).toFixed(1)}% cu ${simResult.similarUrl} - ${simResult.similarityReason}`
+          `[similar] ${simResult.similarityZone}: scor embedding ${(simResult.similarity * 100).toFixed(1)}%${Number.isInteger(simResult.aiSimilarityProbability) ? `; estimare Gemini duplicat ${simResult.aiSimilarityProbability}%` : ""} cu ${simResult.similarUrl} - ${simResult.similarityReason}`
         );
         const comparison = recentNews.find((entry) => entry.url === simResult.similarUrl);
         await createApprovalRequest({

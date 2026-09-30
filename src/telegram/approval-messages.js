@@ -26,14 +26,21 @@ export function formatApprovalText(item) {
     ? "Știre/link similar cu aprobare deja în așteptare"
     : "Știre/link similar deja procesat";
   const needsManualReview = item.simResult?.aiVerdict === "uncertain";
-  const score = item.simResult?.similarityBasis === "ai_cross_embedding"
+  const aiProbability = Number.isInteger(item.simResult?.aiSimilarityProbability)
+    ? `${item.simResult.aiSimilarityProbability}% estimare Gemini`
+    : null;
+  const score = aiProbability || (item.simResult?.similarityBasis === "ai_cross_embedding"
     ? (needsManualReview ? "neclar; verificare manuală" : "confirmat prin AI")
-    : `${(Number(item.similarity || 0) * 100).toFixed(0)}%${needsManualReview ? " · verdict AI neclar" : item.simResult?.similarityBasis === "semantic_ai" ? " · confirmat prin AI" : ""}`;
+    : `${(Number(item.similarity || 0) * 100).toFixed(0)}%${needsManualReview ? " · verdict AI neclar" : item.simResult?.similarityBasis === "semantic_ai" ? " · confirmat prin AI" : ""}`);
   const comparisonNote = item.simResult?.similarityBasis === "ai_cross_embedding"
-    ? (needsManualReview
+    ? (aiProbability
+      ? `Estimarea Gemini privește dacă este aceeași informație jurnalistică; nu este o probabilitate statistică calibrată.${needsManualReview ? ` Modelul a sugerat „${escapeHtml(item.simResult?.aiSuggestedVerdict || "incert")}", dar verificarea dovezilor cere confirmare manuală.` : ""}`
+      : needsManualReview
       ? "Modelele nu au putut decide dacă textele integrale descriu același eveniment; verifică ambele linkuri înainte de alegere."
       : "Verdict AI bazat pe comparația textelor integrale; vectorii de embedding provin din modele incompatibile.")
-    : (needsManualReview
+    : (aiProbability
+      ? `Estimarea Gemini privește dacă este aceeași informație jurnalistică; nu este o probabilitate statistică calibrată.${needsManualReview ? ` Modelul a sugerat „${escapeHtml(item.simResult?.aiSuggestedVerdict || "incert")}", dar verificarea dovezilor cere confirmare manuală.` : ""}`
+      : needsManualReview
       ? "Scorul semantic este apropierea vectorilor, nu probabilitate; comparația AI a rămas neconcludentă, deci este necesară verificarea manuală."
       : "Scorul semantic este apropierea vectorilor, nu probabilitate; decizia include comparația articolelor complete.");
   const currentLink = clickableUrl(item.url);
@@ -54,7 +61,7 @@ export function formatApprovalText(item) {
       `<i>Filtrul pe texte AI a fost eliminat. Poți reîncerca trimiterea textului salvat.</i>`;
   }
 
-  return `${needsManualReview ? "❔" : "⏭️"} <b>${needsManualReview ? "Similaritate neclară — verificare manuală" : `Posibil duplicat · scor semantic ${score}`}</b>\n\n` +
+  return `${needsManualReview ? "❔" : "⏭️"} <b>${needsManualReview ? `Similaritate neclară — verificare manuală${aiProbability ? ` · ${score}` : ""}` : `Posibil duplicat · ${score}`}</b>\n\n` +
     `<b>Comparație între link-uri</b>\n` +
     `<b>Link primit:</b> ${currentLink}\n` +
     `<b>${comparisonLabel}:</b> ${comparisonTitle} — ${comparisonLink}\n\n` +

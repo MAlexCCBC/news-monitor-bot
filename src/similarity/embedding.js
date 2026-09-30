@@ -623,6 +623,7 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
       similarityReason: result.reason || "Modelul AI a confirmat că articolele relatează același eveniment.",
       similarityBasis: best.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
       aiVerdict: "duplicate",
+      aiSimilarityProbability: result.duplicateProbability,
     };
   }
   const resolved = candidates.map((candidate) => {
@@ -637,6 +638,8 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
         similarityReason: verdict.reason || "Comparația AI nu a putut stabili dacă este același eveniment; verifică manual.",
         similarityBasis: candidate.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
         aiVerdict: "uncertain",
+        aiSuggestedVerdict: verdict.modelVerdict,
+        aiSimilarityProbability: verdict.duplicateProbability,
       };
     }
     if (!["different", "new_development", "related_context"].includes(verdict?.verdict)) {

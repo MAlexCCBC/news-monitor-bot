@@ -38,10 +38,11 @@ test("a verified new development in the same crisis is not blocked as a duplicat
 
 test("AI similarity review can recover a false negative from a semantically retrieved article", () => {
   const local = [{ url: "https://news.example/old", score: .69, isDuplicate: false, embeddingComparable: true }];
-  const result = applySimilarityAiReview(local, [{ url: local[0].url }], { results: [{ verdict: "duplicate", reason: "Aceeași decizie, titlu reformulat" }] });
+  const result = applySimilarityAiReview(local, [{ url: local[0].url }], { results: [{ verdict: "duplicate", reason: "Aceeași decizie, titlu reformulat", duplicateProbability: 97, modelVerdict: "same_report" }] });
   assert.equal(result.isDuplicate, true);
   assert.equal(result.score, .69);
   assert.equal(result.similarityBasis, "semantic_ai");
+  assert.equal(result.aiSimilarityProbability, 97);
 });
 
 test("AI uncertainty routes a candidate to human review instead of silently passing it", () => {
@@ -50,11 +51,13 @@ test("AI uncertainty routes a candidate to human review instead of silently pass
     embeddingComparable: true, similarityZone: "ALBA",
   };
   const result = applySimilarityAiReview(
-    [candidate], [candidate], { results: [{ verdict: "uncertain", reason: "Leadurile sunt incomplete" }] }
+    [candidate], [candidate], { results: [{ verdict: "uncertain", reason: "Leadurile sunt incomplete", duplicateProbability: 73, modelVerdict: "uncertain" }] }
   );
   assert.equal(result.isDuplicate, true);
   assert.equal(result.aiVerdict, "uncertain");
   assert.match(result.similarityZone, /NECESITĂ VERIFICARE/);
+  assert.equal(result.aiSimilarityProbability, 73);
+  assert.equal(result.aiSuggestedVerdict, "uncertain");
 });
 
 test("an embedding-only positive becomes manual review when Gemini cannot arbitrate", () => {

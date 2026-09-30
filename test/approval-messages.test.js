@@ -14,7 +14,8 @@ test("link similarity prompt labels the link-to-link comparison and exposes both
   });
 
   assert.match(text, /Comparație între link-uri/);
-  assert.match(text, /scor semantic 91%/);
+  assert.match(text, /Posibil duplicat · 91%/);
+  assert.match(text, /Scorul semantic este apropierea vectorilor/);
   assert.match(text, /nu probabilitate/);
   assert.match(text, /href="https:\/\/news\.example\/current\?id=1&amp;x=2"/);
   assert.match(text, /<a href="https:\/\/news\.example\/current\?id=1&amp;x=2">https:\/\/news\.example\/current\?id=1&amp;x=2<\/a>/);
@@ -71,11 +72,13 @@ test("an uncertain AI comparison is clearly presented for manual review", () => 
     kind: "article", url: "https://news.example/current",
     article: { title: "Articol nou" }, comparisonUrl: "https://news.example/old",
     comparisonTitle: "Articol anterior", similarity: 0,
-    simResult: { similarityBasis: "ai_cross_embedding", aiVerdict: "uncertain" },
+    simResult: { similarityBasis: "ai_cross_embedding", aiVerdict: "uncertain", aiSuggestedVerdict: "same_report", aiSimilarityProbability: 96 },
   });
   assert.match(text, /Similaritate neclară — verificare manuală/);
-  assert.match(text, /Modelele nu au putut decide/);
-  assert.doesNotMatch(text, /confirmat prin AI/);
+  assert.match(text, /96% estimare Gemini/);
+  assert.match(text, /a sugerat „same_report"/);
+  assert.match(text, /nu este o probabilitate statistică calibrată/);
+  assert.doesNotMatch(text, /scor semantic 0%/);
 });
 
 test("pending-approval duplicates are labeled as awaiting review and show attached sources", () => {
