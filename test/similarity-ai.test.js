@@ -44,6 +44,9 @@ test("similarity arbitration compares full article text and falls through malfor
   assert.match(prompts[0], /identifică mai întâi în minte faptul central/);
   assert.match(prompts[0], /valorile concrete centrale/);
   assert.match(prompts[0], /Motivul trebuie să numească pe scurt faptul comun concret/);
+  assert.match(prompts[0], /"incoming_evidence_ids":\["E2"\],"candidate_evidence_ids":\["E2"\]/);
+  assert.doesNotMatch(prompts[0], /"incoming_evidence_ids":\["E1"\]/);
+  assert.match(prompts[0], /E1 este doar titlul, niciodată dovadă/);
   assert.deepEqual(result.results, [{ verdict: "different", reason: "Articolele descriu fapte diferite." }]);
 });
 
@@ -73,9 +76,63 @@ test("invalid evidence references trigger one Gemini fallback and preserve the b
   assert.equal(calls, 2);
   assert.doesNotMatch(prompts[0], /REVERIFICARE STRICTĂ A REFERINȚELOR/);
   assert.match(prompts[1], /REVERIFICARE STRICTĂ A REFERINȚELOR/);
-  assert.match(prompts[1], /cel puțin un paragraf de corp \(E2 sau mai mare\)/);
+  assert.match(prompts[1], /citează cel puțin un paragraf de corp \(E2 sau mai mare\)/);
   assert.equal(result.model, "gemini-citation-b");
   assert.equal(result.results[0].verdict, "duplicate");
+});
+
+test("evidence fallback retries only the candidates whose citations failed and preserves other decisions", async () => {
+  const incoming = {
+    title: "Guvernul anunță reducerea TVA la alimente",
+    content: "Guvernul României anunță reducerea taxei pe valoarea adăugată pentru alimente, printr-un proiect publicat luni.",
+  };
+  const duplicate = {
+    title: "Proiectul Guvernului reduce taxa pe alimente",
+    content: "Guvernul României anunță reducerea taxei pe valoarea adăugată pentru alimente, printr-un proiect publicat luni.",
+  };
+  const distinct = {
+    title: "Guvernul anunță majorarea accizelor la combustibil",
+    content: "Guvernul României anunță majorarea accizelor aplicate combustibilului, printr-un proiect publicat luni.",
+  };
+  const prompts = [];
+  let calls = 0;
+  const same = {
+    id: 1,
+    verdict: "same_report",
+    reason: "Ambele articole relatează același proiect de reducere a TVA la alimente.",
+    incoming_fact: { actor: "Guvernul României", action: "anunță reducerea taxei", object: "taxa pe valoarea adăugată pentru alimente", stage: "proiect publicat luni" },
+    candidate_fact: { actor: "Guvernul României", action: "anunță reducerea taxei", object: "taxa pe valoarea adăugată pentru alimente", stage: "proiect publicat luni" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+  };
+  const result = await arbitrateSimilarity(incoming, [duplicate, distinct], {
+    models: ["gemini-focus-a", "gemini-focus-b"],
+    modelFilter: async (models) => models,
+    callModel: async (_model, prompt) => {
+      prompts.push(prompt);
+      calls++;
+      const results = calls === 1
+        ? [
+          { ...same, incoming_evidence_ids: ["E1"], candidate_evidence_ids: ["E1"] },
+          {
+            id: 2,
+            verdict: "different",
+            reason: "Primul articol descrie TVA la alimente, al doilea accize la combustibil.",
+            incoming_fact: { actor: "Guvernul României", action: "anunță reducerea", object: "taxa pe valoarea adăugată pentru alimente", stage: "proiect publicat luni" },
+            candidate_fact: { actor: "Guvernul României", action: "anunță majorarea", object: "accize aplicate combustibilului", stage: "proiect publicat luni" },
+            incoming_evidence_ids: ["E2"],
+            candidate_evidence_ids: ["E2"],
+          },
+        ]
+        : [same];
+      return { data: { candidates: [{ content: { parts: [{ text: JSON.stringify({ results }) }] } }] } };
+    },
+  });
+  assert.equal(calls, 2);
+  assert.match(prompts[1], /REVERIFICARE STRICTĂ A REFERINȚELOR/);
+  assert.match(prompts[1], /CANDIDAT ID 1/);
+  assert.doesNotMatch(prompts[1], /majorarea accizelor la combustibil/);
+  assert.deepEqual(result.results.map(({ verdict }) => verdict), ["duplicate", "different"]);
 });
 
 test("similarity arbitration routes an unsupported visit-stage distinction to manual review", async () => {
