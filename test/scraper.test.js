@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildWordpressArticleHtml, parseArticleHtml } from "../src/scraper/article.js";
+import axios from "axios";
+import { buildWordpressArticleHtml, fetchArticle, parseArticleHtml } from "../src/scraper/article.js";
 import { articleFocus, cleanArticleContent } from "../src/scraper/clean-content.js";
 
 test("G4Media leaf divs preserve the lead and do not import site furniture", () => {
@@ -32,6 +33,44 @@ test("G4Media WordPress REST fallback keeps its title, full body, date, and feat
   assert.match(article.content, /Primul paragraf politic/);
   assert.match(article.content, /Al doilea paragraf/);
   assert.equal(article.imageUrl, "https://cdn.example/image.jpg?size=large&x=1");
+});
+
+test("article scrape rejects a successful redirect to Digi24 homepage", async () => {
+  const originalGet = axios.get;
+  axios.get = async () => ({
+    data: `<html><head><title>Digi24 - Stiri - Informația la putere!</title>
+      <link rel="canonical" href="https://www.digi24.ro/"></head><body>
+      <p>Articolul recomandat de pe prima pagină are suficient text pentru extracție.</p>
+      </body></html>`,
+    request: { res: { responseUrl: "https://www.digi24.ro/" } },
+  });
+  try {
+    await assert.rejects(
+      fetchArticle("https://www.digi24.ro/stiri/actualitate/politica/articol-123456"),
+      /redirected article URL to homepage|generic homepage/,
+    );
+  } finally {
+    axios.get = originalGet;
+  }
+});
+
+test("article scrape allows a changed publisher slug when the article ID is retained", async () => {
+  const originalGet = axios.get;
+  axios.get = async () => ({
+    data: `<html><head><title>Știre verificată</title>
+      <link rel="canonical" href="https://www.mediafax.ro/politic/titlu-actualizat-123456"></head>
+      <body><article><h1>Știre verificată</h1><div class="article-content">
+      <p>Corpul real al articolului este disponibil și descrie în detaliu evenimentul politic.</p>
+      </div></article></body></html>`,
+    request: { res: { responseUrl: "https://www.mediafax.ro/politic/titlu-actualizat-123456" } },
+  });
+  try {
+    const article = await fetchArticle("https://www.mediafax.ro/politic/titlu-vechi-123456");
+    assert.equal(article.title, "Știre verificată");
+    assert.match(article.content, /Corpul real al articolului/);
+  } finally {
+    axios.get = originalGet;
+  }
 });
 
 test("stored donation and cookie blocks do not count as article evidence", () => {

@@ -42,8 +42,40 @@ test("similarity arbitration compares full article text and falls through malfor
   assert.match(prompts[0], /Corpul integral vechi, inclusiv paragraful de final/);
   assert.match(prompts[0], /Aceeași conferință de presă, ședință, vizită sau comunicat NU este suficientă/);
   assert.match(prompts[0], /identifică mai întâi în minte faptul central/);
+  assert.match(prompts[0], /valorile concrete centrale/);
   assert.match(prompts[0], /Motivul trebuie să numească pe scurt faptul comun concret/);
   assert.deepEqual(result.results, [{ verdict: "different", reason: "Articolele descriu fapte diferite." }]);
+});
+
+test("invalid evidence references trigger one Gemini fallback and preserve the best abstention if needed", async () => {
+  const incoming = { title: "Guvernul publică proiectul de reducere TVA", content: "Guvernul a publicat proiectul pentru reducerea TVA la alimente în aprilie." };
+  const candidate = { title: "Proiectul Guvernului reduce TVA la alimente", content: "Guvernul a publicat proiectul pentru reducerea TVA la alimente în aprilie." };
+  let calls = 0;
+  const prompts = [];
+  const result = await arbitrateSimilarity(incoming, [candidate], {
+    models: ["gemini-citation-a", "gemini-citation-b"],
+    modelFilter: async (models) => models,
+    callModel: async (_model, prompt) => {
+      calls++;
+      prompts.push(prompt);
+      const invalid = calls === 1;
+      return { data: { candidates: [{ content: { parts: [{ text: JSON.stringify({ results: [{
+        id: 1,
+        verdict: "same_report",
+        reason: "Ambele articole descriu același proiect de reducere TVA.",
+        incoming_fact: { actor: "Guvernul", action: "publică proiectul", object: "reducerea TVA la alimente", stage: "proiect publicat în aprilie" },
+        candidate_fact: { actor: "Guvernul", action: "publică proiectul", object: "reducerea TVA la alimente", stage: "proiect publicat în aprilie" },
+        incoming_evidence_ids: ["E2"],
+        candidate_evidence_ids: [invalid ? "E99" : "E2"],
+      }] }) }] } }] } };
+    },
+  });
+  assert.equal(calls, 2);
+  assert.doesNotMatch(prompts[0], /REVERIFICARE STRICTĂ A REFERINȚELOR/);
+  assert.match(prompts[1], /REVERIFICARE STRICTĂ A REFERINȚELOR/);
+  assert.match(prompts[1], /cel puțin un paragraf de corp \(E2 sau mai mare\)/);
+  assert.equal(result.model, "gemini-citation-b");
+  assert.equal(result.results[0].verdict, "duplicate");
 });
 
 test("similarity arbitration routes an unsupported visit-stage distinction to manual review", async () => {
@@ -144,6 +176,28 @@ test("a positive full-text duplicate requires exact evidence and matching event 
     candidate_evidence_ids: ["E2"],
   }] }), 1, incoming, [candidate]);
   assert.equal(result[0].verdict, "duplicate", result[0].reason);
+});
+
+test("conflicting central vote estimates are sent to manual review, not auto-merged", () => {
+  const incoming = {
+    title: "Kelemen Hunor estimează 229 de voturi teoretice pentru Guvernul Mureșan",
+    content: "Înainte de vot, Kelemen Hunor a estimat 229 de voturi teoretice pentru Guvernul Mureșan, sub pragul de 233 de voturi necesare.",
+  };
+  const candidate = {
+    title: "Kelemen Hunor nu vede voturile pentru Guvernul Mureșan",
+    content: "Înainte de vot, Kelemen Hunor a spus la RFI că nu vede acele voturi dincolo de 170, 171 pentru Guvernul Mureșan; pragul rămâne 233.",
+  };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    reason: "Kelemen Hunor vorbește în ambele articole despre șansele Guvernului Mureșan la vot.",
+    incoming_fact: { actor: "Kelemen Hunor", action: "estimează voturile", object: "voturile Guvernului Mureșan", stage: "înainte de vot" },
+    candidate_fact: { actor: "Kelemen Hunor", action: "estimează voturile", object: "voturile Guvernului Mureșan", stage: "înainte de vot" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "uncertain");
+  assert.match(result[0].reason, /Estimările numerice privind numărul de voturi diferă/);
 });
 
 test("duplicate evidence with invented paragraph IDs becomes uncertain", () => {
@@ -315,6 +369,60 @@ test("paragraph evidence references reject duplicate IDs, title-only support, an
     const result = parseSimilarityReview(JSON.stringify({ results: [{ ...base, incoming_evidence_ids: incomingIds, candidate_evidence_ids: candidateIds }] }), 1, incoming, [candidate]);
     assert.equal(result[0].verdict, "uncertain");
   }
+});
+
+test("near-verbatim full article bodies rescue a duplicate when Gemini cites bad evidence IDs", () => {
+  const sharedCopy = Array.from({ length: 120 }, (_, index) => `detaliu${index}`).join(" ");
+  const incoming = { title: "Titlu reformulat A", content: sharedCopy };
+  const candidate = { title: "Titlu reformulat B", content: sharedCopy.replaceAll(" ", " , ") };
+  const [result] = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    reason: "Aceeași relatare.",
+    incoming_fact: { actor: "autoritatea A", action: "decide", object: "eveniment", stage: "acum" },
+    candidate_fact: { actor: "autoritatea B", action: "publică", object: "relatare", stage: "ieri" },
+    incoming_evidence_ids: ["E99"],
+    candidate_evidence_ids: ["E99"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result.verdict, "duplicate");
+  assert.match(result.reason, /aproape integral același text/);
+});
+
+test("substantial syndication rescues a duplicate when the shorter outlet reuses most of its full text", () => {
+  const sharedReport = Array.from({ length: 120 }, (_, index) => `reportaj${index}`).join(" ");
+  const incomingOnly = Array.from({ length: 240 }, (_, index) => `detaliuNou${index}`).join(" ");
+  const candidateOnly = Array.from({ length: 70 }, (_, index) => `detaliuReluat${index}`).join(" ");
+  const incoming = { title: "Titlu A", content: `${sharedReport} ${incomingOnly}` };
+  const candidate = { title: "Titlu B", content: `${sharedReport} ${candidateOnly}` };
+  const [result] = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "duplicate",
+    reason: "Ambele articole redau același material preluat.",
+    incoming_fact: { actor: "sursă", action: "relatează", object: "reportaj", stage: "publicare" },
+    candidate_fact: { actor: "sursă", action: "relatează", object: "reportaj", stage: "publicare" },
+    incoming_evidence_ids: ["E99"],
+    candidate_evidence_ids: ["E99"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result.verdict, "duplicate");
+  assert.match(result.reason, /aproape integral același text/);
+});
+
+test("shared background alone cannot use the near-verbatim rescue for a duplicate", () => {
+  const sharedContext = Array.from({ length: 120 }, (_, index) => `context${index}`).join(" ");
+  const specificA = Array.from({ length: 120 }, (_, index) => `alpha${index}`).join(" ");
+  const specificB = Array.from({ length: 120 }, (_, index) => `beta${index}`).join(" ");
+  const incoming = { title: "Evenimentul A", content: `${sharedContext} ${specificA}` };
+  const candidate = { title: "Evenimentul B", content: `${sharedContext} ${specificB}` };
+  const [result] = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    reason: "Au context comun.",
+    incoming_fact: { actor: "actor A", action: "acțiunea A", object: "obiect A", stage: "etapa A" },
+    candidate_fact: { actor: "actor B", action: "acțiunea B", object: "obiect B", stage: "etapa B" },
+    incoming_evidence_ids: ["E99"],
+    candidate_evidence_ids: ["E99"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result.verdict, "uncertain");
 });
 
 test("metamorphic object-substitution cases cannot turn a shared policy label into a confirmed duplicate", () => {

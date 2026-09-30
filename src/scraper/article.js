@@ -97,7 +97,9 @@ async function getWithRetry(url, attempts = 3) {
 
 export async function fetchArticle(url) {
   try {
-    const { data: html } = await getWithRetry(url);
+    const response = await getWithRetry(url);
+    assertArticleResponseMatchesRequest(response, url);
+    const { data: html } = response;
     return parseArticleHtml(html, url);
   } catch (error) {
     const host = new URL(url).hostname.replace(/^www\./, "");
@@ -124,6 +126,44 @@ export async function fetchArticle(url) {
       console.error(`[scraper] REST G4Media indisponibil după 403 (${url}): ${fallbackError.message}`);
       throw error;
     }
+  }
+}
+
+function assertArticleResponseMatchesRequest(response, requestedUrl) {
+  const requested = new URL(requestedUrl);
+  const html = response?.data;
+  const $ = cheerio.load(typeof html === "string" ? html : "");
+  const resolvedUrl = response?.request?.res?.responseUrl || response?.request?.responseURL;
+  const canonicalUrl = $('link[rel="canonical"]').attr("href") ||
+    $('meta[property="og:url"]').attr("content");
+
+  for (const candidate of [resolvedUrl, canonicalUrl]) {
+    if (!candidate) continue;
+    let resolved;
+    try {
+      resolved = new URL(candidate, requested);
+    } catch {
+      continue;
+    }
+
+    if (resolved.hostname.replace(/^www\./, "") !== requested.hostname.replace(/^www\./, "")) continue;
+    const resolvedPath = resolved.pathname.replace(/\/+$/, "");
+    if (!resolvedPath) {
+      throw new Error(`publisher redirected article URL to homepage: ${requestedUrl}`);
+    }
+
+    // Publishers may update a headline slug while retaining the same numeric
+    // article ID. That is a legitimate canonical redirect; a different ID is not.
+    const requestedId = requested.pathname.match(/(\d{5,})(?:\D*)$/)?.[1];
+    const resolvedId = resolved.pathname.match(/(\d{5,})(?:\D*)$/)?.[1];
+    if (requestedId && resolvedId && requestedId !== resolvedId) {
+      throw new Error(`publisher returned a different article ID (${resolvedId}) for ${requestedUrl}`);
+    }
+  }
+
+  const pageTitle = ($("title").first().text() || $("h1").first().text() || "").trim();
+  if (/^Digi24\s*[-|–]\s*Știri\s*[-|–]\s*Informația la putere!?$/i.test(pageTitle)) {
+    throw new Error(`publisher returned its generic homepage instead of the requested article: ${requestedUrl}`);
   }
 }
 

@@ -36,6 +36,7 @@ Reguli:
 - Marchează "same_report" numai când fapta centrală este aceeași relatare/informație, inclusiv republicarea ori reformularea aceleiași declarații, decizii sau întâmplări. Aceeași criză, ședință ori reacție la un vot nu înseamnă aceeași informație.
 - Aceeași conferință de presă, ședință, vizită sau comunicat NU este suficientă pentru verdictul "same_report". Dacă știrile au ca element central răspunsuri, decizii, acuzații ori evoluții diferite, marchează "new_development" sau "related_context", chiar dacă actorii și contextul politic se suprapun.
 - Un anunț despre o vizită și relatarea sosirii/întâlnirii ulterioare, o ședință și decizia luată ulterior, ori două declarații diferite în aceeași criză sunt evoluții distincte: marchează "different" dacă faptul central s-a schimbat.
+- Verifică valorile concrete centrale (de exemplu număr de voturi, sumă, procent sau dată). Estimări diferite ale aceluiași rezultat nu sunt aceeași informație; tratează-le ca actualizare/relatări distincte, nu le uni doar pentru că actorul și subiectul coincid.
 - Declarații diferite ale aceleiași persoane, întâlniri diferite, etape diferite ale unui proces și evenimente ulterioare distincte NU sunt duplicate. Potrivește acțiunea/afirmația centrală, nu simpla participare la același context.
 - Nu marca "same_report" pe baza unui singur nume, a aceleiași teme sau a unei explicații vagi precum "relatează aceeași criză". O declarație ulterioară sau o informație concretă nouă (de exemplu, anunțarea datei unei noi desemnări) este o actualizare, nu duplicatul unei reacții anterioare care doar aștepta pașii următori.
 - Pentru fiecare știre, extrage evenimentul central în câmpurile actor, acțiune, obiect și etapă. Scrie actorul ca nume canonic (fără funcție/titlu când numele apare în text). Canonicalizează acțiunea folosind o etichetă scurtă și identică atunci când sensul este identic (ex.: "anunță numirea" -> "anunță desemnare").
@@ -83,6 +84,29 @@ function overlapRatio(left, right) {
   // Divide by the union, not the shorter phrase: a generic one-word object
   // such as "TVA" must not fully match "TVA la combustibil".
   return shared / (a.size + b.size - shared);
+}
+
+function bodyShingles(content, size = 5) {
+  const tokens = String(content || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .toLocaleLowerCase("ro").match(/[\p{L}\p{N}]{2,}/gu) || [];
+  const shingles = new Set();
+  for (let index = 0; index <= tokens.length - size; index++) {
+    shingles.add(tokens.slice(index, index + size).join(" "));
+  }
+  return shingles;
+}
+
+function bodiesAreNearCopies(incoming, candidate) {
+  const left = bodyShingles(incoming?.content);
+  const right = bodyShingles(candidate?.content);
+  if (Math.min(left.size, right.size) < 100) return false;
+  let shared = 0;
+  for (const shingle of left) if (right.has(shingle)) shared++;
+  const containment = shared / Math.min(left.size, right.size);
+  const jaccard = shared / (left.size + right.size - shared);
+  // Require substantial reuse across most of the shorter article as well as
+  // broad union overlap; generic background paragraphs alone stay below both.
+  return containment >= 0.6 && jaccard >= 0.22;
 }
 
 function sharedFactTerms(left, right) {
@@ -159,6 +183,25 @@ function evidenceSupportsFact(evidence, fact) {
   return objectIsGrounded && sharedFactTerms(evidence, otherFactTerms) > 0;
 }
 
+function voteCounts(text) {
+  const counts = new Set();
+  const pattern = /(?:(\d{1,3}(?:[ .]\d{3})*(?:,\d+)?)\s*(?:de\s+)?voturi?\b|\bvoturi?\D{0,40}?(\d{1,3}(?:[.,]\d+)?))/giu;
+  for (const match of String(text || "").matchAll(pattern)) {
+    const raw = match[1] || match[2];
+    if (raw) counts.add(raw.replace(/[ .]/g, "").replace(",", "."));
+  }
+  return counts;
+}
+
+function hasConflictingVoteCounts(left, right) {
+  const estimateSignal = /\b(?:teoretic\w*|estim\w*|nu\s+vede|nu\s+vad|dincolo\s+de|calcule\s+politice|sanse)\b/iu;
+  if (!estimateSignal.test(left || "") || !estimateSignal.test(right || "")) return false;
+  const a = voteCounts(left);
+  const b = voteCounts(right);
+  if (!a.size || !b.size) return false;
+  return Array.from(a).some((value) => !b.has(value)) && Array.from(b).some((value) => !a.has(value));
+}
+
 function articleEvidenceUnits(article) {
   return [article?.title || "(fără titlu)", ...(article?.content || "").split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean)];
 }
@@ -210,6 +253,9 @@ function validateDuplicateEvidence(result, incoming, candidate) {
   }
   if (normalizeEvidenceText(incomingFact.stage) !== normalizeEvidenceText(candidateFact.stage)) {
     return "Etapa sau momentul relatat diferă.";
+  }
+  if (hasConflictingVoteCounts(incomingEvidence, candidateEvidence)) {
+    return "Estimările numerice privind numărul de voturi diferă între articole; o posibilă actualizare necesită verificare manuală.";
   }
   // Cross-outlet rewrites can share little surface wording. Actor, action,
   // object, stage, paragraph references, and per-article fact support above
@@ -273,8 +319,13 @@ export function parseSimilarityReview(rawText, candidateCount, incoming = null, 
         ? validateDuplicateEvidence(result, incoming, candidates[id - 1])
         : validateDifferentEvidence(result, incoming, candidates[id - 1]);
       if (evidenceProblem) {
-        verdict = "uncertain";
-        reason = `${evidenceProblem} Se trimite la verificare manuală.`;
+        if (duplicateVerdict && bodiesAreNearCopies(incoming, candidates[id - 1])) {
+          verdict = "duplicate";
+          reason = "Articolele reutilizează aproape integral același text al sursei.";
+        } else {
+          verdict = "uncertain";
+          reason = `${evidenceProblem} Se trimite la verificare manuală.`;
+        }
       } else if (duplicateVerdict) {
         verdict = "duplicate";
       }
@@ -306,11 +357,15 @@ export async function arbitrateSimilarity(incoming, candidates, {
 } = {}) {
   if (!candidates.length) return null;
   const prompt = comparisonPrompt(incoming, candidates);
+  const evidenceRepairPrompt = `${prompt}\n\nREVERIFICARE STRICTĂ A REFERINȚELOR:\nRăspunsul anterior nu a putut fi validat deoarece referințele E# nu indicau paragrafe valide din ambele articole sau nu susțineau fișele faptelor. Reanalizează fiecare candidat din nou. Alege cel puțin un paragraf de corp (E2 sau mai mare) din fiecare articol și folosește numai ID-uri E# care există exact în textul furnizat. Nu folosi titlul E1 ca unică dovadă. Pentru "different"/"new_development", citează fragmente din corp care susțin explicit fiecare fapt central și diferența concretă. Pentru "same_report", citează fragmente care susțin aceeași acțiune, același obiect și aceeași etapă. Dacă nu poți verifica aceste condiții cu paragrafele disponibile, răspunde "uncertain"; nu inventa referințe.`;
   const eligible = await modelFilter(models);
+  let bestEvidenceReview = null;
+  let evidenceFallbacksRemaining = 1;
+  let nextAttemptPrompt = prompt;
   for (const model of eligible) {
     let response;
     try {
-      response = await callModel(model, prompt);
+      response = await callModel(model, nextAttemptPrompt);
     } catch (error) {
       recordModelFailure(model, error);
       console.warn(`[similarity-ai] ${model} a eșuat (${describeGeminiError(error)}); încerc fallbackul următor.`);
@@ -319,10 +374,32 @@ export async function arbitrateSimilarity(incoming, candidates, {
     try {
       const results = parseSimilarityReview(responseText(response.data), candidates.length, incoming, candidates);
       console.log(`[similarity-ai] Comparație full-text reușită cu ${model} pentru ${candidates.length} candidat/candidați.`);
+      const retryableEvidenceCount = results.filter((result) => result.verdict === "uncertain" && [
+        "Referințele de probă nu indică unități valide",
+        "Nu există o fișă completă a faptului central",
+        "Lipsește fișa completă a faptului central",
+        "Lipsește fișa faptului central necesară",
+        "Fragmentele exacte nu susțin suficient fișele",
+        "Fragmentele exacte nu susțin suficiente indicii textuale comune",
+        "Fragmentele citate nu au suficiente indicii textuale comune",
+        "Un verdict de duplicat trebuie susținut și de corpul ambelor articole",
+      ].some((problem) => result.reason.includes(problem))).length;
+      if (retryableEvidenceCount) {
+        if (!bestEvidenceReview || retryableEvidenceCount < bestEvidenceReview.retryableEvidenceCount) {
+          bestEvidenceReview = { model, results, retryableEvidenceCount };
+        }
+        if (evidenceFallbacksRemaining > 0) {
+          evidenceFallbacksRemaining--;
+          nextAttemptPrompt = evidenceRepairPrompt;
+          console.warn(`[similarity-ai] ${model}: dovezi incomplete/nevalide; încerc un singur fallback Gemini pentru verificare.`);
+          continue;
+        }
+        return { model: bestEvidenceReview.model, results: bestEvidenceReview.results };
+      }
       return { model, results };
     } catch (error) {
       console.warn(`[similarity-ai] ${model}: ${error.message}; încerc fallbackul următor.`);
     }
   }
-  return null;
+  return bestEvidenceReview ? { model: bestEvidenceReview.model, results: bestEvidenceReview.results } : null;
 }
