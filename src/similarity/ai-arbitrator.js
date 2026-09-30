@@ -93,8 +93,70 @@ function sharedFactTerms(left, right) {
   return shared;
 }
 
+function conceptTokens(value) {
+  const normalized = String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("ro");
+  const tokens = factTokens(value);
+  if (tokens.has("prim") && tokens.has("ministru")) {
+    tokens.delete("prim");
+    tokens.delete("ministru");
+    tokens.add("premier");
+  }
+  if (tokens.has("tva") || /\btax\w*\s+(?:pe\s+)?valoar\w*\s+adaug\w*\b/.test(normalized)) {
+    tokens.delete("tva");
+    tokens.delete("taxa");
+    tokens.delete("valoarea");
+    tokens.delete("adaugata");
+    tokens.add("tva");
+  }
+  if (/\baliment\w*\b/.test(normalized)) {
+    for (const token of tokens) if (["produs", "produse", "alimentar", "alimentara", "alimentare", "alimente"].includes(token)) tokens.delete(token);
+    tokens.add("alimente");
+  }
+  for (const token of [...tokens]) {
+    if (token.startsWith("energi") || token.startsWith("energetic")) {
+      tokens.delete(token);
+      tokens.add("energie");
+    } else if (token.startsWith("hidrologic")) {
+      tokens.delete(token);
+      tokens.add("hidrologic");
+    }
+  }
+  return tokens;
+}
+
+function objectOverlapRatio(left, right) {
+  const a = conceptTokens(left);
+  const b = conceptTokens(right);
+  // One shared generic term (e.g. only "TVA") cannot identify a specific
+  // policy object. Require at least two meaningful concepts on both sides.
+  if (a.size < 2 || b.size < 2) {
+    return a.size === 1 && b.size === 1 && !a.has("tva") &&
+      normalizeEvidenceText(left) === normalizeEvidenceText(right) ? 1 : 0;
+  }
+  let shared = 0;
+  for (const token of a) if (b.has(token)) shared++;
+  return shared / (a.size + b.size - shared);
+}
+
+function objectClearlyDiffers(left, right) {
+  const a = conceptTokens(left);
+  const b = conceptTokens(right);
+  // A vague or incomplete object can neither confirm a duplicate nor prove a
+  // difference. Let the remaining fact fields decide; otherwise stay unsure.
+  if (a.size < 2 || b.size < 2) return false;
+  return objectOverlapRatio(left, right) < 0.6;
+}
+
 function evidenceSupportsFact(evidence, fact) {
-  return sharedFactTerms(evidence, [fact.actor, fact.action, fact.object, fact.stage].join(" ")) >= 2;
+  const objectTokens = conceptTokens(fact.object);
+  const evidenceTokens = conceptTokens(evidence);
+  const objectIsGrounded = objectTokens.size > 0 && Array.from(objectTokens).some((token) => evidenceTokens.has(token));
+  const otherFactTerms = [fact.actor, fact.action, fact.stage].join(" ");
+  // Actor names alone are too generic to support a duplicate; the concrete
+  // object must appear in the referenced evidence as well as at least one
+  // actor/action/stage detail. Limited lexical matching is intentional because
+  // outlets paraphrase, while event-object equality is checked separately.
+  return objectIsGrounded && sharedFactTerms(evidence, otherFactTerms) > 0;
 }
 
 function articleEvidenceUnits(article) {
@@ -143,13 +205,17 @@ function validateDuplicateEvidence(result, incoming, candidate) {
   if (normalizeEvidenceText(incomingFact.actor) !== normalizeEvidenceText(candidateFact.actor)) {
     return "Actorii faptelor centrale nu se potrivesc suficient.";
   }
-  if (overlapRatio(incomingFact.object, candidateFact.object) < 0.6) {
+  if (objectOverlapRatio(incomingFact.object, candidateFact.object) < 0.6) {
     return "Obiectul/informația concretă a faptelor centrale diferă.";
   }
   if (normalizeEvidenceText(incomingFact.stage) !== normalizeEvidenceText(candidateFact.stage)) {
     return "Etapa sau momentul relatat diferă.";
   }
-  if (overlapRatio(incomingEvidence, candidateEvidence) < 0.35) {
+  // Cross-outlet rewrites can share little surface wording. Actor, action,
+  // object, stage, paragraph references, and per-article fact support above
+  // are the main guards; keep a small lexical floor only to reject wholly
+  // unrelated evidence blocks.
+  if (overlapRatio(incomingEvidence, candidateEvidence) < 0.1) {
     return "Fragmentele citate nu au suficiente indicii textuale comune.";
   }
   return null;
@@ -174,7 +240,7 @@ function validateDifferentEvidence(result, incoming, candidate) {
   }
   const factsDiffer = normalizeEvidenceText(incomingFact.actor) !== normalizeEvidenceText(candidateFact.actor) ||
     normalizeEvidenceText(incomingFact.action) !== normalizeEvidenceText(candidateFact.action) ||
-    overlapRatio(incomingFact.object, candidateFact.object) < 0.6 ||
+    objectClearlyDiffers(incomingFact.object, candidateFact.object) ||
     normalizeEvidenceText(incomingFact.stage) !== normalizeEvidenceText(candidateFact.stage);
   if (!factsDiffer) return "Fișele faptelor par identice, deși verdictul spune că articolele sunt diferite.";
   return null;

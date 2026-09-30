@@ -1,7 +1,9 @@
 import "dotenv/config";
 import { arbitrateSimilarity } from "../src/similarity/ai-arbitrator.js";
 
-const model = process.env.SIMILARITY_BENCHMARK_MODEL || "gemini-3.5-flash-lite";
+const models = (process.env.SIMILARITY_BENCHMARK_MODELS || process.env.SIMILARITY_BENCHMARK_MODEL || "gemini-3.5-flash-lite")
+  .split(",").map((name) => name.trim()).filter(Boolean);
+const selectedBatch = Number.parseInt(process.env.SIMILARITY_BENCHMARK_BATCH || "0", 10);
 
 const batches = [
   {
@@ -58,6 +60,66 @@ const batches = [
       },
     ],
   },
+  {
+    name: "starea de urgență energetică și hidrologică din Republica Moldova",
+    incoming: {
+      title: "Maia Sandu anunță stare de urgență energetică și hidrologică în Republica Moldova",
+      content: "Președinta Maia Sandu a spus că Guvernul va solicita Parlamentului instituirea stării de urgență în domeniul energetic și hidrologic. Măsura vine pe fondul riscurilor pentru aprovizionarea cu energie și al situației hidrologice.",
+    },
+    candidates: [
+      {
+        url: "https://fixture.invalid/duplicate-moldova-state-of-emergency",
+        expected: "duplicate",
+        title: "Republica Moldova va institui stare de urgență în domeniile energetic și hidrologic",
+        content: "Maia Sandu a anunțat că Executivul va cere Parlamentului să declare stare de urgență energetică și hidrologică. Decizia este legată de riscurile de aprovizionare și de evoluția situației hidrologice.",
+      },
+      {
+        url: "https://fixture.invalid/false-positive-romania-crisis-support",
+        expected: "distinct",
+        title: "România face parte din planul de criză pentru sprijinirea Republicii Moldova",
+        content: "Autoritățile române au discutat măsuri de sprijin pentru Republica Moldova în cazul unor probleme de aprovizionare. Articolul descrie contribuția României, nu anunțul Maiei Sandu privind declararea stării de urgență.",
+      },
+      {
+        url: "https://fixture.invalid/false-positive-later-parliamentary-vote",
+        expected: "distinct",
+        title: "Parlamentul Republicii Moldova votează instituirea stării de urgență energetică",
+        content: "După solicitarea Guvernului, deputații au votat instituirea stării de urgență. Articolul relatează votul și durata măsurii, ca etapă ulterioară anunțului prezidențial.",
+      },
+    ],
+  },
+  {
+    name: "declarațiile lui Siegfried Mureșan despre OUG 13 și criza guvernamentală",
+    incoming: {
+      title: "Siegfried Mureșan îi spune lui Grindeanu că nu a învățat nimic din OUG 13",
+      content: "Siegfried Mureșan a afirmat că Sorin Grindeanu nu a învățat nimic din perioada OUG 13. El a avertizat că Grindeanu nu ar ezita să emită o nouă ordonanță pro-furt dacă PSD ar reveni la guvernare.",
+    },
+    candidates: [
+      {
+        url: "https://fixture.invalid/duplicate-muresan-oug13",
+        expected: "duplicate",
+        title: "Mureșan: Grindeanu nu regretă OUG 13 și ar putea repeta ordonanța pro-furt",
+        content: "Liberalul Siegfried Mureșan a declarat că liderul PSD nu a învățat din episodul OUG 13 și că, dacă ar reveni la putere, ar putea adopta din nou o ordonanță pro-furt.",
+      },
+      {
+        url: "https://fixture.invalid/false-positive-muresan-anticipates",
+        expected: "distinct",
+        title: "Dan Motreanu: alegerile anticipate pot schimba realitatea politică",
+        content: "Secretarul general al PNL, Dan Motreanu, a declarat că anticipatele pot schimba realitatea politică. El a vorbit despre alegeri ca mecanism de selecție internă a liderilor.",
+      },
+      {
+        url: "https://fixture.invalid/false-positive-muresan-votes",
+        expected: "distinct",
+        title: "Siegfried Mureșan spune că se bazează pe 200 de voturi pentru învestirea Guvernului",
+        content: "Premierul desemnat a vorbit despre calculele parlamentare și despre numărul de voturi necesare pentru învestirea cabinetului. Articolul nu discută OUG 13 sau declarațiile lui Grindeanu despre proteste.",
+      },
+      {
+        url: "https://fixture.invalid/false-positive-grindeanu-complaint",
+        expected: "distinct",
+        title: "Sorin Grindeanu anunță că va depune plângere penală împotriva lui Dominic Fritz",
+        content: "Liderul PSD a anunțat că se va consulta cu avocații pentru o plângere penală împotriva liderului USR. Disputa privește acuzațiile despre întâlnirea cu ambasadoarea SUA, nu OUG 13.",
+      },
+    ],
+  },
 ];
 
 function safeResult(result) {
@@ -74,6 +136,18 @@ async function main() {
     return;
   }
 
+  if (!models.length || models.some((name) => !name.startsWith("gemini-"))) {
+    console.error("Benchmark-ul acceptă numai modele Gemini; niciun model non-Gemini nu va fi apelat.");
+    process.exitCode = 2;
+    return;
+  }
+  if (!Number.isInteger(selectedBatch) || selectedBatch < 0 || selectedBatch > batches.length) {
+    console.error(`SIMILARITY_BENCHMARK_BATCH trebuie să fie între 1 și ${batches.length}, sau 0 pentru toate loturile.`);
+    process.exitCode = 2;
+    return;
+  }
+
+  const batchesToRun = selectedBatch ? [batches[selectedBatch - 1]] : batches;
   let truePositive = 0;
   let falsePositive = 0;
   let falseNegative = 0;
@@ -81,15 +155,16 @@ async function main() {
   let failed = 0;
   const rows = [];
 
-  for (const batch of batches) {
+  for (const batch of batchesToRun) {
     const { incoming, candidates } = batch;
     let results = null;
     try {
       const review = await arbitrateSimilarity(incoming, candidates, {
-        models: [model],
+        models,
         modelFilter: async (requested) => requested,
       });
       results = review?.results || null;
+      if (review?.model) batch.usedModel = review.model;
     } catch (error) {
       rows.push({ batch: batch.name, error: String(error?.message || error) });
     }
@@ -101,6 +176,7 @@ async function main() {
         candidate: candidate.url,
         expected: candidate.expected,
         actual: "request_failed",
+        modelsTried: models,
       })));
       continue;
     }
@@ -115,6 +191,7 @@ async function main() {
       else if (isPositive) falsePositive++;
       rows.push({
         batch: batch.name,
+        model: batch.usedModel || null,
         candidate: candidate.url,
         expected: candidate.expected,
         actual: actual.verdict,
@@ -123,7 +200,7 @@ async function main() {
     });
   }
 
-  console.log(JSON.stringify({ model, rows, metrics: { truePositive, falsePositive, falseNegative, manual, failed } }, null, 2));
+  console.log(JSON.stringify({ models, selectedBatch: selectedBatch || "all", rows, metrics: { truePositive, falsePositive, falseNegative, manual, failed } }, null, 2));
   if (falsePositive || falseNegative || failed) process.exitCode = 1;
 }
 

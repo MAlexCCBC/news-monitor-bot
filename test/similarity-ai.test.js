@@ -46,7 +46,7 @@ test("similarity arbitration compares full article text and falls through malfor
   assert.deepEqual(result.results, [{ verdict: "different", reason: "Articolele descriu fapte diferite." }]);
 });
 
-test("similarity arbitration assigns explicit candidate IDs and distinguishes a visit announcement from its later outcome", async () => {
+test("similarity arbitration routes an unsupported visit-stage distinction to manual review", async () => {
   let capturedPrompt = "";
   const result = await arbitrateSimilarity(
     { title: "Dan s-a întâlnit cu președintele ceh", content: "Întâlnirea a avut loc astăzi, iar cei doi au discutat securitatea regională." },
@@ -78,7 +78,8 @@ test("similarity arbitration assigns explicit candidate IDs and distinguishes a 
   );
   assert.match(capturedPrompt, /CANDIDAT ID 1/);
   assert.match(capturedPrompt, /faptul central/);
-  assert.equal(result.results[0].verdict, "different");
+  assert.equal(result.results[0].verdict, "uncertain");
+  assert.match(result.results[0].reason, /verificare manuală/);
 });
 
 test("a generic duplicate verdict about the post-vote context is downgraded when event facts differ", () => {
@@ -103,6 +104,27 @@ test("a generic duplicate verdict about the post-vote context is downgraded when
   assert.match(result[0].reason, /Acțiunile centrale extrase diferă/);
 });
 
+test("a distinct stage with evidence in both article bodies can be automatically rejected", () => {
+  const incoming = {
+    title: "Nicușor Dan anunță consultări și desemnarea unui premier luni",
+    content: "Președintele Nicușor Dan a anunțat consultări cu partidele luni dimineață și nominalizarea unui premier în aceeași zi.",
+  };
+  const candidate = {
+    title: "Siegfried Mureșan așteaptă pașii următori după vot",
+    content: "După votul din Parlament, Siegfried Mureșan a declarat că PNL așteaptă să vadă care sunt pașii următori ai președintelui.",
+  };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "different",
+    reason: "Unul este anunțul calendarului prezidențial, celălalt este reacția ulterioară a lui Mureșan.",
+    incoming_fact: { actor: "Nicușor Dan", action: "anunță consultări", object: "partidele și premierul", stage: "calendarul de luni" },
+    candidate_fact: { actor: "Siegfried Mureșan", action: "așteaptă pașii următori", object: "decizia președintelui", stage: "reacție după vot" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "different", result[0].reason);
+});
+
 test("a positive full-text duplicate requires exact evidence and matching event facts", () => {
   const incoming = {
     title: "Dan Motreanu: anticipatele pot schimba realitatea politică",
@@ -121,7 +143,7 @@ test("a positive full-text duplicate requires exact evidence and matching event 
     incoming_evidence_ids: ["E2"],
     candidate_evidence_ids: ["E2"],
   }] }), 1, incoming, [candidate]);
-  assert.equal(result[0].verdict, "duplicate");
+  assert.equal(result[0].verdict, "duplicate", result[0].reason);
 });
 
 test("duplicate evidence with invented paragraph IDs becomes uncertain", () => {
@@ -161,6 +183,48 @@ test("valid paragraph references preserve a duplicate when Gemini paraphrases it
   assert.equal(result[0].verdict, "duplicate");
 });
 
+test("traceable same-event evidence survives substantial outlet paraphrasing when event facts match", () => {
+  const incoming = {
+    title: "Guvernul reduce TVA pentru alimente după aprobarea proiectului fiscal",
+    content: "Executivul a prezentat un proiect care micșorează taxa pe valoarea adăugată pentru produsele alimentare. Măsura se va aplica după adoptarea actului normativ.",
+  };
+  const candidate = {
+    title: "Proiectul fiscal prevede o cotă TVA mai mică la produsele alimentare",
+    content: "Documentul publicat de Guvern prevede scăderea TVA pentru alimente. Aplicarea modificării este stabilită după intrarea în vigoare a actului normativ.",
+  };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    reason: "Ambele texte descriu aceeași reducere a TVA la alimente prevăzută în proiectul Guvernului.",
+    incoming_fact: { actor: "Guvernul României", action: "prezintă un proiect de reducere TVA", object: "TVA pentru alimente", stage: "măsură prevăzută în proiect" },
+    candidate_fact: { actor: "Guvernul României", action: "prezintă un proiect de reducere TVA", object: "TVA pentru alimente", stage: "măsură prevăzută în proiect" },
+    incoming_evidence_ids: ["E1", "E2"],
+    candidate_evidence_ids: ["E1", "E2"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "duplicate", result[0].reason);
+});
+
+test("safe Romanian concept aliases preserve a duplicate without treating a shared tax label as enough", () => {
+  const incoming = {
+    title: "Guvernul reduce TVA la alimente",
+    content: "Guvernul a publicat proiectul care reduce TVA pentru alimente.",
+  };
+  const candidate = {
+    title: "Guvernul reduce taxa pe valoarea adăugată pentru produse alimentare",
+    content: "Executivul a prezentat proiectul privind reducerea taxei pe valoarea adăugată la produse alimentare.",
+  };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    reason: "Aceeași reducere a taxei pe valoarea adăugată pentru alimente.",
+    incoming_fact: { actor: "Guvernul României", action: "reduce taxa", object: "TVA pentru alimente", stage: "proiect fiscal" },
+    candidate_fact: { actor: "Guvernul României", action: "reduce taxa", object: "taxa pe valoarea adăugată pentru produse alimentare", stage: "proiect fiscal" },
+    incoming_evidence_ids: ["E1", "E2"],
+    candidate_evidence_ids: ["E1", "E2"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "duplicate", result[0].reason);
+});
+
 test("a negative verdict without traceable evidence becomes uncertain instead of silently missing a duplicate", () => {
   const incoming = { title: "Anunțul despre proiectul X", content: "Primarul a anunțat astăzi că proiectul X va începe luni, după aprobarea bugetului." };
   const candidate = { title: "Primarul anunță începerea proiectului X", content: "Proiectul X începe luni după ce bugetul a fost aprobat, a spus primarul." };
@@ -192,6 +256,49 @@ test("a duplicate verdict cannot pass on a short object that is only a subset of
     candidate_evidence_ids: ["E2"],
   }] }), 1, incoming, [candidate]);
   assert.equal(result[0].verdict, "uncertain");
+});
+
+test("a vague shared object cannot by itself prove that two reports are different", () => {
+  const incoming = {
+    title: "Guvernul anunță reducerea TVA la alimente",
+    content: "Guvernul a anunțat reducerea TVA pentru alimente, în proiectul fiscal prezentat astăzi.",
+  };
+  const candidate = {
+    title: "Guvernul anunță reducerea TVA la combustibil",
+    content: "Guvernul a anunțat reducerea TVA pentru combustibil, în proiectul fiscal prezentat astăzi.",
+  };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "different",
+    reason: "Obiectele măsurii sunt diferite.",
+    incoming_fact: { actor: "Guvernul României", action: "anunță reducerea TVA", object: "TVA", stage: "proiect fiscal prezentat" },
+    candidate_fact: { actor: "Guvernul României", action: "anunță reducerea TVA", object: "TVA", stage: "proiect fiscal prezentat" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "uncertain");
+});
+
+test("shared actor words cannot substitute for missing action, object, and stage evidence", () => {
+  const incoming = {
+    title: "Guvernul României anunță reducerea TVA la alimente",
+    content: "Guvernul României a publicat astăzi un comunicat despre exporturile companiilor.",
+  };
+  const candidate = {
+    title: "Guvernul României anunță reducerea TVA la combustibil",
+    content: "Guvernul României a transmis luni un document despre importurile companiilor.",
+  };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    reason: "Aceeași măsură a Guvernului.",
+    incoming_fact: { actor: "Guvernul României", action: "anunță reducerea TVA", object: "TVA pentru alimente", stage: "proiect fiscal" },
+    candidate_fact: { actor: "Guvernul României", action: "anunță reducerea TVA", object: "TVA pentru alimente", stage: "proiect fiscal" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "uncertain");
+  assert.match(result[0].reason, /nu susțin suficient fișele/);
 });
 
 test("paragraph evidence references reject duplicate IDs, title-only support, and out-of-range units", () => {
