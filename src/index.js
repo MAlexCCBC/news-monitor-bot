@@ -55,7 +55,7 @@ import { prepareArticlePost } from "./ai/prepare-post.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage } from "./image/search.js";
-import { saveNews, saveAiPost, saveArticleFailure, getRecentNews, getRecentArticleSimilarityCandidates, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
+import { saveNews, saveAiPost, saveArticleFailure, getRecentArticleSimilarityCandidates, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { ARTICLE_HISTORY_HOURS } from "./storage/article-history.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
@@ -64,6 +64,7 @@ import { createPollingErrorHandler } from "./telegram/polling-health.js";
 import { answerCallbackSafely, closeStaleApprovalMessage, parseApprovalCallback } from "./telegram/approval-callback.js";
 import { formatApprovalText } from "./telegram/approval-messages.js";
 import { splitTelegramText } from "./telegram/text-chunks.js";
+import { editMessageUnlessUnchanged } from "./telegram/message-edit.js";
 import { ARTICLE_APPROVAL_TTL_MS } from "./storage/pending-approvals.js";
 
 const {
@@ -96,7 +97,8 @@ const romanianPersonalities = (
 const channelsList = CHANNELS.split(",").map((c) => c.trim().toLowerCase());
 const threshold = Number(SIMILARITY_THRESHOLD || 0.80);
 const historyHours = ARTICLE_HISTORY_HOURS;
-console.log(`[config] Similaritate: articole din ultimele ${historyHours}h; compararea textelor AI dezactivată`);
+const similarityAiConfigured = Boolean(process.env.GEMINI_API_KEY);
+console.log(`[config] Similaritate: istoric ${historyHours}h; arbitraj Gemini pe textele integrale ${similarityAiConfigured ? "activ pentru candidații selectați" : "dezactivat (GEMINI_API_KEY lipsește)"}`);
 // Canalele care OCOLESC toate filtrele de continut (similaritate, keywords,
 // stiri straine) - ex: canalul tau de rezerva, unde vrei sa pui orice daca da
 // prost. RAMANE activ doar deduplicarea de URL (protectie la bug-uri Telegram).
@@ -248,13 +250,14 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
   if (restoringPendingApprovals) return;
   restoringPendingApprovals = true;
   try {
+    let interruptedItems = [];
     if (recoverInterrupted) {
-      pendingApprovals.recoverInterrupted();
+      interruptedItems = pendingApprovals.recoverInterrupted();
       const duplicates = pendingApprovals.getStartupDuplicates();
       for (const duplicate of duplicates) {
         console.warn(`[approval restore] Închid cererea duplicată ${duplicate.id} pentru ${duplicate.url}; se păstrează cererea ${pendingApprovals.findActiveByUrl(duplicate.url)?.id || "activă"}.`);
         if (duplicate.message_id) {
-          await notifyBot.editMessageText(
+          await editMessageUnlessUnchanged(notifyBot,
             `ℹ️ <b>Cerere duplicată închisă</b>\n\n<b>Titlu:</b> ${escapeHtml(duplicate.article.title)}\n<b>Sursă:</b> ${escapeHtml(duplicate.url)}\n\nExistă deja o cerere activă pentru acest link.`,
             { chat_id: NOTIFY_CHAT_ID, message_id: duplicate.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
           ).catch((err) => console.warn("[approval restore] Nu am putut închide mesajul duplicat:", err.message));
@@ -263,94 +266,31 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
       await persistPendingApprovals();
     }
     const pendingItems = pendingApprovals.listPending();
-    // Cererile de similaritate existente rămân verificabile manual. Nu folosim
-    // embeddingul salvat la boot ca verdict automat și nu consumăm apel Gemini
-    // repetat la fiecare restart pentru aceeași cerere.
-    if (recoverInterrupted) {
-      const articleApprovals = pendingItems.filter((item) => item.kind === "ai_text" ||
-        (item.kind === "article" && item.simResult?.embedding?.length));
-      if (articleApprovals.length) {
-        const history = getRecentNews();
-        for (const pending of articleApprovals) {
-          const updated = pending.kind === "ai_text" ? { isDuplicate: false } : {
-            ...pending.simResult,
-            isDuplicate: true,
-            similarityZone: "NECESITĂ VERIFICARE (cerere existentă)",
-            similarityReason: "Cerere de similaritate mai veche; păstrată pentru decizie manuală, fără verdict automat din embedding.",
-            aiVerdict: "uncertain",
-          };
-          console.log(`[approval recheck] ${pending.url}: ${pending.kind === "ai_text" ? "filtrul AI eliminat" : "cererea existentă păstrată pentru verificare manuală"}${updated.similarUrl ? ` (${updated.similarityZone}, ${(updated.similarity * 100).toFixed(1)}% vs ${updated.similarUrl})` : ""}`);
-          if (updated.isDuplicate && !isUrlSeen(pending.url)) {
-            const comparison = history.find((entry) => entry.url === updated.similarUrl);
-            if (pending.comparisonUrl === updated.similarUrl &&
-                pending.comparisonTitle === comparison?.title &&
-                Math.abs(pending.similarity - updated.similarity) < 0.000001) continue;
-            const refreshed = pendingApprovals.updateComparison(pending.id,
-              { ...pending.simResult, ...updated }, comparison?.title);
-            if (refreshed.message_id) {
-              await notifyBot.editMessageText(formatApprovalText(refreshed), {
-                chat_id: NOTIFY_CHAT_ID, message_id: refreshed.message_id,
-                parse_mode: "HTML", reply_markup: approvalMarkup(refreshed.id),
-              }).catch((err) => console.warn("[approval recheck] Actualizarea comparației a eșuat:", err.message));
-            }
-            continue;
-          }
-          if (isUrlSeen(pending.url)) {
-            saveRelatedApprovalArticles(pending);
-            pendingApprovals.setState(pending.id, "done");
-            if (pending.message_id) {
-              await notifyBot.editMessageText(
-                `ℹ️ <b>Știrea fusese deja procesată; cererea veche a fost închisă.</b>\n\n<b>Titlu:</b> ${escapeHtml(pending.article.title)}\n<b>Sursă:</b> ${escapeHtml(pending.url)}`,
-                { chat_id: NOTIFY_CHAT_ID, message_id: pending.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
-              ).catch(() => {});
-            }
-            await persistPendingApprovals();
-            continue;
-          }
-
-          const item = pendingApprovals.claim(pending.id);
-          if (!item) continue;
-          const timer = approvalExpiryTimers.get(item.id);
-          if (timer) clearTimeout(timer);
-          approvalExpiryTimers.delete(item.id);
-          await persistPendingApprovals();
-          if (item.message_id) {
-            try {
-              await notifyBot.editMessageText(
-                `🔄 <b>${item.kind === "ai_text" ? "Filtrul pe texte AI a fost eliminat; textul salvat va fi trimis." : "Reverificată în istoricul de 24h; știrea a fost eliberată pentru procesare."}</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
-                { chat_id: NOTIFY_CHAT_ID, message_id: item.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
-              );
-            } catch (err) { console.warn("[approval recheck] Nu am putut actualiza mesajul vechi:", err.message); }
-          }
-          enqueueProcess(async () => {
-            try {
-              await finalizeAndSendArticle(item.article, item.url, item.simResult, item.matchedKeywords,
-                { approvedPost: item.formattedPost, relatedArticles: item.relatedArticles });
-              pendingApprovals.setState(item.id, "done");
-              await persistPendingApprovals();
-              if (item.message_id) {
-                const status = "Știre procesată și trimisă cu succes!";
-                await notifyBot.editMessageText(
-                  `✅ <b>${status}</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
-                  { chat_id: NOTIFY_CHAT_ID, message_id: item.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
-                ).catch(() => {});
-              }
-            } catch (err) {
-              console.error(`[approval recheck] Procesarea articolului ${item.url} a eșuat:`, err);
-              pendingApprovals.setState(item.id, "pending");
-              const retryItem = pendingApprovals.get(item.id);
-              scheduleApprovalExpiry(retryItem);
-              await persistPendingApprovals();
-              await notify(`❌ Eroare la reprocesarea știrii eliberate:\n${item.url}\n${err.message}`).catch(() => {});
-              if (item.message_id) {
-                await notifyBot.editMessageText(
-                  `❌ <b>Reverificarea a eliberat știrea, dar procesarea a eșuat; poți încerca din nou.</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
-                  { chat_id: NOTIFY_CHAT_ID, message_id: item.message_id, parse_mode: "HTML", reply_markup: approvalMarkup(item.id) }
-                ).catch(() => {});
-              }
-            }
-          });
+    const interruptedIds = new Set(interruptedItems.map((item) => item.id));
+    for (const item of pendingItems) {
+      if (isUrlSeen(item.url)) {
+        saveRelatedApprovalArticles(item);
+        pendingApprovals.setState(item.id, "done");
+        if (item.message_id) {
+          await editMessageUnlessUnchanged(notifyBot,
+            `ℹ️ <b>Știrea fusese deja procesată; cererea veche a fost închisă.</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}`,
+            { chat_id: NOTIFY_CHAT_ID, message_id: item.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
+          ).catch((err) => console.warn("[approval restore] Nu am putut închide cererea deja procesată:", err.message));
         }
+        continue;
+      }
+
+      // Keep persisted similarity approvals exactly as they were. A restart
+      // must never turn embedding scores into a new "uncertain" verdict or
+      // auto-publish an article that was waiting for a human decision.
+      if (interruptedIds.has(item.id) && item.message_id) {
+        await editMessageUnlessUnchanged(notifyBot, formatApprovalText(item), {
+          chat_id: NOTIFY_CHAT_ID,
+          message_id: item.message_id,
+          parse_mode: "HTML",
+          reply_markup: approvalMarkup(item.id),
+        }).catch((err) => console.warn(`[approval restore] Nu am putut restaura butoanele cererii ${item.id}:`, err.message));
+        console.log(`[approval restore] Cererea întreruptă ${item.id} a fost readusă la verificare manuală; nu se procesează automat.`);
       }
     }
     if (recoverInterrupted) await persistPendingApprovals();
@@ -707,7 +647,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
             if (updated) {
               await persistPendingApprovals();
               if (updated.message_id) {
-                await notifyBot.editMessageText(formatApprovalText(updated), {
+                await editMessageUnlessUnchanged(notifyBot, formatApprovalText(updated), {
                   chat_id: NOTIFY_CHAT_ID,
                   message_id: updated.message_id,
                   parse_mode: "HTML",

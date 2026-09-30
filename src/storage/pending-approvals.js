@@ -266,9 +266,11 @@ export function createPendingApprovalStore(db) {
     },
 
     recoverInterrupted() {
+      const interrupted = db.prepare("SELECT * FROM pending_approvals WHERE state = 'processing' ORDER BY created_at").all().map(decode);
       db.prepare("UPDATE pending_approvals SET state = 'pending' WHERE state = 'processing'").run();
       db.prepare(`UPDATE pending_approvals SET message_send_state = 'unknown'
         WHERE state = 'pending' AND message_id IS NULL AND message_send_state = 'sending'`).run();
+      return interrupted;
     },
   };
 }

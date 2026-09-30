@@ -8,7 +8,7 @@ import path from "node:path";
 import { ARTICLE_APPROVAL_TTL_MS, createPendingApprovalStore } from "../src/storage/pending-approvals.js";
 import { createAiPostHistoryStore } from "../src/storage/ai-post-history.js";
 
-test("rechecking updates the displayed comparison without creating a second approval", () => {
+test("updating a saved comparison retains its approval without creating a second request", () => {
   const db = new Database(":memory:");
   try {
     const store = createPendingApprovalStore(db);
@@ -244,21 +244,35 @@ test("upgrade extends recent expired one-hour link requests to 12h and reissues 
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test("interrupted in-progress approvals return to pending after restart", () => {
+test("interrupted approvals return to pending without rewriting the saved similarity verdict", () => {
   const db = new Database(":memory:");
   const store = createPendingApprovalStore(db);
+  const savedSimilarity = {
+    embedding: [0.2, 0.8], similarity: 0.93, similarUrl: "https://example.com/related",
+    similarityZone: "AI CONFIRMAT", aiVerdict: "duplicate",
+  };
   store.create({
     id: "interrupted",
-    kind: "ai_text",
+    kind: "article",
     url: "https://example.com/stire",
     article: { title: "Titlu", content: "Text" },
-    simResult: {},
+    simResult: savedSimilarity,
     matchedKeywords: [],
-    formattedPost: "Text AI",
+    comparisonUrl: savedSimilarity.similarUrl,
+    comparisonTitle: "Evenimentul comparat",
+    similarity: savedSimilarity.similarity,
+    expiresAt: Date.now() + ARTICLE_APPROVAL_TTL_MS,
   });
+  store.setMessageId("interrupted", 876);
   store.claim("interrupted");
-  store.recoverInterrupted();
-  assert.equal(store.get("interrupted").state, "pending");
+  const recovered = store.recoverInterrupted();
+  const restored = store.get("interrupted");
+  assert.deepEqual(recovered.map((item) => item.id), ["interrupted"]);
+  assert.equal(restored.state, "pending");
+  assert.deepEqual(restored.simResult, savedSimilarity);
+  assert.equal(restored.comparisonTitle, "Evenimentul comparat");
+  assert.equal(restored.message_id, 876);
+  assert.equal(store.listPending().length, 1, "the decision remains available to the user after restart");
   db.close();
 });
 
