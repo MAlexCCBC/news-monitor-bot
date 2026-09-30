@@ -80,7 +80,9 @@ function overlapRatio(left, right) {
   if (!a.size || !b.size) return 0;
   let shared = 0;
   for (const token of a) if (b.has(token)) shared++;
-  return shared / Math.min(a.size, b.size);
+  // Divide by the union, not the shorter phrase: a generic one-word object
+  // such as "TVA" must not fully match "TVA la combustibil".
+  return shared / (a.size + b.size - shared);
 }
 
 function sharedFactTerms(left, right) {
@@ -109,6 +111,15 @@ function evidenceFromUnitIds(ids, article) {
   return selected.map((index) => units[index - 1]).join("\n");
 }
 
+function includesBodyEvidence(ids, article) {
+  if (!Array.isArray(ids)) return false;
+  const bodyUnitCount = (article?.content || "").split(/\n\s*\n/).map((paragraph) => paragraph.trim()).filter(Boolean).length;
+  return ids.some((id) => {
+    const match = /^E([1-9]\d*)$/.exec(String(id || ""));
+    return match && Number(match[1]) > 1 && Number(match[1]) <= bodyUnitCount + 1;
+  });
+}
+
 function validateDuplicateEvidence(result, incoming, candidate) {
   const incomingFact = result.incoming_fact || {};
   const candidateFact = result.candidate_fact || {};
@@ -119,6 +130,9 @@ function validateDuplicateEvidence(result, incoming, candidate) {
   const incomingEvidence = evidenceFromUnitIds(result.incoming_evidence_ids, incoming);
   const candidateEvidence = evidenceFromUnitIds(result.candidate_evidence_ids, candidate);
   if (!incomingEvidence || !candidateEvidence) return "Referințele de probă nu indică unități valide din ambele articole.";
+  if (!includesBodyEvidence(result.incoming_evidence_ids, incoming) || !includesBodyEvidence(result.candidate_evidence_ids, candidate)) {
+    return "Un verdict de duplicat trebuie susținut și de corpul ambelor articole, nu doar de titluri.";
+  }
   if (!evidenceSupportsFact(incomingEvidence, incomingFact) ||
       !evidenceSupportsFact(candidateEvidence, candidateFact)) {
     return "Fragmentele exacte nu susțin suficient fișele faptelor centrale.";
@@ -129,7 +143,7 @@ function validateDuplicateEvidence(result, incoming, candidate) {
   if (normalizeEvidenceText(incomingFact.actor) !== normalizeEvidenceText(candidateFact.actor)) {
     return "Actorii faptelor centrale nu se potrivesc suficient.";
   }
-  if (overlapRatio(incomingFact.object, candidateFact.object) < 0.5) {
+  if (overlapRatio(incomingFact.object, candidateFact.object) < 0.6) {
     return "Obiectul/informația concretă a faptelor centrale diferă.";
   }
   if (normalizeEvidenceText(incomingFact.stage) !== normalizeEvidenceText(candidateFact.stage)) {
@@ -151,13 +165,16 @@ function validateDifferentEvidence(result, incoming, candidate) {
   const incomingEvidence = evidenceFromUnitIds(result.incoming_evidence_ids, incoming);
   const candidateEvidence = evidenceFromUnitIds(result.candidate_evidence_ids, candidate);
   if (!incomingEvidence || !candidateEvidence) return "Referințele care ar demonstra diferența nu indică unități valide din ambele articole.";
+  if (!includesBodyEvidence(result.incoming_evidence_ids, incoming) || !includesBodyEvidence(result.candidate_evidence_ids, candidate)) {
+    return "O diferență între evenimente trebuie susținută și de corpul ambelor articole, nu doar de titluri.";
+  }
   if (!evidenceSupportsFact(incomingEvidence, incomingFact) ||
       !evidenceSupportsFact(candidateEvidence, candidateFact)) {
     return "Fragmentele exacte nu susțin suficient fișele folosite pentru a declara articolele diferite.";
   }
   const factsDiffer = normalizeEvidenceText(incomingFact.actor) !== normalizeEvidenceText(candidateFact.actor) ||
     normalizeEvidenceText(incomingFact.action) !== normalizeEvidenceText(candidateFact.action) ||
-    overlapRatio(incomingFact.object, candidateFact.object) < 0.5 ||
+    overlapRatio(incomingFact.object, candidateFact.object) < 0.6 ||
     normalizeEvidenceText(incomingFact.stage) !== normalizeEvidenceText(candidateFact.stage);
   if (!factsDiffer) return "Fișele faptelor par identice, deși verdictul spune că articolele sunt diferite.";
   return null;

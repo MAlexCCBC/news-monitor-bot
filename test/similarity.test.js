@@ -136,6 +136,35 @@ test("Gemini's candidate batch reserves slots for the newest articles independen
   assert.ok(selected.includes(nextNewest));
 });
 
+test("candidate retrieval remains capped at eight and retains a strongest lexical match across 100 history permutations", () => {
+  const pool = [
+    ...Array.from({ length: 24 }, (_, index) => ({
+      url: `vector-positive-${index}`, score: .99 - index * .001, isDuplicate: true,
+      embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null,
+    })),
+    ...Array.from({ length: 24 }, (_, index) => ({
+      url: `lexical-${index}`, score: .3, isDuplicate: false,
+      embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: .60 + index * .005,
+    })),
+    ...Array.from({ length: 24 }, (_, index) => ({
+      url: `recent-${index}`, score: .1, isDuplicate: false,
+      embeddingComparable: false, samePublisher: false, lexicalRetrievalScore: null, historyRecencyRank: index,
+    })),
+  ];
+  const trueTextMatch = {
+    url: "known-same-event", score: .4, isDuplicate: false,
+    embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: .99,
+  };
+  pool.push(trueTextMatch);
+
+  for (let offset = 0; offset < 100; offset++) {
+    const permutation = [...pool.slice(offset), ...pool.slice(0, offset)].reverse();
+    const selected = selectAiReviewCandidates(permutation);
+    assert.ok(selected.length <= 8);
+    assert.ok(selected.includes(trueTextMatch), `strong full-text match omitted in permutation ${offset}`);
+  }
+});
+
 test("Gemini still compares recent full-text stories when neither retrieval signal finds a match", () => {
   const recentStories = Array.from({ length: 10 }, (_, index) => ({
     url: `recent-${index}`, title: `Recent story ${index}`, content: `Full text ${index}`,

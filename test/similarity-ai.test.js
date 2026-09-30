@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 
 import { arbitrateSimilarity, parseSimilarityReview } from "../src/similarity/ai-arbitrator.js";
+import { applySimilarityAiReview } from "../src/similarity/embedding.js";
 
 test("similarity review parser requires one valid decision per candidate", () => {
   assert.deepEqual(parseSimilarityReview('{"results":[{"id":1,"verdict":"different","reason":"Alt eveniment"},{"id":2,"verdict":"duplicate","reason":"Aceeași relatare"}]}', 2), [
@@ -170,4 +171,104 @@ test("a negative verdict without traceable evidence becomes uncertain instead of
   }] }), 1, incoming, [candidate]);
   assert.equal(result[0].verdict, "uncertain");
   assert.match(result[0].reason, /Lipsește fișa faptului central/);
+});
+
+test("a duplicate verdict cannot pass on a short object that is only a subset of a different concrete object", () => {
+  const incoming = {
+    title: "Guvernul anunță reducerea TVA la alimente",
+    content: "Guvernul României a anunțat reducerea TVA pentru alimente în proiectul fiscal discutat astăzi.",
+  };
+  const candidate = {
+    title: "Guvernul anunță reducerea TVA la combustibil",
+    content: "Guvernul României a anunțat reducerea TVA pentru combustibil în proiectul fiscal discutat astăzi.",
+  };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    reason: "Aceeași reducere a TVA.",
+    incoming_fact: { actor: "Guvernul României", action: "anunță reducerea", object: "TVA", stage: "proiect fiscal" },
+    candidate_fact: { actor: "Guvernul României", action: "anunță reducerea", object: "TVA la combustibil", stage: "proiect fiscal" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "uncertain");
+});
+
+test("paragraph evidence references reject duplicate IDs, title-only support, and out-of-range units", () => {
+  const incoming = { title: "Nicușor Dan anunță consultări", content: "Președintele Nicușor Dan va consulta partidele luni, apoi va nominaliza un premier." };
+  const candidate = { title: "Nicușor Dan anunță consultări", content: "Președintele Nicușor Dan va consulta partidele luni, apoi va nominaliza un premier." };
+  const base = {
+    id: 1,
+    verdict: "duplicate",
+    reason: "Aceeași declarație.",
+    incoming_fact: { actor: "Nicușor Dan", action: "anunță consultări", object: "partidele și premierul", stage: "luni" },
+    candidate_fact: { actor: "Nicușor Dan", action: "anunță consultări", object: "partidele și premierul", stage: "luni" },
+  };
+  for (const [incomingIds, candidateIds] of [[ ["E2", "E2"], ["E2"] ], [["E3"], ["E2"]], [["E1"], ["E1"]]]) {
+    const result = parseSimilarityReview(JSON.stringify({ results: [{ ...base, incoming_evidence_ids: incomingIds, candidate_evidence_ids: candidateIds }] }), 1, incoming, [candidate]);
+    assert.equal(result[0].verdict, "uncertain");
+  }
+});
+
+test("metamorphic object-substitution cases cannot turn a shared policy label into a confirmed duplicate", () => {
+  const distinctObjects = [
+    ["alimente", "combustibil"], ["pensii", "salarii"], ["școli", "spitale"],
+    ["transport", "energie"], ["agricultură", "industrie"], ["locuințe", "medicamente"],
+    ["exporturi", "importuri"], ["impozite", "contribuții"], ["autostrăzi", "căi ferate"],
+    ["refugiați", "fermieri"], ["buget", "datorie"], ["subvenții", "amenzi"],
+    ["curent", "gaze"], ["TVA", "accize"], ["profesori", "medici"],
+    ["granturi", "credite"], ["alegeri", "referendum"], ["frontieră", "port"],
+    ["firme", "gospodării"], ["apărare", "sănătate"],
+  ];
+  for (const [left, right] of distinctObjects) {
+    const incoming = {
+      title: `Guvernul anunță măsura privind ${left}`,
+      content: `Guvernul României a anunțat o măsură nouă privind ${left}. Proiectul va intra în vigoare după publicarea deciziei oficiale.`,
+    };
+    const candidate = {
+      title: `Guvernul anunță măsura privind ${right}`,
+      content: `Guvernul României a anunțat o măsură nouă privind ${right}. Proiectul va intra în vigoare după publicarea deciziei oficiale.`,
+    };
+    const result = parseSimilarityReview(JSON.stringify({ results: [{
+      id: 1,
+      verdict: "same_report",
+      reason: "Același anunț al Guvernului.",
+      incoming_fact: { actor: "Guvernul României", action: "anunță măsura", object: `măsura ${left}`, stage: "proiect anunțat" },
+      candidate_fact: { actor: "Guvernul României", action: "anunță măsura", object: `măsura ${right}`, stage: "proiect anunțat" },
+      incoming_evidence_ids: ["E2"],
+      candidate_evidence_ids: ["E2"],
+    }] }), 1, incoming, [candidate]);
+    assert.equal(result[0].verdict, "uncertain", `${left} vs ${right}`);
+  }
+});
+
+test("an unsupported Gemini duplicate reaches manual review instead of blocking or silently passing", () => {
+  const incoming = {
+    title: "Nicușor Dan anunță consultări și nominalizarea unui premier luni",
+    content: "Președintele Nicușor Dan a spus că va consulta partidele luni și va desemna un premier în aceeași zi.",
+  };
+  const candidate = {
+    title: "Siegfried Mureșan așteaptă pașii următori după votul din Parlament",
+    content: "Siegfried Mureșan a declarat după vot că așteaptă să vadă care sunt pașii următori ai președintelui.",
+  };
+  const parsed = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    reason: "Aceeași criză politică după vot.",
+    incoming_fact: { actor: "Nicușor Dan", action: "anunță consultări și desemnare", object: "un premier luni", stage: "plan după vot" },
+    candidate_fact: { actor: "Siegfried Mureșan", action: "așteaptă pașii următori", object: "decizia președintelui", stage: "reacție după vot" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+  }] }), 1, incoming, [candidate]);
+  const localCandidate = {
+    url: "https://news.example/older",
+    score: .91,
+    isDuplicate: true,
+    embeddingComparable: true,
+  };
+  const final = applySimilarityAiReview([localCandidate], [localCandidate], { results: parsed });
+  assert.equal(parsed[0].verdict, "uncertain");
+  assert.equal(final.isDuplicate, true);
+  assert.equal(final.aiVerdict, "uncertain");
+  assert.match(final.similarityZone, /NECESITĂ VERIFICARE/);
 });
