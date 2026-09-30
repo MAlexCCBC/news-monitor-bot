@@ -30,8 +30,8 @@ test("similarity arbitration compares full article text and falls through malfor
           reason: "Articolele descriu fapte diferite.",
           incoming_fact: { actor: "corpul nou", action: "este integral", object: "paragraful nou", stage: "final nou" },
           candidate_fact: { actor: "corpul vechi", action: "este integral", object: "paragraful vechi", stage: "final vechi" },
-          incoming_evidence: "Corpul integral nou, inclusiv paragraful de final.",
-          candidate_evidence: "Corpul integral vechi, inclusiv paragraful de final.",
+          incoming_evidence_ids: ["E2"],
+          candidate_evidence_ids: ["E2"],
         }] }) }] } }] } };
       },
     }
@@ -65,8 +65,8 @@ test("similarity arbitration assigns explicit candidate IDs and distinguishes a 
                   reason: "Primul anunță agenda, al doilea relatează întâlnirea și discuțiile desfășurate.",
                   incoming_fact: { actor: "Nicușor Dan", action: "relatează întâlnire", object: "securitatea regională", stage: "întâlnire desfășurată" },
                   candidate_fact: { actor: "Nicușor Dan", action: "anunță agendă", object: "întâlnire cu președintele ceh", stage: "plan înaintea întâlnirii" },
-                  incoming_evidence: "Întâlnirea a avut loc astăzi, iar cei doi au discutat securitatea regională.",
-                  candidate_evidence: "Agenda anunțată include o întâlnire cu președintele ceh.",
+                  incoming_evidence_ids: ["E2"],
+                  candidate_evidence_ids: ["E2"],
                 }] }) }],
               },
             }],
@@ -95,8 +95,8 @@ test("a generic duplicate verdict about the post-vote context is downgraded when
     reason: "Aceleași declarații oficiale imediate după vot.",
     incoming_fact: { actor: "Nicușor Dan", action: "anunță consultări și desemnare", object: "va consulta partidele și va nominaliza luni un premier", stage: "plan viitor" },
     candidate_fact: { actor: "Siegfried Mureșan", action: "așteaptă pași", object: "pașii următori ai președintelui", stage: "reacție după vot" },
-    incoming_evidence: "luni dimineață consultări la Cotroceni și luni după-amiază va nominaliza o propunere de premier",
-    candidate_evidence: "PNL așteaptă să vadă din partea președintelui Nicușor Dan care sunt pașii următori",
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
   }] }), 1, incoming, [candidate]);
   assert.equal(result[0].verdict, "uncertain");
   assert.match(result[0].reason, /Acțiunile centrale extrase diferă/);
@@ -117,13 +117,13 @@ test("a positive full-text duplicate requires exact evidence and matching event 
     reason: "Aceeași declarație a lui Dan Motreanu despre efectul anticipatelor.",
     incoming_fact: { actor: "Dan Motreanu", action: "afirmă schimbarea realității politice", object: "alegerile anticipate", stage: "declarație despre anticipate" },
     candidate_fact: { actor: "Dan Motreanu", action: "afirmă schimbarea realității politice", object: "alegerile anticipate", stage: "declarație despre anticipate" },
-    incoming_evidence: "alegerile anticipate pot schimba realitatea politică",
-    candidate_evidence: "alegerile anticipate pot schimba realitatea politică",
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
   }] }), 1, incoming, [candidate]);
   assert.equal(result[0].verdict, "duplicate");
 });
 
-test("duplicate evidence that is not an exact article excerpt becomes uncertain", () => {
+test("duplicate evidence with invented paragraph IDs becomes uncertain", () => {
   const incoming = { title: "Anunțul oficial despre o decizie nouă", content: "Autoritățile au anunțat o decizie nouă privind proiectul." };
   const candidate = { title: "Autoritățile anunță decizia", content: "A fost prezentată o hotărâre diferită." };
   const result = parseSimilarityReview(JSON.stringify({ results: [{
@@ -132,11 +132,32 @@ test("duplicate evidence that is not an exact article excerpt becomes uncertain"
     reason: "Aceeași decizie.",
     incoming_fact: { actor: "Autoritățile", action: "anunță decizia", object: "decizia nouă", stage: "anunț" },
     candidate_fact: { actor: "Autoritățile", action: "anunță decizia", object: "decizia nouă", stage: "anunț" },
-    incoming_evidence: "Aceeași hotărâre a fost aprobată astăzi de autorități",
-    candidate_evidence: "Aceeași hotărâre a fost aprobată astăzi de autorități",
+    incoming_evidence_ids: ["E9"],
+    candidate_evidence_ids: ["E9"],
   }] }), 1, incoming, [candidate]);
   assert.equal(result[0].verdict, "uncertain");
-  assert.match(result[0].reason, /Fragmentele de probă nu sunt citate exact/);
+  assert.match(result[0].reason, /unități valide/);
+});
+
+test("valid paragraph references preserve a duplicate when Gemini paraphrases its evidence in the output", () => {
+  const incoming = {
+    title: "Nicușor Dan anunță consultări și un nou premier luni",
+    content: "Luni voi convoca partidele la Cotroceni pentru consultări, iar luni după-amiaza voi nominaliza o propunere de prim-ministru.",
+  };
+  const candidate = {
+    title: "BREAKING: Nicușor Dan va nominaliza luni un nou premier",
+    content: "Luni voi convoca partidele la Cotroceni pentru consultări, iar luni după-amiază voi nominaliza o propunere de premier.",
+  };
+  const result = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    reason: "Aceeași declarație despre consultări și nominalizarea de luni.",
+    incoming_fact: { actor: "Nicușor Dan", action: "anunță desemnare", object: "prim-ministru", stage: "luni după consultări" },
+    candidate_fact: { actor: "Nicușor Dan", action: "anunță desemnare", object: "prim-ministru", stage: "luni după consultări" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result[0].verdict, "duplicate");
 });
 
 test("a negative verdict without traceable evidence becomes uncertain instead of silently missing a duplicate", () => {
