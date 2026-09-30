@@ -22,6 +22,9 @@ function clickableUrl(value) {
 export function formatApprovalText(item) {
   const title = escapeHtml(item.article?.title || "(fără titlu)");
   const comparisonTitle = escapeHtml(item.comparisonTitle || "Știre anterioară");
+  const comparisonLabel = item.simResult?.isPendingApproval
+    ? "Știre/link similar cu aprobare deja în așteptare"
+    : "Știre/link similar deja procesat";
   const needsManualReview = item.simResult?.aiVerdict === "uncertain";
   const score = item.simResult?.similarityBasis === "ai_cross_embedding"
     ? (needsManualReview ? "neclar; verificare manuală" : "confirmat prin AI")
@@ -37,6 +40,11 @@ export function formatApprovalText(item) {
   // Older pending requests may predate the dedicated comparison_url field;
   // the similarity result already persisted the candidate URL in that case.
   const comparisonLink = clickableUrl(item.comparisonUrl || item.simResult?.similarUrl);
+  const relatedLinks = (item.relatedArticles || []).length
+    ? `\n\n<b>Linkuri suplimentare confirmate ca aceeași știre:</b>\n${item.relatedArticles
+      .map((related) => `• ${escapeHtml(related.article?.title || "Articol")}: ${clickableUrl(related.url)}`)
+      .join("\n")}`
+    : "";
 
   if (item.kind === "ai_text") {
     const preview = escapeHtml((item.formattedPost || "").slice(0, 700));
@@ -49,7 +57,7 @@ export function formatApprovalText(item) {
   return `${needsManualReview ? "❔" : "⏭️"} <b>${needsManualReview ? "Similaritate neclară — verificare manuală" : `Posibil duplicat · scor semantic ${score}`}</b>\n\n` +
     `<b>Comparație între link-uri</b>\n` +
     `<b>Link primit:</b> ${currentLink}\n` +
-    `<b>Știre/link similar deja procesat:</b> ${comparisonTitle} — ${comparisonLink}\n\n` +
-    `<i>${comparisonNote}</i>\n\n` +
+    `<b>${comparisonLabel}:</b> ${comparisonTitle} — ${comparisonLink}\n\n` +
+    `<i>${comparisonNote}</i>${relatedLinks}\n\n` +
     `<i>Dorești să fie procesată și trimisă oricum? Cererea expiră în 12 ore.</i>`;
 }

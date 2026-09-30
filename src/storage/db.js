@@ -3,7 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { createPendingApprovalStore } from "./pending-approvals.js";
 import { createAiPostHistoryStore } from "./ai-post-history.js";
-import { readArticleSimilarityHistory } from "./article-history.js";
+import { mergePendingArticleApprovals, readArticleSimilarityHistory } from "./article-history.js";
 import { sameArticleUrl } from "../utils/article-url.js";
 import { ensureColumn } from "./migrations.js";
 import { createArticleFailureStore } from "./article-failures.js";
@@ -79,6 +79,12 @@ export function saveNewsEmbedding({ url, embedding, embeddingModel, embeddingVer
 
 export function getRecentNews() {
   return readArticleSimilarityHistory(db);
+}
+
+export function getRecentArticleSimilarityCandidates(now = Date.now()) {
+  const recentNews = readArticleSimilarityHistory(db, now);
+  const activeApprovals = pendingApprovals.listPending(now);
+  return mergePendingArticleApprovals(recentNews, activeApprovals, now);
 }
 
 export function isUrlSeen(url) {

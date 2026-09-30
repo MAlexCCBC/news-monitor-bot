@@ -115,6 +115,36 @@ test("only one active article approval can exist per URL", () => {
   db.close();
 });
 
+test("related article links stay attached to one approval and block feed replays", () => {
+  const db = new Database(":memory:");
+  const store = createPendingApprovalStore(db);
+  const base = {
+    id: "primary", kind: "article", url: "https://mediafax.ro/stire-initiala-123456",
+    article: { title: "Relatarea inițială", content: "Text integral" },
+    simResult: { embedding: [1, 0], embeddingModel: "gemini-embedding-001" },
+    matchedKeywords: [], expiresAt: Date.now() + ARTICLE_APPROVAL_TTL_MS,
+  };
+  store.create(base);
+  store.setMessageId("primary", 987);
+  const related = {
+    url: "https://www.digi24.ro/stiri/relatarea-identica-234567",
+    article: { title: "Aceeași știre la altă sursă", content: "Textul celeilalte surse" },
+    simResult: { embedding: [0.9, 0.1], embeddingModel: "gemini-embedding-001" },
+  };
+
+  const updated = store.addRelatedArticle("primary", related);
+  assert.equal(updated.relatedArticles.length, 1);
+  assert.equal(updated.message_id, 987);
+  assert.equal(store.findActiveByUrl(related.url).id, "primary");
+  assert.equal(store.addRelatedArticle("primary", related).relatedArticles.length, 1, "same related URL is idempotent");
+
+  store.claim("primary");
+  assert.equal(store.findActiveByUrl(related.url).id, "primary", "processing remains protected until the post is saved");
+  store.setState("primary", "done");
+  assert.equal(store.findActiveByUrl(related.url), null, "related links leave pending protection after the approval is resolved");
+  db.close();
+});
+
 test("changed publisher slug with the same article ID reuses the active approval", () => {
   const db = new Database(":memory:");
   const store = createPendingApprovalStore(db);

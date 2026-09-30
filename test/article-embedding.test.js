@@ -143,6 +143,37 @@ test("AI similarity arbitration receives full candidate articles and can recover
   }
 });
 
+test("confirmed matches preserve pending-approval identity for duplicate-card suppression", async () => {
+  const originalPost = axios.post;
+  axios.post = async (_url, requestBody) => ({
+    data: { embeddings: requestBody.requests.map(() => ({ values: [1, 0] })) },
+  });
+  try {
+    const result = await checkSimilarity(
+      "Guvernul Mureșan: vot de învestitură\nParlamentul votează Cabinetul propus de Siegfried Mureșan.",
+      [{
+        url: "https://news.example/pending",
+        title: "Parlamentul votează Guvernul Mureșan",
+        content: "Parlamentul votează Cabinetul propus de Siegfried Mureșan.",
+        embedding: [1, 0],
+        embeddingModel: "gemini-embedding-001",
+        embeddingVersion: "article-full-v1:gemini-embedding-001",
+        isPendingApproval: true,
+        pendingApprovalId: "approval-42",
+      }],
+      .8,
+      "https://other.example/current",
+      { arbitrate: async () => ({ results: [{ verdict: "duplicate", reason: "Aceeași știre." }] }) },
+    );
+    assert.equal(result.isDuplicate, true);
+    assert.equal(result.aiVerdict, "duplicate");
+    assert.equal(result.isPendingApproval, true);
+    assert.equal(result.pendingApprovalId, "approval-42");
+  } finally {
+    axios.post = originalPost;
+  }
+});
+
 test("fallback embeddings reuse their own space and never re-embed the primary-model history", async () => {
   const originalPost = axios.post;
   const calls = [];

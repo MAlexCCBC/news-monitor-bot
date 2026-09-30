@@ -571,8 +571,17 @@ export function selectAiReviewCandidates(candidates) {
   const recentCandidates = candidates
     .filter((item) => Number.isFinite(item.historyRecencyRank))
     .sort((a, b) => a.historyRecencyRank - b.historyRecencyRank);
-  addCandidates(vectorCandidates.filter((item) => item.isDuplicate), 3);
-  addCandidates(lexicalCandidates, 3);
+  const pendingCandidates = candidates
+    .filter((item) => item.isPendingApproval && (item.isDuplicate || Number.isFinite(item.lexicalRetrievalScore)))
+    .sort((a, b) => Number(b.isDuplicate) - Number(a.isDuplicate) ||
+      (b.lexicalRetrievalScore || 0) - (a.lexicalRetrievalScore || 0) ||
+      (b.score || 0) - (a.score || 0) ||
+      (a.historyRecencyRank || 0) - (b.historyRecencyRank || 0));
+  addCandidates(vectorCandidates.filter((item) => item.isDuplicate), 2);
+  addCandidates(lexicalCandidates, 2);
+  // Reserve two Gemini slots for likely matches that have not yet been
+  // published. They are not part of the durable news history until approved.
+  addCandidates(pendingCandidates, 2);
   addCandidates(recentCandidates, 2);
   addCandidates(vectorCandidates);
   addCandidates(lexicalCandidates);
@@ -602,6 +611,7 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
   const confirmed = candidates.filter((candidate) => verdictByUrl.get(candidate.url)?.verdict === "duplicate");
   if (confirmed.length) {
     const best = confirmed.sort((a, b) => {
+      if (a.isPendingApproval !== b.isPendingApproval) return a.isPendingApproval ? -1 : 1;
       if (a.embeddingComparable !== b.embeddingComparable) return a.embeddingComparable ? -1 : 1;
       return (b.score || b.lexicalRetrievalScore || 0) - (a.score || a.lexicalRetrievalScore || 0);
     })[0];
@@ -612,6 +622,7 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
       similarityZone: best.embeddingComparable ? "AI CONFIRMAT (embedding + articol complet)" : "AI CONFIRMAT (articole complete; spații de embedding diferite)",
       similarityReason: result.reason || "Modelul AI a confirmat că articolele relatează același eveniment.",
       similarityBasis: best.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
+      aiVerdict: "duplicate",
     };
   }
   const resolved = candidates.map((candidate) => {
@@ -722,6 +733,8 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
       historyRecencyRank,
       samePublisherThreshold: Math.max(threshold, 0.97),
       lexicalRetrievalScore: samePublisher && embeddingComparable ? null : lexicalRetrievalScore(titleNew, leadNew, item),
+      isPendingApproval: item.isPendingApproval === true,
+      pendingApprovalId: item.pendingApprovalId || null,
     };
   });
   const localBest = selectSimilarityCandidate(candidates);

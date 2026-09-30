@@ -10,6 +10,7 @@ function decode(row) {
     formattedPost: row.formatted_post,
     comparisonUrl: row.comparison_url,
     comparisonTitle: row.comparison_title,
+    relatedArticles: row.related_articles_json ? JSON.parse(row.related_articles_json) : [],
     aiEmbedding: row.ai_embedding_json ? JSON.parse(row.ai_embedding_json) : null,
   };
 }
@@ -33,6 +34,7 @@ export function createPendingApprovalStore(db) {
       comparison_url TEXT,
       comparison_title TEXT,
       similarity REAL,
+      related_articles_json TEXT NOT NULL DEFAULT '[]',
       expires_at INTEGER,
       state TEXT NOT NULL DEFAULT 'pending',
       message_id INTEGER,
@@ -49,6 +51,9 @@ export function createPendingApprovalStore(db) {
   const approvalCols = db.prepare(`PRAGMA table_info(pending_approvals)`).all().map((column) => column.name);
   if (!approvalCols.includes("message_send_state")) {
     db.exec(`ALTER TABLE pending_approvals ADD COLUMN message_send_state TEXT NOT NULL DEFAULT 'unknown'`);
+  }
+  if (!approvalCols.includes("related_articles_json")) {
+    db.exec(`ALTER TABLE pending_approvals ADD COLUMN related_articles_json TEXT NOT NULL DEFAULT '[]'`);
   }
   db.exec(`UPDATE pending_approvals SET message_send_state = 'sent' WHERE message_id IS NOT NULL AND message_send_state <> 'sent'`);
 
@@ -96,11 +101,11 @@ export function createPendingApprovalStore(db) {
     INSERT INTO pending_approvals (
       id, kind, url, article_json, sim_result_json, matched_keywords_json,
       formatted_post, ai_embedding_json, comparison_url, comparison_title,
-      similarity, expires_at, state, message_send_state, created_at
+      similarity, related_articles_json, expires_at, state, message_send_state, created_at
     ) VALUES (
       @id, @kind, @url, @article_json, @sim_result_json, @matched_keywords_json,
       @formatted_post, @ai_embedding_json, @comparison_url, @comparison_title,
-      @similarity, @expires_at, 'pending', 'not_sent', @created_at
+      @similarity, @related_articles_json, @expires_at, 'pending', 'not_sent', @created_at
     )
   `);
 
@@ -109,23 +114,29 @@ export function createPendingApprovalStore(db) {
   }
 
   const findActiveArticleUrls = db.prepare(`
-    SELECT id, url FROM pending_approvals
+    SELECT id, url, related_articles_json FROM pending_approvals
     WHERE kind = 'article' AND state IN ('pending', 'processing')
     ORDER BY created_at, rowid
   `);
   const findExpiredArticleUrls = db.prepare(`
-    SELECT id, url FROM pending_approvals
+    SELECT id, url, related_articles_json FROM pending_approvals
     WHERE kind = 'article' AND state = 'pending' AND expires_at IS NOT NULL AND expires_at <= ?
   `);
   const expireById = db.prepare(`UPDATE pending_approvals SET state = 'expired' WHERE id = ? AND state = 'pending'`);
   const getById = db.prepare(`SELECT * FROM pending_approvals WHERE id = ?`);
   function findActiveArticleByUrl(url) {
-    const match = findActiveArticleUrls.all().find((row) => sameArticleUrl(row.url, url));
+    const match = findActiveArticleUrls.all().find((row) =>
+      sameArticleUrl(row.url, url) ||
+      (row.related_articles_json ? JSON.parse(row.related_articles_json) : [])
+        .some((related) => sameArticleUrl(related.url, url))
+    );
     return match ? getById.get(match.id) : null;
   }
   function expireMatchingArticleUrls(url, now) {
     for (const row of findExpiredArticleUrls.all(now)) {
-      if (sameArticleUrl(row.url, url)) expireById.run(row.id);
+      if (sameArticleUrl(row.url, url) ||
+          (row.related_articles_json ? JSON.parse(row.related_articles_json) : [])
+            .some((related) => sameArticleUrl(related.url, url))) expireById.run(row.id);
     }
   }
   const createTransaction = db.transaction((item) => {
@@ -146,6 +157,7 @@ export function createPendingApprovalStore(db) {
       comparison_url: item.comparisonUrl || null,
       comparison_title: item.comparisonTitle || null,
       similarity: Number(item.similarity || 0),
+      related_articles_json: JSON.stringify(item.relatedArticles || []),
       expires_at: item.expiresAt ?? null,
       created_at: item.createdAt || Date.now(),
     });
@@ -178,6 +190,23 @@ export function createPendingApprovalStore(db) {
         WHERE id = ? AND state = 'pending'`)
         .run(JSON.stringify(simResult), simResult.similarUrl, comparisonTitle || null, simResult.similarity, id);
       return get(id);
+    },
+
+    addRelatedArticle(id, relatedArticle) {
+      const transaction = db.transaction(() => {
+        const row = db.prepare("SELECT * FROM pending_approvals WHERE id = ? AND kind = 'article' AND state = 'pending'").get(id);
+        if (!row || !relatedArticle?.url) return null;
+        const item = decode(row);
+        if (sameArticleUrl(item.url, relatedArticle.url) ||
+            item.relatedArticles.some((related) => sameArticleUrl(related.url, relatedArticle.url))) {
+          return item;
+        }
+        item.relatedArticles.push(relatedArticle);
+        db.prepare("UPDATE pending_approvals SET related_articles_json = ? WHERE id = ? AND state = 'pending'")
+          .run(JSON.stringify(item.relatedArticles), id);
+        return get(id);
+      });
+      return transaction();
     },
 
     setMessageId(id, messageId) {

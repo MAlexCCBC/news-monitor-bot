@@ -55,7 +55,7 @@ import { prepareArticlePost } from "./ai/prepare-post.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage } from "./image/search.js";
-import { saveNews, saveAiPost, saveArticleFailure, getRecentNews, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
+import { saveNews, saveAiPost, saveArticleFailure, getRecentNews, getRecentArticleSimilarityCandidates, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
 import { ARTICLE_HISTORY_HOURS } from "./storage/article-history.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
@@ -296,6 +296,7 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
             continue;
           }
           if (isUrlSeen(pending.url)) {
+            saveRelatedApprovalArticles(pending);
             pendingApprovals.setState(pending.id, "done");
             if (pending.message_id) {
               await notifyBot.editMessageText(
@@ -324,7 +325,7 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
           enqueueProcess(async () => {
             try {
               await finalizeAndSendArticle(item.article, item.url, item.simResult, item.matchedKeywords,
-                { approvedPost: item.formattedPost });
+                { approvedPost: item.formattedPost, relatedArticles: item.relatedArticles });
               pendingApprovals.setState(item.id, "done");
               await persistPendingApprovals();
               if (item.message_id) {
@@ -449,6 +450,7 @@ async function handleApprovalCallback(callbackQuery) {
         item.matchedKeywords,
         {
           approvedPost: item.formattedPost,
+          relatedArticles: item.relatedArticles,
         }
       );
       pendingApprovals.setState(id, "done");
@@ -518,6 +520,20 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
   }
 }
 
+function saveRelatedApprovalArticles(approval) {
+  for (const related of approval.relatedArticles || []) {
+    if (!related.url) continue;
+    saveNews({
+      url: related.url,
+      title: related.article?.title || "",
+      content: related.article?.content || "",
+      embedding: related.simResult?.embedding ?? null,
+      embeddingModel: related.simResult?.embeddingModel ?? null,
+      embeddingVersion: related.simResult?.embeddingVersion ?? null,
+    });
+  }
+}
+
 async function deliverAndSaveArticle(article, url, simResult, matchedKeywords = [], approval = {}) {
   // 4. Rescriere AI fără verificare de similaritate și fără embedding de text AI.
   const formattedPost = await timedStage("rewrite", () => prepareArticlePost(article, approval));
@@ -574,6 +590,7 @@ async function deliverAndSaveArticle(article, url, simResult, matchedKeywords = 
     embeddingModel: simResult?.embeddingModel ?? null,
     embeddingVersion: simResult?.embeddingVersion ?? null,
   });
+  saveRelatedApprovalArticles(approval);
   saveAiPost({
     url,
     title: formattedPost.split(/\r?\n/, 1)[0] || article.title,
@@ -677,12 +694,31 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     // 3. Verificare similaritate cu ultimele 24h folosind articolul complet.
     let simResult = null;
     if (policy.checkArticleSimilarity) {
-      const recentNews = getRecentNews();
+      const recentNews = getRecentArticleSimilarityCandidates();
       // Păstrăm separatorul ca să delimităm titlul de corpul integral în arbitraj.
       const textToEmbed = `${article.title}\n${article.content || ""}`;
       simResult = await timedStage("article_similarity", () => checkSimilarity(textToEmbed, recentNews, threshold, url));
 
       if (simResult.isDuplicate) {
+        if (simResult.aiVerdict === "duplicate" && simResult.isPendingApproval && simResult.pendingApprovalId) {
+          const activeMatch = pendingApprovals.findActiveByUrl(simResult.similarUrl);
+          if (activeMatch?.id === simResult.pendingApprovalId && activeMatch.state === "pending") {
+            const updated = pendingApprovals.addRelatedArticle(activeMatch.id, { url, article, simResult });
+            if (updated) {
+              await persistPendingApprovals();
+              if (updated.message_id) {
+                await notifyBot.editMessageText(formatApprovalText(updated), {
+                  chat_id: NOTIFY_CHAT_ID,
+                  message_id: updated.message_id,
+                  parse_mode: "HTML",
+                  reply_markup: approvalMarkup(updated.id),
+                }).catch((error) => console.warn("[similar-pending] Nu am putut actualiza cererea existentă:", error.message));
+              }
+              console.log(`[similar-pending] ${url} a fost atașat cererii active ${activeMatch.id} (${activeMatch.url}); nu creez o a doua aprobare.`);
+              return { status: "pending_duplicate", reason: "Aceeași știre are deja o cerere de aprobare activă." };
+            }
+          }
+        }
         console.log(
           `[similar] ${simResult.similarityZone}: ${(simResult.similarity * 100).toFixed(1)}% cu ${simResult.similarUrl} - ${simResult.similarityReason}`
         );

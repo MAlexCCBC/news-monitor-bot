@@ -97,6 +97,51 @@ test("AI candidate retrieval reserves room for lexical evidence and prioritizes 
   assert.equal(selected.length, 8);
 });
 
+test("likely active-approval matches receive a reserved Gemini slot", () => {
+  const currentMatches = Array.from({ length: 8 }, (_, index) => ({
+    url: `current-${index}`, score: .95 - index * .01, isDuplicate: true,
+    embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null,
+  }));
+  const pending = {
+    url: "pending-source", score: .72, isDuplicate: false,
+    embeddingComparable: false, samePublisher: false, lexicalRetrievalScore: .71,
+    isPendingApproval: true, pendingApprovalId: "approval-1",
+  };
+  const selected = selectAiReviewCandidates([...currentMatches, pending]);
+  assert.equal(selected.length, 8);
+  assert.ok(selected.includes(pending));
+});
+
+test("a confirmed duplicate prefers the active approval so callers can avoid a second card", () => {
+  const published = { url: "published", score: .99, isDuplicate: true, embeddingComparable: true };
+  const pending = {
+    url: "pending", score: .72, isDuplicate: false, embeddingComparable: false,
+    isPendingApproval: true, pendingApprovalId: "approval-1",
+  };
+  const result = applySimilarityAiReview(
+    [published, pending], [published, pending],
+    { results: [{ verdict: "duplicate" }, { verdict: "duplicate" }] },
+  );
+  assert.equal(result.url, "pending");
+  assert.equal(result.aiVerdict, "duplicate");
+  assert.equal(result.isPendingApproval, true);
+  assert.equal(result.pendingApprovalId, "approval-1");
+});
+
+test("an uncertain match to an active approval remains a manual review, not a silent suppression", () => {
+  const pending = {
+    url: "pending", score: .91, isDuplicate: true, embeddingComparable: true,
+    isPendingApproval: true, pendingApprovalId: "approval-1",
+  };
+  const result = applySimilarityAiReview([pending], [pending], {
+    results: [{ verdict: "uncertain", reason: "Nu sunt dovezi suficiente." }],
+  });
+  assert.equal(result.isDuplicate, true);
+  assert.equal(result.aiVerdict, "uncertain");
+  assert.equal(result.isPendingApproval, true);
+  assert.notEqual(result.aiVerdict, "duplicate");
+});
+
 test("strong embedding positives cannot crowd every lexical match out of Gemini's review batch", () => {
   const embeddingPositives = Array.from({ length: 10 }, (_, index) => ({
     url: `embedding-${index}`, score: .95 - index * .005, isDuplicate: true,

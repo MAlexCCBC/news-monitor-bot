@@ -77,3 +77,15 @@ test("an uncertain AI comparison is clearly presented for manual review", () => 
   assert.match(text, /Modelele nu au putut decide/);
   assert.doesNotMatch(text, /confirmat prin AI/);
 });
+
+test("pending-approval duplicates are labeled as awaiting review and show attached sources", () => {
+  const text = formatApprovalText({
+    kind: "article", url: "https://news.example/current", article: { title: "Știrea curentă" },
+    comparisonUrl: "https://news.example/pending", comparisonTitle: "Știre în așteptare", similarity: 0.91,
+    simResult: { similarityBasis: "semantic_ai", aiVerdict: "duplicate", isPendingApproval: true },
+    relatedArticles: [{ url: "https://news.example/other", article: { title: "Altă sursă" } }],
+  });
+  assert.match(text, /aprobare deja în așteptare/);
+  assert.match(text, /Linkuri suplimentare confirmate ca aceeași știre/);
+  assert.match(text, /https:\/\/news\.example\/other/);
+});
