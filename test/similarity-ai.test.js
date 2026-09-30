@@ -193,6 +193,7 @@ test("a generic duplicate verdict about the post-vote context is downgraded when
   }] }), 1, incoming, [candidate]);
   assert.equal(result[0].verdict, "uncertain");
   assert.equal(result[0].modelVerdict, "duplicate");
+  assert.equal(result[0].modelReason, "Aceleași declarații oficiale imediate după vot.");
   assert.equal(result[0].duplicateProbability, 94);
   assert.match(result[0].reason, /Acțiunile centrale extrase diferă/);
 });

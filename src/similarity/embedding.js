@@ -639,6 +639,7 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
         similarityBasis: candidate.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
         aiVerdict: "uncertain",
         aiSuggestedVerdict: verdict.modelVerdict,
+        aiRationale: verdict.modelReason,
         aiSimilarityProbability: verdict.duplicateProbability,
       };
     }

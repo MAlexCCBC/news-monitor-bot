@@ -29,6 +29,7 @@ export function formatApprovalText(item) {
   const aiProbability = Number.isInteger(item.simResult?.aiSimilarityProbability)
     ? `${item.simResult.aiSimilarityProbability}% estimare Gemini`
     : null;
+  const aiRationale = item.simResult?.aiRationale || (needsManualReview ? item.simResult?.similarityReason : null);
   const score = aiProbability || (item.simResult?.similarityBasis === "ai_cross_embedding"
     ? (needsManualReview ? "neclar; verificare manuală" : "confirmat prin AI")
     : `${(Number(item.similarity || 0) * 100).toFixed(0)}%${needsManualReview ? " · verdict AI neclar" : item.simResult?.similarityBasis === "semantic_ai" ? " · confirmat prin AI" : ""}`);
@@ -47,6 +48,9 @@ export function formatApprovalText(item) {
   // Older pending requests may predate the dedicated comparison_url field;
   // the similarity result already persisted the candidate URL in that case.
   const comparisonLink = clickableUrl(item.comparisonUrl || item.simResult?.similarUrl);
+  const aiExplanation = needsManualReview && aiRationale
+    ? `\n\n<i>Explicația Gemini: ${escapeHtml(aiRationale)}</i>`
+    : "";
   const relatedLinks = (item.relatedArticles || []).length
     ? `\n\n<b>Linkuri suplimentare confirmate ca aceeași știre:</b>\n${item.relatedArticles
       .map((related) => `• ${escapeHtml(related.article?.title || "Articol")}: ${clickableUrl(related.url)}`)
@@ -65,6 +69,6 @@ export function formatApprovalText(item) {
     `<b>Comparație între link-uri</b>\n` +
     `<b>Link primit:</b> ${currentLink}\n` +
     `<b>${comparisonLabel}:</b> ${comparisonTitle} — ${comparisonLink}\n\n` +
-    `<i>${comparisonNote}</i>${relatedLinks}\n\n` +
+    `<i>${comparisonNote}</i>${aiExplanation}${relatedLinks}\n\n` +
     `<i>Dorești să fie procesată și trimisă oricum? Cererea expiră în 12 ore.</i>`;
 }

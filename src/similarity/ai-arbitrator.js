@@ -337,6 +337,7 @@ export function parseSimilarityReview(rawText, candidateCount, incoming = null, 
     }
     let verdict = result.verdict;
     const modelVerdict = result.verdict;
+    const modelReason = String(result.reason || "").slice(0, 240);
     const duplicateProbability = Number.isInteger(result.duplicate_probability) &&
       result.duplicate_probability >= 0 && result.duplicate_probability <= 100
       ? result.duplicate_probability
@@ -359,9 +360,15 @@ export function parseSimilarityReview(rawText, candidateCount, incoming = null, 
         verdict = "duplicate";
       }
     }
-    byId.set(id, duplicateProbability === null
-      ? { verdict, reason }
-      : { verdict, reason, modelVerdict, duplicateProbability });
+    byId.set(id, verdict !== modelVerdict || verdict === "uncertain" || duplicateProbability !== null
+      ? {
+        verdict,
+        reason,
+        modelVerdict,
+        modelReason,
+        ...(duplicateProbability === null ? {} : { duplicateProbability }),
+      }
+      : { verdict, reason });
   }
   if (byId.size !== candidateCount) throw new Error("Arbitrajul AI a omis candidați");
   return Array.from({ length: candidateCount }, (_, index) => byId.get(index + 1));

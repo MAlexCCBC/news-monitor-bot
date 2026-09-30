@@ -51,13 +51,14 @@ test("AI uncertainty routes a candidate to human review instead of silently pass
     embeddingComparable: true, similarityZone: "ALBA",
   };
   const result = applySimilarityAiReview(
-    [candidate], [candidate], { results: [{ verdict: "uncertain", reason: "Leadurile sunt incomplete", duplicateProbability: 73, modelVerdict: "uncertain" }] }
+    [candidate], [candidate], { results: [{ verdict: "uncertain", reason: "Leadurile sunt incomplete", duplicateProbability: 73, modelVerdict: "uncertain", modelReason: "Nu pot confirma că e același eveniment din fragmente." }] }
   );
   assert.equal(result.isDuplicate, true);
   assert.equal(result.aiVerdict, "uncertain");
   assert.match(result.similarityZone, /NECESITĂ VERIFICARE/);
   assert.equal(result.aiSimilarityProbability, 73);
   assert.equal(result.aiSuggestedVerdict, "uncertain");
+  assert.equal(result.aiRationale, "Nu pot confirma că e același eveniment din fragmente.");
 });
 
 test("an embedding-only positive becomes manual review when Gemini cannot arbitrate", () => {

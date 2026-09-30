@@ -72,12 +72,13 @@ test("an uncertain AI comparison is clearly presented for manual review", () => 
     kind: "article", url: "https://news.example/current",
     article: { title: "Articol nou" }, comparisonUrl: "https://news.example/old",
     comparisonTitle: "Articol anterior", similarity: 0,
-    simResult: { similarityBasis: "ai_cross_embedding", aiVerdict: "uncertain", aiSuggestedVerdict: "same_report", aiSimilarityProbability: 96 },
+    simResult: { similarityBasis: "ai_cross_embedding", aiVerdict: "uncertain", aiSuggestedVerdict: "same_report", aiSimilarityProbability: 96, aiRationale: "Ambele redau aceeași declarație despre alegerile anticipate și rectificarea bugetară." },
   });
   assert.match(text, /Similaritate neclară — verificare manuală/);
   assert.match(text, /96% estimare Gemini/);
   assert.match(text, /a sugerat „same_report"/);
   assert.match(text, /nu este o probabilitate statistică calibrată/);
+  assert.match(text, /Explicația Gemini: Ambele redau aceeași declarație/);
   assert.doesNotMatch(text, /scor semantic 0%/);
 });
 
