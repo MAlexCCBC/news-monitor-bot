@@ -477,6 +477,32 @@ test("a negative verdict without traceable evidence becomes uncertain instead of
   assert.match(result[0].reason, /Lipsește fișa faptului central/);
 });
 
+test("the same concrete CAEN extension reported as draft and adopted is released as a new development", () => {
+  const incoming = {
+    title: "Se prelungește termenul pentru actualizarea codurilor CAEN (proiect HG)",
+    content: "Firmele, PFA și alți profesioniști vor avea la dispoziție încă șase luni pentru actualizarea codurilor CAEN, potrivit unui proiect de hotărâre de guvern.",
+  };
+  const candidate = {
+    title: "Guvernul prelungește termenul pentru actualizarea codurilor CAEN până la 25 martie 2027",
+    content: "Guvernul a decis să acorde firmelor încă șase luni pentru actualizarea codurilor CAEN. Guvernul a adoptat hotărârea, iar noul termen este 25 martie 2027.",
+  };
+  const [result] = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    duplicate_probability: 98,
+    reason: "Ambele articole relatează prelungirea cu șase luni a termenului pentru codurile CAEN.",
+    incoming_fact: { actor: "Guvernul", action: "prelungește", object: "termenul pentru actualizarea codurilor CAEN cu șase luni", stage: "planificat" },
+    candidate_fact: { actor: "Guvernul", action: "acordă", object: "termenul pentru actualizarea codurilor CAEN cu șase luni", stage: "votat" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+    incoming_quotes: ["Firmele, PFA și alți profesioniști vor avea la dispoziție încă șase luni pentru actualizarea codurilor CAEN, potrivit unui proiect de hotărâre de guvern."],
+    candidate_quotes: ["Guvernul a decis să acorde firmelor încă șase luni pentru actualizarea codurilor CAEN. Guvernul a adoptat hotărârea, iar noul termen este 25 martie 2027."],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result.verdict, "new_development", result.reason);
+  assert.equal(result.modelVerdict, "same_report");
+  assert.equal(result.duplicateProbability, 98);
+});
+
 test("a grounded actor difference rejects unrelated events even if a secondary object detail is ungrounded", () => {
   const incoming = {
     title: "Rareș Bogdan îl atacă pe Ilie Bolojan",

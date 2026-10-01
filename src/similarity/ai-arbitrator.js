@@ -59,6 +59,9 @@ const ACTION_ALIASES = new Map(Object.entries({
   decide: "decide", decis: "decide", decizie: "decide", hotarare: "decide", hotarat: "decide",
   respinge: "respinge", respins: "respinge", refuzat: "respinge", blocat: "respinge",
   aproba: "aprobă", aprobat: "aprobă", acceptat: "aprobă", validat: "aprobă",
+  adopta: "aprobă", adoptă: "aprobă", adoptat: "aprobă", adoptata: "aprobă",
+  prelungeste: "aprobă", prelungește: "aprobă", prelungit: "aprobă", prelungire: "aprobă",
+  acorda: "aprobă", acordă: "aprobă", acordat: "aprobă", acordarea: "aprobă",
   vota: "votă", vot: "votă", votat: "votă", voturi: "votă",
   semna: "semnă", semnat: "semnă", subscris: "semnă",
   numeste: "numeste", numire: "numeste", numit: "numeste", nominalizare: "desemnează",
@@ -90,6 +93,7 @@ const ACTION_ALIASES = new Map(Object.entries({
 
 const STAGE_ALIASES = new Map(Object.entries({
   planificat: "planificat", planificare: "planificat", plan: "planificat", planificat_in: "planificat",
+  proiect: "planificat", proiect_hg: "planificat", proiect_de_hg: "planificat", propunere: "planificat",
   anuntat: "planificat", anunțat: "planificat", urmator: "planificat", viitor: "planificat",
   programat: "planificat", agendat: "planificat", calendar: "planificat", asteptare: "planificat",
   în_curs: "în_curs", in_curs: "în_curs", curs: "în_curs", desfasurare: "în_curs",
@@ -259,6 +263,12 @@ function actionIsGrounded(action, evidence) {
   const expected = canonicalAction(action);
   if (expected === UNKNOWN_LABEL) return false;
   return Array.from(factTokens(evidence)).some((token) => canonicalAction(token) === expected);
+}
+
+function stageIsGrounded(stage, evidence) {
+  const expected = canonicalStage(stage);
+  if (expected === UNKNOWN_LABEL) return false;
+  return Array.from(factTokens(evidence)).some((token) => canonicalStage(token) === expected);
 }
 
 function hasVerifiedQuote(quotes, article) {
@@ -463,6 +473,9 @@ function validateDuplicateEvidence(result, incoming, candidate) {
   // versus vot, plan versus încheiere), nu același text. Aici eticheta
   // canonicală este semnul urmărit, nu diferența de formulare.
   if (labelsConflict(canonicalStage(incomingFact.stage), canonicalStage(candidateFact.stage))) {
+    if (!stageIsGrounded(incomingFact.stage, incomingEvidence) || !stageIsGrounded(candidateFact.stage, candidateEvidence)) {
+      return "Etapele centrale par diferite, dar diferența nu este susținută de fragmentele citate.";
+    }
     return "Etapa sau momentul relatat diferă.";
   }
   if (hasConflictingVoteCounts(incomingEvidence, candidateEvidence)) {
@@ -578,6 +591,9 @@ export function parseSimilarityReview(rawText, candidateCount, incoming = null, 
         if (duplicateVerdict && bodiesAreNearCopies(incoming, candidates[id - 1])) {
           verdict = "duplicate";
           reason = "Articolele reutilizează aproape integral același text al sursei.";
+        } else if (duplicateVerdict && evidenceProblem === "Etapa sau momentul relatat diferă.") {
+          verdict = "new_development";
+          reason = "Aceeași măsură este relatată la etape diferite, confirmate în textele ambelor articole; articolul este tratat ca evoluție nouă, nu ca duplicat.";
         } else {
           verdict = "uncertain";
           reason = `${evidenceProblem} Se trimite la verificare manuală.`;
