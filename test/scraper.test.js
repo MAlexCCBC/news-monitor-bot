@@ -35,6 +35,24 @@ test("G4Media WordPress REST fallback keeps its title, full body, date, and feat
   assert.equal(article.imageUrl, "https://cdn.example/image.jpg?size=large&x=1");
 });
 
+test("Digi24 article-story extraction excludes inline recommended-story carousel from article evidence", () => {
+  const lead = "Protestele elevilor din Franța au ajuns în mai multe orașe, iar sute de licee sunt afectate.";
+  const body = "Autoritățile franceze au anunțat măsuri după incidentele din timpul manifestațiilor.";
+  const article = parseArticleHtml(`<main id="article-content"><article class="article-story">
+    <h1>Protestele elevilor din Franța iau amploare</h1>
+    <p>${lead}</p>
+    <div class="swiper-widget-article"><article><p>Nicușor Dan anunță consultări după ce Guvernul Mureșan a picat la vot.</p></article></div>
+    <p>${body}</p>
+    <div class="article"><h5 class="article-title">Băsescu critică strategia lui Nicușor Dan în Parlament.</h5></div>
+    <div class="video-player">{"video":"metadata"}</div>
+  </article></main>`, "https://www.digi24.ro/stiri/externe/test-3972755");
+
+  assert.equal(article.title, "Protestele elevilor din Franța iau amploare");
+  assert.match(article.content, /Protestele elevilor din Franța/);
+  assert.match(article.content, /Autoritățile franceze/);
+  assert.doesNotMatch(article.content, /Nicușor Dan|Guvernul Mureșan|video/);
+});
+
 test("article scrape rejects a successful redirect to Digi24 homepage", async () => {
   const originalGet = axios.get;
   axios.get = async () => ({

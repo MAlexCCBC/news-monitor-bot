@@ -9,7 +9,7 @@ const SITE_CONFIG = {
     content: "div.single__text, div.entry-content, div.post-content, article",
   },
   "digi24.ro": {
-    content: "div.article-body, div.articol-content, article",
+    content: "article.article-story, div.article-body, div.articol-content, article",
   },
   "mediafax.ro": {
     content: "article, div.article-content, div#article-body",
@@ -192,7 +192,7 @@ export function parseArticleHtml(html, url) {
   if ($content.length === 0) $content = $("body"); // ultim fallback
 
   $content = $content.clone();
-  $content.find("script, style, iframe, .ad, .advertisement, aside, nav, .sgb-google-buttons, #mediakitPlayer, [data-platform], .related-posts").remove();
+  $content.find("script, style, iframe, .ad, .advertisement, aside, nav, .sgb-google-buttons, #mediakitPlayer, [data-platform], .related-posts, .swiper-widget-article, .video-player, .gdpr-placeholder, .gdpr-social-media, .article-story .article").remove();
 
   const title = $("h1").first().text().trim() || $('meta[property="og:title"]').attr("content") || "";
   const isoDate = extractPublishDate($);
