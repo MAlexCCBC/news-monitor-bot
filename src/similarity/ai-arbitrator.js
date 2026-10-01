@@ -25,6 +25,120 @@ function articleBlock(article) {
   return `Text integral, unitățile E1, E2 etc. sunt referințe verificabile:\n${evidenceUnits.map((unit, index) => `E${index + 1}: ${unit}`).join("\n")}`;
 }
 
+// Vocabular închis pentru acțiune și etapă. Cât timp modelul redactă aceste
+// câmpuri liber, două modele din cascadă descriu aceeași știre cu etichete
+// diferite ("anunță" / "nominalizare" / "anunțare consultări și nominalizare
+// premier") și comparația exactă de șir le declara diferite. Cu o listă închisă,
+// "acțiunea diferă" devine un semnal real în loc de diferență de formulare.
+export const ACTION_LABELS = [
+  "anunță", "confirmă", "decide", "respinge", "aprobă", "votă", "semnă",
+  "numeste", "desemnează", "demite", "arată", "atacă", "acuză", "ironizează",
+  "salută", "felicitează", "condolează", "întreabă", "cere", "refuză", "contestă",
+  "intenționează", "pregătește", "găsește", "identifică", "raportează",
+  "așteaptă", "propune", "avertizează", "convoacă", "negociază", "retrage", "încheie",
+];
+export const STAGE_LABELS = [
+  "planificat", "în_curs", "decizionat", "votat", "semnat", "publicat",
+  "în_cheiere", "anulat", "finalizat", "neclar",
+];
+export const UNKNOWN_LABEL = "necunoscut";
+
+function labelSet(labels) {
+  return new Set(labels);
+}
+const ACTION_SET = labelSet(ACTION_LABELS);
+const STAGE_SET = labelSet(STAGE_LABELS);
+
+// Un cuvânt scris altfel decât în listă (ex. "anunțare", "desemnare") este
+// mapat pe eticheta canonică; dacă nu există o pereche apropiată, câmpul rămâne
+// necunoscut și nu mai participă la decizie în loc să o blocheze.
+const ACTION_ALIASES = new Map(Object.entries({
+  anunta: "anunță", anuntare: "anunță", anunta: "anunță", anunt: "anunță",
+  comunicat: "anunță", comunicare: "anunță", prezentat: "anunță", anuntat: "anunță",
+  confirma: "confirmă", confirmat: "confirmă", reconfirma: "confirmă",
+  decide: "decide", decis: "decide", decizie: "decide", hotarare: "decide", hotarat: "decide",
+  respinge: "respinge", respins: "respinge", refuzat: "respinge", blocat: "respinge",
+  aproba: "aprobă", aprobat: "aprobă", acceptat: "aprobă", validat: "aprobă",
+  vota: "votă", vot: "votă", votat: "votă", voturi: "votă",
+  semna: "semnă", semnat: "semnă", subscris: "semnă",
+  numeste: "numeste", numire: "numeste", numit: "numeste", nominalizare: "desemnează",
+  desemneaza: "desemnează", desemnat: "desemnează", desemnare: "desemnează", propunere: "desemnează",
+  demite: "demite", demitere: "demite", demis: "demite", înlocuit: "demite",
+  arata: "arată", arata: "arată", estimat: "arată", estimare: "arată", prognoza: "arată",
+  ataca: "atacă", atac: "atacă", atacă: "atacă",
+  acuza: "acuză", acuză: "acuză", acuzat: "acuză", acuza: "acuză",
+  ironizeaza: "ironizează", ironizează: "ironizează", ironie: "ironizează",
+  saluta: "salută", salută: "salută", feliciteaza: "felicitează", felicitează: "felicitează",
+  condoleaza: "condolează", condolează: "condolează",
+  intreaba: "întreabă", întreabă: "întreabă", întrebare: "întreabă",
+  cere: "cere", cerut: "cere", solicitat: "cere", cere_clarificari: "cere",
+  contesta: "contestă", contestă: "contestă", contestat: "contestă",
+  intentioneaza: "intenționează", intenționează: "intenționează", intenție: "intenționează",
+  pregateste: "pregătește", pregătește: "pregătește", pregatire: "pregătește",
+  identifica: "identifică", identifică: "identifică", identificat: "identifică",
+  raporteaza: "raportează", raportează: "raportează", raport: "raportează",
+  declara: "arată", declarat: "arată", declaratie: "arată", spune: "arată", spus: "arată",
+  afirma: "arată", afirmat: "arată", afirmație: "arată", consideră: "arată",
+  asteapta: "așteaptă", așteaptă: "așteaptă", asteptare: "așteaptă", așteptare: "așteaptă",
+  propune: "propune", propunere: "propune", propus: "propune",
+  avertizeaza: "avertizează", avertizează: "avertizează", avertisment: "avertizează",
+  convoaca: "convoacă", convoacă: "convoacă", convocare: "convoacă",
+  negociaza: "negociază", negociază: "negociază", negociere: "negociază",
+  retrage: "retrage", retragere: "retrage",
+  incheie: "încheie", încheie: "încheie", incheiere: "încheie", încheiere: "încheie",
+}));
+
+const STAGE_ALIASES = new Map(Object.entries({
+  planificat: "planificat", planificare: "planificat", plan: "planificat", planificat_in: "planificat",
+  anuntat: "planificat", anunțat: "planificat", urmator: "planificat", viitor: "planificat",
+  programat: "planificat", agendat: "planificat", calendar: "planificat", asteptare: "planificat",
+  în_curs: "în_curs", in_curs: "în_curs", curs: "în_curs", desfasurare: "în_curs",
+  desfășurat: "în_curs", desfasurat: "în_curs", în_derulare: "în_curs", activ: "în_curs",
+  decizionat: "decizionat", decis: "decizionat", decizie: "decizionat", hotarat: "decizionat",
+  votat: "votat", vot: "votat", adoptat: "votat", aprobat: "votat",
+  semnat: "semnat", publicat: "publicat", difuzat: "publicat", anuntat_oficial: "publicat",
+  în_cheiere: "în_cheiere", in_cheiere: "în_cheiere", final: "în_cheiere",
+  anulat: "anulat", suspendat: "anulat", revocat: "anulat",
+  finalizat: "finalizat", încheiat: "finalizat", incheiat: "finalizat", terminat: "finalizat",
+  neclar: "neclar", necunoscut: "neclar", nesigur: "neclar", ambiguu: "neclar",
+}));
+
+// Normalizare pentru etichete: accentele și formele flexionate diferă între
+// modele ("desemnat" / "desemnează" / "desemnare") fără să schimbe sensul.
+function foldLabel(value) {
+  return String(value || "")
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[\s\-/,]+/g, "_")
+    .replace(/[^\p{L}\p{N}_]+/gu, "")
+    .replace(/_+/g, "_")
+    .replace(/^_|_$/g, "");
+}
+
+function canonicalLabel(value, allowed, aliases) {
+  const folded = foldLabel(value);
+  if (!folded) return UNKNOWN_LABEL;
+  if (allowed.has(folded)) return folded;
+  if (aliases.has(folded)) return aliases.get(folded);
+  // Ultimul resort: același cuvânt de bază în listă sau în aliasuri.
+  for (const candidate of [...allowed, ...aliases.keys()]) {
+    const other = foldLabel(candidate);
+    if (other && (folded === other || folded.startsWith(other) || other.startsWith(folded))) {
+      return allowed.has(candidate) ? candidate : aliases.get(candidate);
+    }
+  }
+  return UNKNOWN_LABEL;
+}
+
+export function canonicalAction(value) {
+  return canonicalLabel(value, ACTION_SET, ACTION_ALIASES);
+}
+
+export function canonicalStage(value) {
+  return canonicalLabel(value, STAGE_SET, STAGE_ALIASES);
+}
+
 function comparisonPrompt(incoming, candidates) {
   const listed = candidates.map((candidate, index) =>
     `CANDIDAT ID ${index + 1}\n${articleBlock(candidate)}`
@@ -40,8 +154,13 @@ Reguli:
 - Verifică valorile concrete centrale (de exemplu număr de voturi, sumă, procent sau dată). Estimări diferite ale aceluiași rezultat nu sunt aceeași informație; tratează-le ca actualizare/relatări distincte, nu le uni doar pentru că actorul și subiectul coincid.
 - Declarații diferite ale aceleiași persoane, întâlniri diferite, etape diferite ale unui proces și evenimente ulterioare distincte NU sunt duplicate. Potrivește acțiunea/afirmația centrală, nu simpla participare la același context.
 - Nu marca "same_report" pe baza unui singur nume, a aceleiași teme sau a unei explicații vagi precum "relatează aceeași criză". O declarație ulterioară sau o informație concretă nouă (de exemplu, anunțarea datei unei noi desemnări) este o actualizare, nu duplicatul unei reacții anterioare care doar aștepta pașii următori.
-- Pentru fiecare știre, extrage evenimentul central în câmpurile actor, acțiune, obiect și etapă. Scrie actorul ca nume canonic (fără funcție/titlu când numele apare în text). Canonicalizează acțiunea folosind o etichetă scurtă și identică atunci când sensul este identic (ex.: "anunță numirea" -> "anunță desemnare").
-- Pentru fiecare articol, indică unul sau mai multe ID-uri de unitate E# care susțin faptul central. Folosește ID-urile din textul primit; nu inventa unități și nu transcrie/parafraza dovezile.
+- Pentru fiecare știre, extrage evenimentul central în patru câmpuri:
+  * actor: numele canonic al persoanei sau instituției care acționează, fără funcție sau titlu când numele apare în text (ex. "Nicușor Dan", nu "președintele României"). Folosește "${UNKNOWN_LABEL}" dacă actorul nu poate fi identificat.
+  * action: O ETICHETĂ EXACTĂ din această listă: ${ACTION_LABELS.join(", ")}. Alege cea mai apropiată; nu scrie o formulare liberă.
+  * object: obiectul sau informația concretă, în cuvinte simple (ex. "reducerea TVA la alimente", "numărul de voturi pentru învestitură").
+  * stage: O ETICHETĂ EXACTĂ din această listă: ${STAGE_LABELS.join(", ")}. Alege cea mai apropiată; nu scrie o formulare liberă.
+- Pentru fiecare articol, indică unul sau mai multe ID-uri de unitate E# care susțin faptul central. Folosește ID-urile din textul primit; nu inventa unități.
+- Copiază pentru fiecare articol, în incoming_quotes și candidate_quotes, una sau două fraze EXACT cum apar în paragraful cu ID-ul indicat (fără a parafraza, fără puncte de suspensie, fără corectări). Citatele trebuie să fie copii literale; sunt verificate automat și un citat inventat invalidează răspunsul.
 - E1 este doar titlul, niciodată dovadă: pentru orice verdict definit, citează exclusiv paragrafe din corp (E2 sau mai mare) pentru ambele articole. Dacă nu găsești asemenea paragrafe, folosește "uncertain".
 - Estimează și duplicate_probability, un număr întreg 0–100 pentru probabilitatea ca știrile să relateze aceeași informație jurnalistică (nu doar aceeași temă/persoană). Repere: 95–100 = aceeași declarație/decizie/eveniment relatat de alte publicații; 80–94 = probabil aceeași informație centrală; 50–79 = context comun, dar diferență/etapă încă neclară; 20–49 = evoluții diferite în aceeași criză; 0–19 = evenimente fără legătură. Aliniază verdictul cu estimarea; nu ridica scorul doar fiindcă actorii sau contextul coincid.
 - Dacă nu poți identifica unități verificabile din ambele articole și arăta că actorul, acțiunea, obiectul și etapa coincid, verdictul nu poate fi "same_report"; folosește "uncertain".
@@ -49,7 +168,7 @@ Reguli:
 - Decide separat pentru fiecare candidat și include fiecare ID exact o dată. Motivul trebuie să numească pe scurt faptul comun concret sau diferența concretă, nu un procent și nu doar tema.
 - Exemplu NEGATIV: articolul A spune că un politician așteaptă pașii următori ai președintelui după un vot; articolul B anunță că președintele va consulta partidele și va nominaliza premier luni. Contextul și votul sunt comune, dar B aduce o decizie/calendar nou(ă): verdict "new_development", nu "same_report".
 - Exemplu POZITIV: două publicații redau aceeași declarație a aceleiași persoane despre aceeași decizie, iar fragmentele citate din ambele texte susțin acea declarație: "same_report".
-- Răspunde numai cu JSON valid în forma: {"results":[{"id":1,"verdict":"same_report|new_development|related_context|different|uncertain","duplicate_probability":97,"reason":"motiv concret în română","incoming_fact":{"actor":"...","action":"...","object":"...","stage":"..."},"candidate_fact":{"actor":"...","action":"...","object":"...","stage":"..."},"incoming_evidence_ids":["E2"],"candidate_evidence_ids":["E2"]}]}.
+- Răspunde numai cu JSON valid în forma: {"results":[{"id":1,"verdict":"same_report|new_development|related_context|different|uncertain","duplicate_probability":97,"reason":"motiv concret în română","incoming_fact":{"actor":"...","action":"...","object":"...","stage":"..."},"candidate_fact":{"actor":"...","action":"...","object":"...","stage":"..."},"incoming_evidence_ids":["E2"],"candidate_evidence_ids":["E2"],"incoming_quotes":["fraza exacta din corp"],"candidate_quotes":["fraza exacta din corp"]}]}.
 
 ȘTIRE NOUĂ\n${articleBlock(incoming)}
 
@@ -120,6 +239,48 @@ function sharedFactTerms(left, right) {
   return shared;
 }
 
+// Citatele sunt singura formă de dovadă verificabilă mecanic: modelul trebuie să
+// fi copiat un fragment care există cu adevărat în text. Un citat inventat este
+// exact simptomul de halucinație pe care-l combatem, deci îl tratăm ca un
+// răspuns invalid, nu ca o eroare de parsing.
+function normalizeQuote(value) {
+  return String(value || "")
+    .normalize("NFC")
+    .replace(/[’‘]/g, "'")
+    .replace(/[“”„]/g, '"')
+    .replace(/…/g, "...")
+    .toLocaleLowerCase("ro")
+    .replace(/[^\p{L}\p{N}]+/gu, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function quoteAppearsInArticle(quote, article) {
+  const needle = normalizeQuote(quote);
+  if (needle.length < 25) return false;
+  const units = articleEvidenceUnits(article);
+  return units.some((unit) => normalizeQuote(unit).includes(needle));
+}
+
+// Citatele sunt opționale pentru modelele care nu le emit, dar dacă sunt
+// prezente trebuie să fie copii literale. Întoarcem o problemă doar când
+// modelul a încercat să citeze ceva ce nu există în articol.
+function validateVerbatimQuotes(result, incoming, candidate) {
+  for (const [ids, quotes, article, side] of [
+    [result.incoming_evidence_ids, result.incoming_quotes, incoming, "incoming"],
+    [result.candidate_evidence_ids, result.candidate_quotes, candidate, "candidate"],
+  ]) {
+    if (!Array.isArray(quotes) || !quotes.length) continue;
+    const cited = quotes.filter((quote) => typeof quote === "string" && quote.trim());
+    if (!cited.length) continue;
+    const fabricated = cited.filter((quote) => !quoteAppearsInArticle(quote, article));
+    if (fabricated.length) {
+      return `Citatul pentru ${side === "incoming" ? "știrea nouă" : "candidat"} nu apare în textul articolului.`;
+    }
+  }
+  return null;
+}
+
 function conceptTokens(value) {
   const normalized = String(value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "").toLocaleLowerCase("ro");
   const tokens = factTokens(value);
@@ -174,16 +335,29 @@ function objectClearlyDiffers(left, right) {
   return objectOverlapRatio(left, right) < 0.6;
 }
 
-function evidenceSupportsFact(evidence, fact) {
+// Ancorarea dovezii pe câmpul „object" cerea ca obiectul fișei să apară
+// literal în paragraful citat. O publicație spune „...lui Siegfried Mureșan"
+// unde alta scrie „...funcția de prim-ministru", iar perechea e tot aceeași
+// știre: verificarea respingea corectul pentru că modelul a rezumat cu
+// cuvintele lui, nu pentru că dovezile ar fi fost greșite.
+//
+// Înlocuim potrivirea literală cu două semne mai bune: dacă modelul a citat
+// un fragment verificabil (verbatim), acesta ESTE dovada, fiind copiat din
+// text; altfel cădem înapoi pe potrivirea lexicală, pentru modelele care nu
+// emit citate. În ambele situații, efortul rămâne asimetric față de calea
+// negativă.
+function evidenceSupportsFact(evidence, fact, { quoteVerified = false } = {}) {
+  if (quoteVerified) return true;
   const objectTokens = conceptTokens(fact.object);
   const evidenceTokens = conceptTokens(evidence);
   const objectIsGrounded = objectTokens.size > 0 && Array.from(objectTokens).some((token) => evidenceTokens.has(token));
+  if (!objectIsGrounded) return false;
   const otherFactTerms = [fact.actor, fact.action, fact.stage].join(" ");
   // Actor names alone are too generic to support a duplicate; the concrete
   // object must appear in the referenced evidence as well as at least one
   // actor/action/stage detail. Limited lexical matching is intentional because
   // outlets paraphrase, while event-object equality is checked separately.
-  return objectIsGrounded && sharedFactTerms(evidence, otherFactTerms) > 0;
+  return sharedFactTerms(evidence, otherFactTerms) > 0;
 }
 
 function voteCounts(text) {
@@ -228,6 +402,25 @@ function includesBodyEvidence(ids, article) {
   });
 }
 
+// Acțiunea și etapa sunt comparate pe etichete canonice, nu pe șiruri brute.
+// "anunță" / "anunțare" / "anunțare consultări" descriu aceeași acțiune și trebuie
+// să coincidă; o etichetă pe care modelul nu a putut-o încadra rămâne
+// necunoscută și nu poate fi folosită pentru a respinge un duplicat.
+function labelsConflict(leftCanonical, rightCanonical) {
+  if (leftCanonical === UNKNOWN_LABEL || rightCanonical === UNKNOWN_LABEL) return false;
+  return leftCanonical !== rightCanonical;
+}
+
+function actorsConflict(incomingFact, candidateFact) {
+  const left = normalizeEvidenceText(incomingFact.actor);
+  const right = normalizeEvidenceText(candidateFact.actor);
+  if (!left || !right) return false;
+  if (left === right) return false;
+  // Un nume canonic poate apărea cu un calificativ suplimentar ("Nicușor Dan"
+// / "Dan"). Cerem un termen comun înainte să declarăm actorii diferiți.
+  return sharedFactTerms(left, right) === 0;
+}
+
 function validateDuplicateEvidence(result, incoming, candidate) {
   const incomingFact = result.incoming_fact || {};
   const candidateFact = result.candidate_fact || {};
@@ -235,26 +428,39 @@ function validateDuplicateEvidence(result, incoming, candidate) {
   const factsComplete = fields.every((field) => typeof incomingFact[field] === "string" && incomingFact[field].trim() &&
     typeof candidateFact[field] === "string" && candidateFact[field].trim());
   if (!factsComplete) return "Nu există o fișă completă a faptului central pentru ambele articole.";
+
+  // Un citat care nu există în articol înseamnă că modelul a inventat dovada.
+  // Verificăm asta înainte de orice altceva: o dovadă fabricată invalidează
+  // întregul verdict, indiferent cât de bine arată fișele faptelor.
+  const quoteProblem = validateVerbatimQuotes(result, incoming, candidate);
+  if (quoteProblem) return quoteProblem;
+  const hasVerifiedQuotes = [result.incoming_quotes, result.candidate_quotes].some((quotes) =>
+    Array.isArray(quotes) && quotes.some((quote) => typeof quote === "string" && quote.trim().length >= 25)
+  );
+
   const incomingEvidence = evidenceFromUnitIds(result.incoming_evidence_ids, incoming);
   const candidateEvidence = evidenceFromUnitIds(result.candidate_evidence_ids, candidate);
   if (!incomingEvidence || !candidateEvidence) return "Referințele de probă nu indică unități valide din ambele articole.";
   if (!includesBodyEvidence(result.incoming_evidence_ids, incoming) || !includesBodyEvidence(result.candidate_evidence_ids, candidate)) {
     return "Un verdict de duplicat trebuie susținut și de corpul ambelor articole, nu doar de titluri.";
   }
-  if (!evidenceSupportsFact(incomingEvidence, incomingFact) ||
-      !evidenceSupportsFact(candidateEvidence, candidateFact)) {
+  if (!evidenceSupportsFact(incomingEvidence, incomingFact, { quoteVerified: hasVerifiedQuotes }) ||
+      !evidenceSupportsFact(candidateEvidence, candidateFact, { quoteVerified: hasVerifiedQuotes })) {
     return "Fragmentele exacte nu susțin suficient fișele faptelor centrale.";
   }
-  if (normalizeEvidenceText(incomingFact.action) !== normalizeEvidenceText(candidateFact.action)) {
-    return "Acțiunile centrale extrase diferă.";
-  }
-  if (normalizeEvidenceText(incomingFact.actor) !== normalizeEvidenceText(candidateFact.actor)) {
+  if (actorsConflict(incomingFact, candidateFact)) {
     return "Actorii faptelor centrale nu se potrivesc suficient.";
+  }
+  if (labelsConflict(canonicalAction(incomingFact.action), canonicalAction(candidateFact.action))) {
+    return "Acțiunile centrale extrase diferă.";
   }
   if (objectOverlapRatio(incomingFact.object, candidateFact.object) < 0.6) {
     return "Obiectul/informația concretă a faptelor centrale diferă.";
   }
-  if (normalizeEvidenceText(incomingFact.stage) !== normalizeEvidenceText(candidateFact.stage)) {
+  // Două etape diferite înseamnă etape diferite ale aceluiași proces (anunț
+  // versus vot, plan versus încheiere), nu același text. Aici eticheta
+  // canonicală este semnul urmărit, nu diferența de formulare.
+  if (labelsConflict(canonicalStage(incomingFact.stage), canonicalStage(candidateFact.stage))) {
     return "Etapa sau momentul relatat diferă.";
   }
   if (hasConflictingVoteCounts(incomingEvidence, candidateEvidence)) {
@@ -270,6 +476,15 @@ function validateDuplicateEvidence(result, incoming, candidate) {
   return null;
 }
 
+// Calea negativă are cerințe asimetrică față de cea pozitivă, intenționat.
+// Pentru a UNI două articole într-un singur eveniment trebuie dovedit că sunt
+// același fapt: acolo cere și ancorare lexicală, și acord pe toate câmpurile.
+// Pentru a le SEPARA nu trebuie demonstrat nimic pozitiv, ci doar că faptele
+// centrale diferă într-un mod verificabil. Cerând același nivel de ancorare
+// lexicală și pentru respingere, orice rezumat rearanjat de model trimitea
+// aproape orice pereche corectă la verificare manuală, ceea ce golea
+// coada de semnal și o făcea inutilă. Aici verificăm doar că diferența e
+// reală și susținută de paragrafe din ambele corpuri.
 function validateDifferentEvidence(result, incoming, candidate) {
   const incomingFact = result.incoming_fact || {};
   const candidateFact = result.candidate_fact || {};
@@ -277,21 +492,48 @@ function validateDifferentEvidence(result, incoming, candidate) {
   const factsComplete = fields.every((field) => typeof incomingFact[field] === "string" && incomingFact[field].trim() &&
     typeof candidateFact[field] === "string" && candidateFact[field].trim());
   if (!factsComplete) return "Lipsește fișa faptului central necesară pentru a justifica diferența.";
+
+  const quoteProblem = validateVerbatimQuotes(result, incoming, candidate);
+  if (quoteProblem) return quoteProblem;
+
   const incomingEvidence = evidenceFromUnitIds(result.incoming_evidence_ids, incoming);
   const candidateEvidence = evidenceFromUnitIds(result.candidate_evidence_ids, candidate);
   if (!incomingEvidence || !candidateEvidence) return "Referințele care ar demonstra diferența nu indică unități valide din ambele articole.";
   if (!includesBodyEvidence(result.incoming_evidence_ids, incoming) || !includesBodyEvidence(result.candidate_evidence_ids, candidate)) {
     return "O diferență între evenimente trebuie susținută și de corpul ambelor articole, nu doar de titluri.";
   }
-  if (!evidenceSupportsFact(incomingEvidence, incomingFact) ||
-      !evidenceSupportsFact(candidateEvidence, candidateFact)) {
-    return "Fragmentele exacte nu susțin suficient fișele folosite pentru a declara articolele diferite.";
-  }
-  const factsDiffer = normalizeEvidenceText(incomingFact.actor) !== normalizeEvidenceText(candidateFact.actor) ||
-    normalizeEvidenceText(incomingFact.action) !== normalizeEvidenceText(candidateFact.action) ||
-    objectClearlyDiffers(incomingFact.object, candidateFact.object) ||
-    normalizeEvidenceText(incomingFact.stage) !== normalizeEvidenceText(candidateFact.stage);
+  // O singură diferență concretă și verificată este suficientă pentru a
+  // respinge supoziția de duplicat; nu se cere ca toate cele patru câmpuri să
+  // fie simultan ancorate în text, fiindcă acesta este exact cazul în care
+  // modelul a citit corect dar a reformulat altfel.
+  const actionDiffers = labelsConflict(canonicalAction(incomingFact.action), canonicalAction(candidateFact.action));
+  const stageDiffers = labelsConflict(canonicalStage(incomingFact.stage), canonicalStage(candidateFact.stage));
+  const actorDiffers = actorsConflict(incomingFact, candidateFact);
+  const objectDiffers = objectClearlyDiffers(incomingFact.object, candidateFact.object);
+  const factsDiffer = actorDiffers || actionDiffers || stageDiffers || objectDiffers;
   if (!factsDiffer) return "Fișele faptelor par identice, deși verdictul spune că articolele sunt diferite.";
+
+  // Totuși, o diferență trebuie să fie și verificabilă în text: dacă obiectul
+  // concret diferă, fragmentele citate trebuie să susțină măcar un termen
+  // al obiectului respectiv. Fără acest minimum, un model care a inventat
+  // obiecte diferite ar putea respinge un duplicat real.
+  if (objectDiffers) {
+    const incomingGrounded = conceptTokens(incomingFact.object).size === 0 ||
+      sharedFactTerms(incomingEvidence, incomingFact.object) > 0;
+    const candidateGrounded = conceptTokens(candidateFact.object).size === 0 ||
+      sharedFactTerms(candidateEvidence, candidateFact.object) > 0;
+    if (!incomingGrounded || !candidateGrounded) {
+      return "Diferența de obiect nu este susținută de fragmentele citate.";
+    }
+  }
+  // Cazul în care actorul, acțiunea și obiectul coincid, iar singurul semnal
+  // diferit este etapa ("anunț" față de "prezentare", "plan" față de "votat")
+  // este exact clasa în care o decizie automată merge cel mai greșit: de
+  // obicei sunt etape ale aceluiași proces, iar modelul le poate trata ca
+  // evenimente separate fără să greșească lectura textului. Îl escaladăm.
+  if (stageDiffers && !actorDiffers && !actionDiffers && !objectDiffers) {
+    return "Actorul, acțiunea și obiectul coincid, iar diferența ține doar de etapă; o evoluție ulterioară necesită verificare manuală.";
+  }
   return null;
 }
 

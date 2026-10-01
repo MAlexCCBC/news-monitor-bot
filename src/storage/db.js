@@ -4,6 +4,7 @@ import { fileURLToPath } from "url";
 import { createPendingApprovalStore } from "./pending-approvals.js";
 import { createAiPostHistoryStore } from "./ai-post-history.js";
 import { mergePendingArticleApprovals, readArticleSimilarityHistory } from "./article-history.js";
+import { createSimilarityFeedbackStore } from "./similarity-feedback.js";
 import { sameArticleUrl } from "../utils/article-url.js";
 import { ensureColumn } from "./migrations.js";
 import { createArticleFailureStore } from "./article-failures.js";
@@ -11,6 +12,7 @@ import { createArticleFailureStore } from "./article-failures.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const db = new Database(path.join(__dirname, "../../data.sqlite"));
 const articleFailures = createArticleFailureStore(db);
+const similarityFeedback = createSimilarityFeedbackStore(db);
 
 db.pragma("journal_mode = DELETE");
 
@@ -135,11 +137,12 @@ export function saveModelCooldown(model, cooldownUntil) {
 }
 
 export function cleanupOld(hoursBack, daysBackImages) {
-  const cutoffNews = Date.now() - hoursBack * 60 * 60 * 1000 * 2; // pastram 2x ca marja
+  const cutoff = Date.now() - hoursBack * 60 * 60 * 1000 * 2; // pastram 2x ca marja
   const cutoffImg = Date.now() - daysBackImages * 24 * 60 * 60 * 1000 * 2;
-  db.prepare(`DELETE FROM news_history WHERE created_at < ?`).run(cutoffNews);
+  db.prepare(`DELETE FROM news_history WHERE created_at < ?`).run(cutoff);
   db.prepare(`DELETE FROM image_history WHERE created_at < ?`).run(cutoffImg);
   db.prepare(`DELETE FROM ai_model_cooldowns WHERE cooldown_until <= ?`).run(Date.now());
+  similarityFeedback.cleanup();
 }
 
 // Forteaza scrierea completa pe disc a bazei de date (folosit inainte de a
@@ -153,6 +156,7 @@ export function checkpointDb() {
 
 export default db;
 export const pendingApprovals = createPendingApprovalStore(db);
+export { similarityFeedback };
 const aiPostHistory = createAiPostHistoryStore(db);
 export const saveAiPost = (item) => aiPostHistory.save(item);
 export const getAllAiPosts = () => aiPostHistory.getAll();

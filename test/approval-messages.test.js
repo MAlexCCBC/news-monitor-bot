@@ -15,8 +15,10 @@ test("link similarity prompt labels the link-to-link comparison and exposes both
 
   assert.match(text, /Comparație între link-uri/);
   assert.match(text, /Posibil duplicat · 91%/);
-  assert.match(text, /Scorul semantic este apropierea vectorilor/);
-  assert.match(text, /nu probabilitate/);
+  // A vector score says nothing about events, so the card states what was
+  // actually decided instead of explaining the metric.
+  assert.match(text, /Gemini a citit ambele articole integral/);
+  assert.doesNotMatch(text, /apropierea vectorilor/);
   assert.match(text, /href="https:\/\/news\.example\/current\?id=1&amp;x=2"/);
   assert.match(text, /<a href="https:\/\/news\.example\/current\?id=1&amp;x=2">https:\/\/news\.example\/current\?id=1&amp;x=2<\/a>/);
   assert.match(text, /<a href="https:\/\/news\.example\/previous">https:\/\/news\.example\/previous<\/a>/);
@@ -74,13 +76,29 @@ test("an uncertain AI comparison is clearly presented for manual review", () => 
     comparisonTitle: "Articol anterior", similarity: 0,
     simResult: { similarityBasis: "ai_cross_embedding", aiVerdict: "uncertain", aiSuggestedVerdict: "same_report", aiSimilarityProbability: 96, aiRationale: "Ambele redau aceeași declarație despre alegerile anticipate și rectificarea bugetară.", aiChecks: [{ model: "gemini-test", validatedVerdict: "uncertain", duplicateProbability: 96, reason: "Ambele redau aceeași declarație despre alegerile anticipate." }] },
   });
-  assert.match(text, /Similaritate neclară — verificare manuală/);
+  assert.match(text, /Verificare manuală/);
   assert.match(text, /96% estimare Gemini/);
-  assert.match(text, /a sugerat „same_report"/);
-  assert.match(text, /nu este o probabilitate statistică calibrată/);
-  assert.match(text, /Explicația Gemini: Ambele redau aceeași declarație/);
+  // The concrete reason from the model is the useful part of this card.
+  assert.match(text, /Motivul: Ambele redau aceeași declarație/);
   assert.match(text, /Verificări păstrate: gemini-test: uncertain \(96%\)/);
   assert.doesNotMatch(text, /scor semantic 0%/);
+});
+
+test("model-supplied text cannot break the card or inject markup", () => {
+  const text = formatApprovalText({
+    kind: "article", url: "https://news.example/current",
+    article: { title: "Articol nou" }, comparisonUrl: "https://news.example/old",
+    comparisonTitle: "Articol anterior", similarity: 0,
+    simResult: {
+      similarityBasis: "semantic_ai", aiVerdict: "uncertain",
+      aiRationale: "<b>urgent</b> & \"special\" {avertisment}",
+      aiChecks: [{ model: "gemini-test", validatedVerdict: "uncertain", reason: "<script>alert(1)</script> motiv" }],
+    },
+  });
+  assert.doesNotMatch(text, /<script>/);
+  assert.doesNotMatch(text, /<b>urgent<\/b>/);
+  assert.match(text, /urgent/);
+  assert.match(text, /motiv/);
 });
 
 test("pending-approval duplicates are labeled as awaiting review and show attached sources", () => {
@@ -90,7 +108,7 @@ test("pending-approval duplicates are labeled as awaiting review and show attach
     simResult: { similarityBasis: "semantic_ai", aiVerdict: "duplicate", isPendingApproval: true },
     relatedArticles: [{ url: "https://news.example/other", article: { title: "Altă sursă" } }],
   });
-  assert.match(text, /aprobare deja în așteptare/);
+  assert.match(text, /cerere deja în așteptare/);
   assert.match(text, /Linkuri suplimentare confirmate ca aceeași știre/);
   assert.match(text, /https:\/\/news\.example\/other/);
 });

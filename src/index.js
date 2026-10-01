@@ -55,7 +55,8 @@ import { prepareArticlePost } from "./ai/prepare-post.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage } from "./image/search.js";
-import { saveNews, saveAiPost, saveArticleFailure, getRecentArticleSimilarityCandidates, isUrlSeen, cleanupOld, pendingApprovals } from "./storage/db.js";
+import { saveNews, saveAiPost, saveArticleFailure, getRecentArticleSimilarityCandidates, isUrlSeen, cleanupOld, pendingApprovals, similarityFeedback } from "./storage/db.js";
+import { feedbackLookupFrom } from "./storage/similarity-feedback.js";
 import { ARTICLE_HISTORY_HOURS } from "./storage/article-history.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
@@ -352,6 +353,9 @@ async function handleApprovalCallback(callbackQuery) {
     if (timer) clearTimeout(timer);
     approvalExpiryTimers.delete(id);
     pendingApprovals.setState(id, "ignored");
+    // Cererea ignorată înseamnă că omul a considerat știrea deja acoperită:
+    // perechea se reține ca adevăr, ca să nu mai fie întrebată din nou.
+    recordSimilarityFeedback(item, "same_story");
     await persistPendingApprovals();
     await answerCallbackSafely(notifyBot, callbackQuery, { text: "Știre ignorată." });
     try {
@@ -394,6 +398,10 @@ async function handleApprovalCallback(callbackQuery) {
         }
       );
       pendingApprovals.setState(id, "done");
+      // Știrea a fost aprobată și trimisă: compararea cu articolul similar era
+      // un fals pozitiv. Perechea se reține ca „știri diferite", ca verificarea
+      // să nu se mai repete pentru aceleași două linkuri.
+      recordSimilarityFeedback(item, "distinct");
       await persistPendingApprovals();
       try {
         const status = "Știre procesată și trimisă cu succes!";
@@ -460,8 +468,28 @@ async function finalizeAndSendArticle(article, url, simResult, matchedKeywords =
   }
 }
 
-function saveRelatedApprovalArticles(approval) {
-  for (const related of approval.relatedArticles || []) {
+// Decizia omului asupra unei cereri de similaritate este singurul semnal de
+// învățare disponibil: nu putem cunoaște de acum ce știri vor apărea. O
+// pereche se reține doar dacă există un articol cu care a fost comparată, ca
+// să nu umplem tabelul cu decizii fără obiect.
+function recordSimilarityFeedback(item, decision) {
+  const comparisonUrl = item?.comparisonUrl || item?.simResult?.similarUrl;
+  if (!item?.url || !comparisonUrl) return;
+  try {
+    similarityFeedback.record({
+      articleUrl: item.url,
+      articleTitle: item.article?.title || "",
+      comparisonUrl,
+      decision,
+      zone: item.simResult?.similarityZone || null,
+    });
+    console.log(`[feedback] ${decision}: ${item.url} ↔ ${comparisonUrl}`);
+  } catch (err) {
+    console.warn(`[feedback] Nu am putut reține decizia: ${err.message}`);
+  }
+}
+
+function saveRelatedApprovalArticles(approval) {  for (const related of approval.relatedArticles || []) {
     if (!related.url) continue;
     saveNews({
       url: related.url,
@@ -637,7 +665,9 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       const recentNews = getRecentArticleSimilarityCandidates();
       // Păstrăm separatorul ca să delimităm titlul de corpul integral în arbitraj.
       const textToEmbed = `${article.title}\n${article.content || ""}`;
-      simResult = await timedStage("article_similarity", () => checkSimilarity(textToEmbed, recentNews, threshold, url));
+      simResult = await timedStage("article_similarity", () => checkSimilarity(
+        textToEmbed, recentNews, threshold, url, { feedbackLookup: feedbackLookupFrom(similarityFeedback) }
+      ));
 
       if (simResult.isDuplicate) {
         if (simResult.aiVerdict === "duplicate" && simResult.isPendingApproval && simResult.pendingApprovalId) {

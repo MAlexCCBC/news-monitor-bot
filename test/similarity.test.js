@@ -70,15 +70,33 @@ test("an embedding-only positive becomes manual review when Gemini cannot arbitr
   assert.match(result.similarityZone, /Gemini indisponibil/);
 });
 
-test("an over-cap embedding positive is not allowed to block without a Gemini verdict", () => {
+test("an over-cap embedding positive is never offered as a duplicate without a Gemini verdict", () => {
   const reviewed = { url: "reviewed", score: .91, isDuplicate: true, embeddingComparable: true };
   const unreviewed = { url: "unreviewed", score: .90, isDuplicate: true, embeddingComparable: true };
   const result = applySimilarityAiReview(
     [reviewed, unreviewed], [reviewed], { results: [{ verdict: "different", reason: "Evenimente distincte" }] }
   );
-  assert.equal(result.url, "unreviewed");
+  // The only candidate Gemini compared was rejected outright, and the other
+  // one never reached the model. Nothing legitimately holds this article back,
+  // and no unreviewed article is presented as the thing to compare against.
+  assert.equal(result.isDuplicate, false);
+  assert.notEqual(result.url, "unreviewed");
+  assert.doesNotMatch(result.similarityZone || "", /candidat neanalizat/);
+});
+
+test("an ambiguous comparison is shown as the pair the model actually compared", () => {
+  const compared = { url: "compared", score: .72, isDuplicate: false, embeddingComparable: true };
+  const unreviewed = { url: "unreviewed", score: .95, isDuplicate: true, embeddingComparable: true };
+  const result = applySimilarityAiReview(
+    [compared, unreviewed], [compared],
+    { results: [{ verdict: "uncertain", reason: "Nu se poate decide dacă este același eveniment.", modelVerdict: "different" }] }
+  );
+  // The highest-scoring candidate was never compared. Following it would show
+  // the reader an arbitrary article next to the story they care about.
+  assert.equal(result.url, "compared");
+  assert.equal(result.isDuplicate, true);
   assert.equal(result.aiVerdict, "uncertain");
-  assert.match(result.similarityZone, /candidat neanalizat/);
+  assert.match(result.similarityZone, /NECESITĂ VERIFICARE/);
 });
 
 test("AI candidate retrieval reserves room for lexical evidence and prioritizes local positives", () => {

@@ -166,7 +166,7 @@ test("uncertain pairs get at most three independent model checks", async () => {
   assert.equal(result.results[0].modelChecks.length, 3);
 });
 
-test("similarity arbitration routes an unsupported visit-stage distinction to manual review", async () => {
+test("similarity arbitration accepts a verified difference between a planned visit and the meeting itself", async () => {
   let capturedPrompt = "";
   const result = await arbitrateSimilarity(
     { title: "Dan s-a întâlnit cu președintele ceh", content: "Întâlnirea a avut loc astăzi, iar cei doi au discutat securitatea regională." },
@@ -183,7 +183,7 @@ test("similarity arbitration routes an unsupported visit-stage distinction to ma
                 parts: [{ text: JSON.stringify({ results: [{
                   id: 1,
                   verdict: "different",
-                  reason: "Primul anunță agenda, al doilea relatează întâlnirea și discuțiile desfășurate.",
+                  reason: "Primul relatează întâlnirea desfășurată, al doilea anunță agenda vizitei.",
                   incoming_fact: { actor: "Nicușor Dan", action: "relatează întâlnire", object: "securitatea regională", stage: "întâlnire desfășurată" },
                   candidate_fact: { actor: "Nicușor Dan", action: "anunță agendă", object: "întâlnire cu președintele ceh", stage: "plan înaintea întâlnirii" },
                   incoming_evidence_ids: ["E2"],
@@ -198,8 +198,36 @@ test("similarity arbitration routes an unsupported visit-stage distinction to ma
   );
   assert.match(capturedPrompt, /CANDIDAT ID 1/);
   assert.match(capturedPrompt, /faptul central/);
-  assert.equal(result.results[0].verdict, "uncertain");
-  assert.match(result.results[0].reason, /verificare manuală/);
+  // A difference that is concrete and readable in both bodies is a settled
+  // rejection: the two articles report different developments, so sending this
+  // pair to manual review would only add noise to the approval queue.
+  assert.equal(result.results[0].verdict, "different", result.results[0].reason);
+});
+
+test("a difference that rests only on the stage of the same event still needs a human", () => {
+  const incoming = {
+    title: "Guvernul va anunța mâine noua cotă TVA",
+    content: "Guvernul a anunțat că va prezenta mâine proiectul de modificare a cotei TVA.",
+  };
+  const candidate = {
+    title: "Guvernul a prezentat proiectul de modificare a cotei TVA",
+    content: "Guvernul a prezentat proiectul de modificare a cotei TVA în ședința de astăzi.",
+  };
+  // Same actor, same action, same object, same evidence quality: the only thing
+  // separating the reports is the moment they describe. That single-field
+  // difference is the class where an automatic merge or split is least
+  // trustworthy, so it is escalated instead of decided.
+  const parsed = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "different",
+    reason: "Unul este anunțul, celălalt este prezentarea.",
+    incoming_fact: { actor: "Guvernul", action: "anunță", object: "cotă TVA", stage: "planificat" },
+    candidate_fact: { actor: "Guvernul", action: "anunță", object: "cotă TVA", stage: "decizionat" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(parsed[0].verdict, "uncertain", parsed[0].reason);
+  assert.match(parsed[0].reason, /etap/i);
 });
 
 test("a generic duplicate verdict about the post-vote context is downgraded when event facts differ", () => {
@@ -225,7 +253,9 @@ test("a generic duplicate verdict about the post-vote context is downgraded when
   assert.equal(result[0].modelVerdict, "duplicate");
   assert.equal(result[0].modelReason, "Aceleași declarații oficiale imediate după vot.");
   assert.equal(result[0].duplicateProbability, 94);
-  assert.match(result[0].reason, /Acțiunile centrale extrase diferă/);
+  // The generic "same official statements" claim is rejected on the concrete
+  // facts: a different person (Dan vs. Mureșan) announcing a different thing.
+  assert.match(result[0].reason, /Actorii faptelor centrale nu se potrivesc/);
 });
 
 test("a distinct stage with evidence in both article bodies can be automatically rejected", () => {
@@ -570,6 +600,79 @@ test("metamorphic object-substitution cases cannot turn a shared policy label in
     }] }), 1, incoming, [candidate]);
     assert.equal(result[0].verdict, "uncertain", `${left} vs ${right}`);
   }
+});
+
+test("a fabricated verbatim quote invalidates an otherwise confident duplicate", () => {
+  const incoming = {
+    title: "Nicușor Dan anunță consultări și nominalizarea unui premier luni",
+    content: "Președintele Nicușor Dan a spus că va consulta partidele luni și va desemna un premier în aceeași zi.",
+  };
+  const candidate = {
+    title: "Nicușor Dan va nominaliza luni un nou premier",
+    content: "Președintele Nicușor Dan a anunțat consultări cu partidele luni dimineață și nominalizarea unui premier în aceeași zi.",
+  };
+  const facts = {
+    actor: "Nicușor Dan", action: "anunță", object: "nominalizarea unui premier", stage: "planificat",
+  };
+  // The fact cards and the paragraph references are all correct, and the model
+  // is confident. Only the quoted sentence was invented. This is the exact
+  // shape of a hallucinated comparison, so it must not survive as a duplicate.
+  const fabricated = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    duplicate_probability: 99,
+    reason: "Aceeași declarație.",
+    incoming_fact: facts,
+    candidate_fact: facts,
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+    incoming_quotes: ["Președintele Nicușor Dan a spus că va consulta partidele luni și va desemna un premier în aceeași zi."],
+    candidate_quotes: ["Potrivit unor surse din Parlament, premierul desemnat urmează să fie validat înainte de weekend."],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(fabricated[0].verdict, "uncertain");
+  assert.match(fabricated[0].reason, /nu apare în textul articolului/);
+
+  // The same pair passes once the quotes are literal copies of the text.
+  const verified = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    duplicate_probability: 96,
+    reason: "Aceeași declarație.",
+    incoming_fact: facts,
+    candidate_fact: facts,
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+    incoming_quotes: ["Președintele Nicușor Dan a spus că va consulta partidele luni și va desemna un premier în aceeași zi."],
+    candidate_quotes: ["Președintele Nicușor Dan a anunțat consultări cu partidele luni dimineață și nominalizarea unui premier în aceeași zi."],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(verified[0].verdict, "duplicate", verified[0].reason);
+  assert.equal(verified[0].duplicateProbability, 96);
+});
+
+test("a fabricated quote also blocks a confident rejection of another story", () => {
+  const incoming = {
+    title: "Guvernul anunță reducerea TVA la alimente",
+    content: "Guvernul a prezentat un proiect care reduce taxa pe valoarea adăugată pentru alimente.",
+  };
+  const candidate = {
+    title: "Guvernul analizează reducerea TVA la combustibil",
+    content: "Executivul analizează o propunere de scădere a taxei pe valoarea adăugată pentru combustibili.",
+  };
+  // A rejection does not need a full proof chain, but it still cannot rest on
+  // text the model made up: a wrong "different" silently loses a real duplicate.
+  const parsed = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "different",
+    duplicate_probability: 5,
+    reason: "Obiecte diferite.",
+    incoming_fact: { actor: "Guvernul", action: "anunță", object: "TVA la alimente", stage: "planificat" },
+    candidate_fact: { actor: "Guvernul", action: "analizează", object: "TVA la combustibil", stage: "planificat" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+    candidate_quotes: ["Ministrul Finanțelor a exclus categoric orice creștere a impozitelor în a doua parte a anului."],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(parsed[0].verdict, "uncertain");
+  assert.match(parsed[0].reason, /nu apare în textul articolului/);
 });
 
 test("an unsupported Gemini duplicate reaches manual review instead of blocking or silently passing", () => {

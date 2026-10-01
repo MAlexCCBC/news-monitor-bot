@@ -19,12 +19,23 @@ function clickableUrl(value) {
   }
 }
 
+// Textul produs de model este afișat omului, deci trebuie igienizat: fără
+// ghilimele din JSON, fără tag-uri HTML care ar rupe mesajul Telegram și
+// limitat ca lungime. Nu inventăm conținut, doar curățăm ce a venit.
+function modelText(value, limit = 300) {
+  return escapeHtml(String(value || "")
+    .replace(/<[^>]*>/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, limit));
+}
+
 export function formatApprovalText(item) {
   const title = escapeHtml(item.article?.title || "(fără titlu)");
   const comparisonTitle = escapeHtml(item.comparisonTitle || "Știre anterioară");
   const comparisonLabel = item.simResult?.isPendingApproval
-    ? "Știre/link similar cu aprobare deja în așteptare"
-    : "Știre/link similar deja procesat";
+    ? "Știre similară cu o cerere deja în așteptare"
+    : "Știre similară deja procesată";
   const needsManualReview = item.simResult?.aiVerdict === "uncertain";
   const aiProbability = Number.isInteger(item.simResult?.aiSimilarityProbability)
     ? `${item.simResult.aiSimilarityProbability}% estimare Gemini`
@@ -34,28 +45,22 @@ export function formatApprovalText(item) {
   const score = aiProbability || (item.simResult?.similarityBasis === "ai_cross_embedding"
     ? (needsManualReview ? "neclar; verificare manuală" : "confirmat prin AI")
     : `${(Number(item.similarity || 0) * 100).toFixed(0)}%${needsManualReview ? " · verdict AI neclar" : item.simResult?.similarityBasis === "semantic_ai" ? " · confirmat prin AI" : ""}`);
-  const comparisonNote = item.simResult?.similarityBasis === "ai_cross_embedding"
-    ? (aiProbability
-      ? `Estimarea Gemini privește dacă este aceeași informație jurnalistică; nu este o probabilitate statistică calibrată.${needsManualReview ? ` Modelul a sugerat „${escapeHtml(item.simResult?.aiSuggestedVerdict || "incert")}", dar verificarea dovezilor cere confirmare manuală.` : ""}`
-      : needsManualReview
-      ? "Modelele nu au putut decide dacă textele integrale descriu același eveniment; verifică ambele linkuri înainte de alegere."
-      : "Verdict AI bazat pe comparația textelor integrale; vectorii de embedding provin din modele incompatibile.")
-    : (aiProbability
-      ? `Estimarea Gemini privește dacă este aceeași informație jurnalistică; nu este o probabilitate statistică calibrată.${needsManualReview ? ` Modelul a sugerat „${escapeHtml(item.simResult?.aiSuggestedVerdict || "incert")}", dar verificarea dovezilor cere confirmare manuală.` : ""}`
-      : needsManualReview
-      ? "Scorul semantic este apropierea vectorilor, nu probabilitate; comparația AI a rămas neconcludentă, deci este necesară verificarea manuală."
-      : "Scorul semantic este apropierea vectorilor, nu probabilitate; decizia include comparația articolelor complete.");
   const currentLink = clickableUrl(item.url);
   // Older pending requests may predate the dedicated comparison_url field;
   // the similarity result already persisted the candidate URL in that case.
   const comparisonLink = clickableUrl(item.comparisonUrl || item.simResult?.similarUrl);
-  const aiExplanation = needsManualReview && aiRationale
-    ? `\n\n<i>Explicația Gemini: ${escapeHtml(aiRationale)}</i>`
-    : "";
+  // Fiecare stare primește o explicație scrisă pentru om, nu pentru alt model.
+  // Un scor de similaritate de vector nu spune nimic despre evenimente, iar
+  // amestecul lui cu o decizie automată îl făcea ilizibil.
+  const comparisonNote = needsManualReview
+    ? (aiRationale
+        ? `Gemini nu a putut decide sigur dacă e aceeași informație. Motivul: ${modelText(aiRationale)}`
+        : "Gemini nu a putut decide sigur dacă e aceeași informație. Verifică cele două linkuri.")
+    : "Gemini a citit ambele articole integral și a decis că nu este același fapt.";
   const aiChecksExplanation = needsManualReview && aiChecks.length
     ? `\n\n<i>Verificări păstrate: ${aiChecks.map((check) => {
       const score = Number.isInteger(check.duplicateProbability) ? ` (${check.duplicateProbability}%)` : "";
-      const reason = check.reason ? ` — ${escapeHtml(check.reason)}` : "";
+      const reason = check.reason ? ` — ${modelText(check.reason, 200)}` : "";
       return `${escapeHtml(check.model)}: ${escapeHtml(check.validatedVerdict || check.verdict)}${score}${reason}`;
     }).join("; ")}</i>`
     : "";
@@ -73,10 +78,10 @@ export function formatApprovalText(item) {
       `<i>Filtrul pe texte AI a fost eliminat. Poți reîncerca trimiterea textului salvat.</i>`;
   }
 
-  return `${needsManualReview ? "❔" : "⏭️"} <b>${needsManualReview ? `Similaritate neclară — verificare manuală${aiProbability ? ` · ${score}` : ""}` : `Posibil duplicat · ${score}`}</b>\n\n` +
+  return `${needsManualReview ? "❔" : "⏭️"} <b>${needsManualReview ? `Verificare manuală${aiProbability ? ` · ${score}` : ""}` : `Posibil duplicat · ${score}`}</b>\n\n` +
     `<b>Comparație între link-uri</b>\n` +
     `<b>Link primit:</b> ${currentLink}\n` +
     `<b>${comparisonLabel}:</b> ${comparisonTitle} — ${comparisonLink}\n\n` +
-    `<i>${comparisonNote}</i>${aiExplanation}${aiChecksExplanation}${relatedLinks}\n\n` +
+    `<i>${comparisonNote}</i>${aiChecksExplanation}${relatedLinks}\n\n` +
     `<i>Dorești să fie procesată și trimisă oricum? Cererea expiră în 12 ore.</i>`;
 }
