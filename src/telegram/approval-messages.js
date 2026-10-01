@@ -52,11 +52,18 @@ export function formatApprovalText(item) {
   // Fiecare stare primește o explicație scrisă pentru om, nu pentru alt model.
   // Un scor de similaritate de vector nu spune nimic despre evenimente, iar
   // amestecul lui cu o decizie automată îl făcea ilizibil.
+  const aiVerdict = item.simResult?.aiVerdict;
   const comparisonNote = needsManualReview
     ? (aiRationale
         ? `Gemini nu a putut decide sigur dacă e aceeași informație. Motivul: ${modelText(aiRationale)}`
         : "Gemini nu a putut decide sigur dacă e aceeași informație. Verifică cele două linkuri.")
-    : "Gemini a citit ambele articole integral și a decis că nu este același fapt.";
+    : aiVerdict === "duplicate"
+      ? "Gemini a comparat articolele integral și a confirmat că relatează același fapt."
+      : ["different", "new_development", "related_context"].includes(aiVerdict)
+        ? "Gemini a comparat articolele integral și a respins potrivirea ca duplicat."
+        : aiVerdict === "unreviewed"
+          ? "Candidatul nu a fost verificat de Gemini și nu este tratat ca duplicat."
+          : "A fost găsit un candidat similar; verdictul Gemini nu este disponibil în această cerere.";
   const aiChecksExplanation = needsManualReview && aiChecks.length
     ? `\n\n<i>Verificări păstrate: ${aiChecks.map((check) => {
       const score = Number.isInteger(check.duplicateProbability) ? ` (${check.duplicateProbability}%)` : "";

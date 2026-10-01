@@ -15,9 +15,10 @@ test("link similarity prompt labels the link-to-link comparison and exposes both
 
   assert.match(text, /Comparație între link-uri/);
   assert.match(text, /Posibil duplicat · 91%/);
-  // A vector score says nothing about events, so the card states what was
-  // actually decided instead of explaining the metric.
-  assert.match(text, /Gemini a citit ambele articole integral/);
+  // A legacy item without a saved AI verdict must not claim Gemini decided
+  // either way.
+  assert.match(text, /verdictul Gemini nu este disponibil/);
+  assert.doesNotMatch(text, /Gemini .* a confirmat|Gemini .* a respins/);
   assert.doesNotMatch(text, /apropierea vectorilor/);
   assert.match(text, /href="https:\/\/news\.example\/current\?id=1&amp;x=2"/);
   assert.match(text, /<a href="https:\/\/news\.example\/current\?id=1&amp;x=2">https:\/\/news\.example\/current\?id=1&amp;x=2<\/a>/);
@@ -111,4 +112,16 @@ test("pending-approval duplicates are labeled as awaiting review and show attach
   assert.match(text, /cerere deja în așteptare/);
   assert.match(text, /Linkuri suplimentare confirmate ca aceeași știre/);
   assert.match(text, /https:\/\/news\.example\/other/);
+});
+
+test("confirmed duplicate approval never says Gemini rejected the match", () => {
+  const text = formatApprovalText({
+    kind: "article", url: "https://news.example/current", article: { title: "Protestele elevilor din Franța" },
+    comparisonUrl: "https://news.example/previous", comparisonTitle: "Bolojan despre alegeri anticipate",
+    similarity: 0.97,
+    simResult: { similarityBasis: "semantic_ai", aiVerdict: "duplicate", aiSimilarityProbability: 97 },
+  });
+  assert.match(text, /97% estimare Gemini/);
+  assert.match(text, /Gemini .* a confirmat că relatează același fapt/);
+  assert.doesNotMatch(text, /a decis că nu este același fapt|a respins potrivirea/);
 });
