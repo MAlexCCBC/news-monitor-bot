@@ -413,6 +413,53 @@ test("a negative verdict without traceable evidence becomes uncertain instead of
   assert.match(result[0].reason, /Lipsește fișa faptului central/);
 });
 
+test("a grounded actor difference rejects unrelated events even if a secondary object detail is ungrounded", () => {
+  const incoming = {
+    title: "Rareș Bogdan îl atacă pe Ilie Bolojan",
+    content: "Eurodeputatul Rareș Bogdan, încă membru al PNL, a lansat un atac la adresa lui Ilie Bolojan.",
+  };
+  const candidate = {
+    title: "Nicușor Dan poate dizolva Parlamentul",
+    content: "Nicușor Dan a spus că poate dizolva Parlamentul după îndeplinirea criteriilor constituționale.",
+  };
+  const [result] = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "different",
+    duplicate_probability: 0,
+    reason: "Rareș Bogdan îl atacă pe Bolojan; Nicușor Dan vorbește despre dizolvarea Parlamentului.",
+    incoming_fact: { actor: "Rareș Bogdan", action: "atacă", object: "Ilie Bolojan și platforma TollRo", stage: "declarație" },
+    candidate_fact: { actor: "Nicușor Dan", action: "decide", object: "dizolvarea Parlamentului și alegeri anticipate", stage: "analiză" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result.verdict, "different", result.reason);
+});
+
+test("invalid optional quotes do not override text-grounded duplicate evidence", () => {
+  const incoming = {
+    title: "Nicușor Dan despre TikTok",
+    content: "Nicușor Dan a spus la deschiderea anului universitar că nouă milioane de români folosesc TikTok și că societatea riscă să trăiască în două realități paralele.",
+  };
+  const candidate = {
+    title: "Declarația lui Nicușor Dan despre TikTok și societate",
+    content: "La deschiderea anului universitar, Nicușor Dan a spus că nouă milioane de români sunt pe TikTok și că vom trăi în două realități paralele.",
+  };
+  const [result] = parseSimilarityReview(JSON.stringify({ results: [{
+    id: 1,
+    verdict: "same_report",
+    duplicate_probability: 98,
+    reason: "Ambele articole redau aceeași declarație a lui Nicușor Dan despre TikTok.",
+    incoming_fact: { actor: "Nicușor Dan", action: "arată", object: "utilizarea TikTok și două realități paralele", stage: "deschiderea anului universitar" },
+    candidate_fact: { actor: "Nicușor Dan", action: "arată", object: "utilizarea TikTok și două realități paralele", stage: "deschiderea anului universitar" },
+    incoming_evidence_ids: ["E2"],
+    candidate_evidence_ids: ["E2"],
+    incoming_quotes: ["Acest fragment inventat nu apare în niciunul dintre cele două articole."],
+    candidate_quotes: ["Acest fragment inventat nu apare în niciunul dintre cele două articole."],
+  }] }), 1, incoming, [candidate]);
+  assert.equal(result.verdict, "duplicate", result.reason);
+  assert.equal(result.duplicateProbability, 98);
+});
+
 test("a duplicate verdict cannot pass on a short object that is only a subset of a different concrete object", () => {
   const incoming = {
     title: "Guvernul anunță reducerea TVA la alimente",
@@ -602,7 +649,7 @@ test("metamorphic object-substitution cases cannot turn a shared policy label in
   }
 });
 
-test("a fabricated verbatim quote invalidates an otherwise confident duplicate", () => {
+test("an inaccurate optional quote does not override a fact-grounded duplicate", () => {
   const incoming = {
     title: "Nicușor Dan anunță consultări și nominalizarea unui premier luni",
     content: "Președintele Nicușor Dan a spus că va consulta partidele luni și va desemna un premier în aceeași zi.",
@@ -614,9 +661,9 @@ test("a fabricated verbatim quote invalidates an otherwise confident duplicate",
   const facts = {
     actor: "Nicușor Dan", action: "anunță", object: "nominalizarea unui premier", stage: "planificat",
   };
-  // The fact cards and the paragraph references are all correct, and the model
-  // is confident. Only the quoted sentence was invented. This is the exact
-  // shape of a hallucinated comparison, so it must not survive as a duplicate.
+  // The fact cards and paragraph references are independently supported by
+  // both article bodies. A bad optional quote is ignored rather than forcing
+  // the pair into manual review.
   const fabricated = parseSimilarityReview(JSON.stringify({ results: [{
     id: 1,
     verdict: "same_report",
@@ -629,8 +676,8 @@ test("a fabricated verbatim quote invalidates an otherwise confident duplicate",
     incoming_quotes: ["Președintele Nicușor Dan a spus că va consulta partidele luni și va desemna un premier în aceeași zi."],
     candidate_quotes: ["Potrivit unor surse din Parlament, premierul desemnat urmează să fie validat înainte de weekend."],
   }] }), 1, incoming, [candidate]);
-  assert.equal(fabricated[0].verdict, "uncertain");
-  assert.match(fabricated[0].reason, /nu apare în textul articolului/);
+  assert.equal(fabricated[0].verdict, "duplicate", fabricated[0].reason);
+  assert.equal(fabricated[0].duplicateProbability, 99);
 
   // The same pair passes once the quotes are literal copies of the text.
   const verified = parseSimilarityReview(JSON.stringify({ results: [{
@@ -649,7 +696,7 @@ test("a fabricated verbatim quote invalidates an otherwise confident duplicate",
   assert.equal(verified[0].duplicateProbability, 96);
 });
 
-test("a fabricated quote also blocks a confident rejection of another story", () => {
+test("an inaccurate optional quote does not block a fact-grounded rejection", () => {
   const incoming = {
     title: "Guvernul anunță reducerea TVA la alimente",
     content: "Guvernul a prezentat un proiect care reduce taxa pe valoarea adăugată pentru alimente.",
@@ -658,8 +705,9 @@ test("a fabricated quote also blocks a confident rejection of another story", ()
     title: "Guvernul analizează reducerea TVA la combustibil",
     content: "Executivul analizează o propunere de scădere a taxei pe valoarea adăugată pentru combustibili.",
   };
-  // A rejection does not need a full proof chain, but it still cannot rest on
-  // text the model made up: a wrong "different" silently loses a real duplicate.
+  // Both the concrete action and object differences are visible in the cited
+  // body paragraphs; an unrelated optional quote must not turn this into a
+  // manual case.
   const parsed = parseSimilarityReview(JSON.stringify({ results: [{
     id: 1,
     verdict: "different",
@@ -671,8 +719,7 @@ test("a fabricated quote also blocks a confident rejection of another story", ()
     candidate_evidence_ids: ["E2"],
     candidate_quotes: ["Ministrul Finanțelor a exclus categoric orice creștere a impozitelor în a doua parte a anului."],
   }] }), 1, incoming, [candidate]);
-  assert.equal(parsed[0].verdict, "uncertain");
-  assert.match(parsed[0].reason, /nu apare în textul articolului/);
+  assert.equal(parsed[0].verdict, "different", parsed[0].reason);
 });
 
 test("an unsupported Gemini duplicate reaches manual review instead of blocking or silently passing", () => {

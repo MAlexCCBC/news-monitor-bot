@@ -182,7 +182,7 @@ test("strong embedding positives cannot crowd every lexical match out of Gemini'
     "a strong lexical match must retain a place even when many vector positives are present");
 });
 
-test("Gemini's candidate batch reserves slots for the newest articles independently of similarity scores", () => {
+test("recent stories cannot displace stronger vector candidates from Gemini's batch", () => {
   const olderVectorMatches = Array.from({ length: 10 }, (_, index) => ({
     url: `vector-${index}`, score: .92 - index * .01, isDuplicate: true,
     embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null,
@@ -200,8 +200,17 @@ test("Gemini's candidate batch reserves slots for the newest articles independen
   const selected = selectAiReviewCandidates([...olderVectorMatches, newest, nextNewest]);
 
   assert.equal(selected.length, 8);
-  assert.ok(selected.includes(newest));
-  assert.ok(selected.includes(nextNewest));
+  assert.ok(!selected.includes(newest));
+  assert.ok(!selected.includes(nextNewest));
+});
+
+test("recent full-text articles fill unused candidate slots but do not displace retrieved matches", () => {
+  const relevant = { url: "relevant", score: .58, isDuplicate: false,
+    embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null, historyRecencyRank: 20 };
+  const recent = { url: "recent", score: .12, isDuplicate: false,
+    embeddingComparable: true, samePublisher: false, lexicalRetrievalScore: null, historyRecencyRank: 0 };
+  const selected = selectAiReviewCandidates([recent, relevant]);
+  assert.deepEqual(selected.map((candidate) => candidate.url), ["relevant", "recent"]);
 });
 
 test("candidate retrieval remains capped at eight and retains a strongest lexical match across 100 history permutations", () => {

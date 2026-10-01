@@ -531,7 +531,9 @@ function selectReviewedCandidate(candidates, reviewedUrls) {
   return best;
 }
 
-const AI_RETRIEVAL_FLOOR = 0.62;
+// Keep a wider semantic net for Gemini: this is a candidate-recall threshold,
+// not a duplicate threshold. Gemini still makes the final event-level call.
+const AI_RETRIEVAL_FLOOR = 0.55;
 // One batched Gemini request can review more candidates without spending
 // additional RPD. Reserve room for lexical matches as well as embedding
 // positives so a semantically similar but factually different story cannot
@@ -579,9 +581,8 @@ export function selectAiReviewCandidates(candidates) {
     }
   };
 
-  // Let Gemini inspect likely false positives, but do not let them monopolize
-  // the batch. Independent headline/body matches and a small recency sample
-  // get their own retrieval budget even when embeddings miss the event.
+  // Pending decisions and independent lexical matches deserve a seat even
+  // when vectors rank other stories higher.
   const recentCandidates = candidates
     .filter((item) => Number.isFinite(item.historyRecencyRank))
     .sort((a, b) => a.historyRecencyRank - b.historyRecencyRank);
@@ -596,11 +597,10 @@ export function selectAiReviewCandidates(candidates) {
   // Reserve two Gemini slots for likely matches that have not yet been
   // published. They are not part of the durable news history until approved.
   addCandidates(pendingCandidates, 2);
-  addCandidates(recentCandidates, 2);
   addCandidates(vectorCandidates);
   addCandidates(lexicalCandidates);
-  // If embedding and lexical retrieval found too few candidates, still let
-  // Gemini inspect recent full-text articles instead of silently skipping AI.
+  // Recent full-text articles are a recall backstop only: they fill unused
+  // capacity, but never displace a candidate supported by similarity or text.
   addCandidates(recentCandidates);
   return selected;
 }
@@ -786,6 +786,20 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
   const openCandidates = learned.candidates.filter((candidate) => !candidate.humanVerified);
   const localBest = selectSimilarityCandidate(openCandidates);
   const reviewCandidates = selectAiReviewCandidates(openCandidates);
+  if (reviewCandidates.length) {
+    const retrievalSummary = reviewCandidates.map((candidate, index) => {
+      const signals = [
+        candidate.isDuplicate ? "embedding-positive" : null,
+        candidate.embeddingComparable && candidate.score >= AI_RETRIEVAL_FLOOR ? `vector=${Math.round(candidate.score * 100)}%` : null,
+        Number.isFinite(candidate.lexicalRetrievalScore) ? `text=${Math.round(candidate.lexicalRetrievalScore * 100)}%` : null,
+        candidate.isPendingApproval ? "pending" : null,
+        !candidate.isDuplicate && !Number.isFinite(candidate.lexicalRetrievalScore) &&
+          !(candidate.embeddingComparable && candidate.score >= AI_RETRIEVAL_FLOOR) ? "recent-backfill" : null,
+      ].filter(Boolean).join(",");
+      return `${index + 1}:${signals || "retrieved"}:${candidate.url}`;
+    }).join(" | ");
+    console.log(`[similarity-retrieval] ${reviewCandidates.length}/${openCandidates.length} candidați: ${retrievalSummary}`);
+  }
   let best = localBest;
   if (reviewCandidates.length) {
     let review = null;

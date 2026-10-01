@@ -239,10 +239,24 @@ function sharedFactTerms(left, right) {
   return shared;
 }
 
-// Citatele sunt singura formă de dovadă verificabilă mecanic: modelul trebuie să
-// fi copiat un fragment care există cu adevărat în text. Un citat inventat este
-// exact simptomul de halucinație pe care-l combatem, deci îl tratăm ca un
-// răspuns invalid, nu ca o eroare de parsing.
+function factFieldHasGroundedTerm(value, evidence) {
+  const fact = conceptTokens(value);
+  const source = conceptTokens(evidence);
+  return Array.from(fact).some((token) => source.has(token));
+}
+
+function actionIsGrounded(action, evidence) {
+  const expected = canonicalAction(action);
+  if (expected === UNKNOWN_LABEL) return false;
+  return Array.from(factTokens(evidence)).some((token) => canonicalAction(token) === expected);
+}
+
+function hasVerifiedQuote(quotes, article) {
+  return Array.isArray(quotes) && quotes.some((quote) =>
+    typeof quote === "string" && quote.trim().length >= 25 && quoteAppearsInArticle(quote, article)
+  );
+}
+
 function normalizeQuote(value) {
   return String(value || "")
     .normalize("NFC")
@@ -260,25 +274,6 @@ function quoteAppearsInArticle(quote, article) {
   if (needle.length < 25) return false;
   const units = articleEvidenceUnits(article);
   return units.some((unit) => normalizeQuote(unit).includes(needle));
-}
-
-// Citatele sunt opționale pentru modelele care nu le emit, dar dacă sunt
-// prezente trebuie să fie copii literale. Întoarcem o problemă doar când
-// modelul a încercat să citeze ceva ce nu există în articol.
-function validateVerbatimQuotes(result, incoming, candidate) {
-  for (const [ids, quotes, article, side] of [
-    [result.incoming_evidence_ids, result.incoming_quotes, incoming, "incoming"],
-    [result.candidate_evidence_ids, result.candidate_quotes, candidate, "candidate"],
-  ]) {
-    if (!Array.isArray(quotes) || !quotes.length) continue;
-    const cited = quotes.filter((quote) => typeof quote === "string" && quote.trim());
-    if (!cited.length) continue;
-    const fabricated = cited.filter((quote) => !quoteAppearsInArticle(quote, article));
-    if (fabricated.length) {
-      return `Citatul pentru ${side === "incoming" ? "știrea nouă" : "candidat"} nu apare în textul articolului.`;
-    }
-  }
-  return null;
 }
 
 function conceptTokens(value) {
@@ -429,14 +424,11 @@ function validateDuplicateEvidence(result, incoming, candidate) {
     typeof candidateFact[field] === "string" && candidateFact[field].trim());
   if (!factsComplete) return "Nu există o fișă completă a faptului central pentru ambele articole.";
 
-  // Un citat care nu există în articol înseamnă că modelul a inventat dovada.
-  // Verificăm asta înainte de orice altceva: o dovadă fabricată invalidează
-  // întregul verdict, indiferent cât de bine arată fișele faptelor.
-  const quoteProblem = validateVerbatimQuotes(result, incoming, candidate);
-  if (quoteProblem) return quoteProblem;
-  const hasVerifiedQuotes = [result.incoming_quotes, result.candidate_quotes].some((quotes) =>
-    Array.isArray(quotes) && quotes.some((quote) => typeof quote === "string" && quote.trim().length >= 25)
-  );
+  // A bad optional quote should not erase otherwise traceable paragraph
+  // evidence. Only a quote that actually appears in that article may relax
+  // the lexical fact check, and it relaxes it for that side alone.
+  const incomingQuoteVerified = hasVerifiedQuote(result.incoming_quotes, incoming);
+  const candidateQuoteVerified = hasVerifiedQuote(result.candidate_quotes, candidate);
 
   const incomingEvidence = evidenceFromUnitIds(result.incoming_evidence_ids, incoming);
   const candidateEvidence = evidenceFromUnitIds(result.candidate_evidence_ids, candidate);
@@ -444,8 +436,8 @@ function validateDuplicateEvidence(result, incoming, candidate) {
   if (!includesBodyEvidence(result.incoming_evidence_ids, incoming) || !includesBodyEvidence(result.candidate_evidence_ids, candidate)) {
     return "Un verdict de duplicat trebuie susținut și de corpul ambelor articole, nu doar de titluri.";
   }
-  if (!evidenceSupportsFact(incomingEvidence, incomingFact, { quoteVerified: hasVerifiedQuotes }) ||
-      !evidenceSupportsFact(candidateEvidence, candidateFact, { quoteVerified: hasVerifiedQuotes })) {
+  if (!evidenceSupportsFact(incomingEvidence, incomingFact, { quoteVerified: incomingQuoteVerified }) ||
+      !evidenceSupportsFact(candidateEvidence, candidateFact, { quoteVerified: candidateQuoteVerified })) {
     return "Fragmentele exacte nu susțin suficient fișele faptelor centrale.";
   }
   if (actorsConflict(incomingFact, candidateFact)) {
@@ -493,9 +485,6 @@ function validateDifferentEvidence(result, incoming, candidate) {
     typeof candidateFact[field] === "string" && candidateFact[field].trim());
   if (!factsComplete) return "Lipsește fișa faptului central necesară pentru a justifica diferența.";
 
-  const quoteProblem = validateVerbatimQuotes(result, incoming, candidate);
-  if (quoteProblem) return quoteProblem;
-
   const incomingEvidence = evidenceFromUnitIds(result.incoming_evidence_ids, incoming);
   const candidateEvidence = evidenceFromUnitIds(result.candidate_evidence_ids, candidate);
   if (!incomingEvidence || !candidateEvidence) return "Referințele care ar demonstra diferența nu indică unități valide din ambele articole.";
@@ -513,25 +502,30 @@ function validateDifferentEvidence(result, incoming, candidate) {
   const factsDiffer = actorDiffers || actionDiffers || stageDiffers || objectDiffers;
   if (!factsDiffer) return "Fișele faptelor par identice, deși verdictul spune că articolele sunt diferite.";
 
-  // Totuși, o diferență trebuie să fie și verificabilă în text: dacă obiectul
-  // concret diferă, fragmentele citate trebuie să susțină măcar un termen
-  // al obiectului respectiv. Fără acest minimum, un model care a inventat
-  // obiecte diferite ar putea respinge un duplicat real.
-  if (objectDiffers) {
-    const incomingGrounded = conceptTokens(incomingFact.object).size === 0 ||
-      sharedFactTerms(incomingEvidence, incomingFact.object) > 0;
-    const candidateGrounded = conceptTokens(candidateFact.object).size === 0 ||
-      sharedFactTerms(candidateEvidence, candidateFact.object) > 0;
-    if (!incomingGrounded || !candidateGrounded) {
-      return "Diferența de obiect nu este susținută de fragmentele citate.";
-    }
+  // Each proposed difference is checked against the cited full-text evidence
+  // on both sides. An unsupported secondary object must not veto a clear,
+  // independently grounded actor/action difference (the recurring source of
+  // manual-review false alarms in production).
+  const actorDifferenceGrounded = actorDiffers &&
+    factFieldHasGroundedTerm(incomingFact.actor, incomingEvidence) &&
+    factFieldHasGroundedTerm(candidateFact.actor, candidateEvidence);
+  const actionDifferenceGrounded = actionDiffers &&
+    actionIsGrounded(incomingFact.action, incomingEvidence) &&
+    actionIsGrounded(candidateFact.action, candidateEvidence);
+  const objectDifferenceGrounded = objectDiffers &&
+    factFieldHasGroundedTerm(incomingFact.object, incomingEvidence) &&
+    factFieldHasGroundedTerm(candidateFact.object, candidateEvidence);
+  const concreteDifferenceGrounded = actorDifferenceGrounded || actionDifferenceGrounded || objectDifferenceGrounded;
+  if (!concreteDifferenceGrounded) {
+    if (objectDiffers) return "Diferența de obiect nu este susținută de fragmentele citate.";
+    if (actorDiffers || actionDiffers) return "Diferența de actor/acțiune nu este susținută de fragmentele citate.";
   }
   // Cazul în care actorul, acțiunea și obiectul coincid, iar singurul semnal
   // diferit este etapa ("anunț" față de "prezentare", "plan" față de "votat")
   // este exact clasa în care o decizie automată merge cel mai greșit: de
   // obicei sunt etape ale aceluiași proces, iar modelul le poate trata ca
   // evenimente separate fără să greșească lectura textului. Îl escaladăm.
-  if (stageDiffers && !actorDiffers && !actionDiffers && !objectDiffers) {
+  if (stageDiffers && !concreteDifferenceGrounded) {
     return "Actorul, acțiunea și obiectul coincid, iar diferența ține doar de etapă; o evoluție ulterioară necesită verificare manuală.";
   }
   return null;
