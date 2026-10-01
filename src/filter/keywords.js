@@ -65,6 +65,20 @@ export function matchesKeywords(text, keywords) {
   };
 }
 
+// Major, state-coordinated emergencies are public-interest coverage even when
+// they are not political. This deliberately excludes ordinary local fires and
+// accidents: require a vegetation/forest fire, an official response, and a
+// strong scale signal such as multi-county operations or military aircraft.
+export function hasMajorRomanianEmergencyContext(text) {
+  const norm = normalize(String(text || ""));
+  const vegetationFire = /\bincendi\w*\b/.test(norm) && /\b(?:vegetati\w*|padur\w*|fond forestier)\b/.test(norm);
+  const officialResponse = /\b(?:autoritati|pompieri|isu|igsu|dsu|mapn|mai|interven\w*|mobiliz\w*)\b/.test(norm);
+  const multiRegion = /\b(?:mai multe judete|doua judete|in doua judete|in mai multe judete|la nivel national)\b/.test(norm);
+  const exceptionalResources = /\b(?:black hawk|spartan|aeronave? militare?|avioane? militare?)\b/.test(norm);
+  const largeDeployment = /\b(?:peste|mai mult de)\s*(?:[1-9]\d{2,})\s*(?:de\s+)?(?:pompieri|salvatori|hectare)\b/.test(norm);
+  return vegetationFire && officialResponse && (multiRegion || exceptionalResources || largeDeployment);
+}
+
 // Indicatori ca stirea are subiectul in ALTA tara (fara implicare romaneasca).
 // Matching pe text normalizat (fara diacritice), pe LIMITE DE CUVINTE — altfel
 // token-uri scurte ca "sua" s-ar potrivi si in cuvinte precum "insua".

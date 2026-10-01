@@ -48,7 +48,7 @@ import { NewMessage } from "telegram/events/index.js";
 import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
-import { matchesKeywords, isPublishedToday, hasStrongRomanianPoliticalContext, isForeignOnly, isHistoricalRoundup, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
+import { matchesKeywords, isPublishedToday, hasStrongRomanianPoliticalContext, hasMajorRomanianEmergencyContext, isForeignOnly, isHistoricalRoundup, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
 import { createArticleProcessingPolicy } from "./filter/processing-policy.js";
 import { checkSimilarity, createArticleEmbedding } from "./similarity/embedding.js";
 import { prepareArticlePost } from "./ai/prepare-post.js";
@@ -618,7 +618,8 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
 
     // 2. Verificare keywords (pe titlu + primul paragraf).
     const { matched, matchedKeywords } = matchesKeywords(essentialText, keywordsList);
-    if (!matched) {
+    const majorEmergency = hasMajorRomanianEmergencyContext(essentialText);
+    if (!matched && !majorEmergency) {
       if (!policy.checkKeywords) {
         console.log(`[pas] ${forceManual ? "Link manual" : "Canal bypass"} - NU sunt keywords gasite, dar continuam oricum`);
       } else if (policy.checkKeywords) {
@@ -626,7 +627,9 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
         return { status: "skipped", reason: "Nu am găsit niciun keyword configurat în titlu sau lead." };
       }
     } else {
-      console.log(`[match] Keywords gasite: ${matchedKeywords.join(", ")}`);
+      console.log(majorEmergency && !matched
+        ? "[match] Urgență națională majoră: mobilizare coordonată și resurse excepționale"
+        : `[match] Keywords gasite: ${matchedKeywords.join(", ")}`);
     }
 
     // 2b. Filtru de relevanta politica romaneasca. O stire despre viata privata

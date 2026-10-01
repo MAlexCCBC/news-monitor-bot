@@ -5,6 +5,7 @@ import {
   CORE_POLITICAL_KEYWORDS,
   CORE_ROMANIAN_POLITICAL_CONTEXT,
   hasStrongRomanianContext,
+  hasMajorRomanianEmergencyContext,
   hasStrongRomanianPoliticalContext,
   isHistoricalRoundup,
   isForeignOnly,
@@ -21,6 +22,24 @@ test("core political topics stay included even if external KEYWORDS configuratio
   ]) {
     assert.equal(matchesKeywords(headline, CORE_POLITICAL_KEYWORDS).matched, true, headline);
   }
+});
+
+test("large coordinated vegetation-fire response reaches relevance review without political keywords", () => {
+  const majorStory = "Incendii de vegetație în Caraș-Severin și Vâlcea: autoritățile au intervenit cu elicoptere Black Hawk și avioane Spartan";
+  assert.equal(hasMajorRomanianEmergencyContext(majorStory), true);
+  assert.equal(matchesKeywords(majorStory, CORE_POLITICAL_KEYWORDS).matched, false);
+  assert.equal(
+    hasMajorRomanianEmergencyContext("Incendiu de vegetație lângă o gospodărie; pompierii locali au stins focul."),
+    false,
+  );
+  assert.equal(
+    hasMajorRomanianEmergencyContext("Incendii de pădure în două județe; peste 170 de pompieri și salvatori au fost mobilizați de IGSU."),
+    true,
+  );
+  assert.equal(
+    hasMajorRomanianEmergencyContext("Accident rutier: elicopterul SMURD a transportat un rănit la spital."),
+    false,
+  );
 });
 
 test("Romanian politician mentions alone do not bypass political relevance classification", () => {
