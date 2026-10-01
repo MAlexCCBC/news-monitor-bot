@@ -4,6 +4,23 @@ import axios from "axios";
 import { buildWordpressArticleHtml, fetchArticle, parseArticleHtml } from "../src/scraper/article.js";
 import { articleFocus, cleanArticleContent } from "../src/scraper/clean-content.js";
 
+test("Mediafax single__text excludes header politics, inline related cards and photo galleries", () => {
+  const lead = "Un incendiu a izbucnit la centrul de reciclare din Șura Mică, județul Sibiu.";
+  const next = "Pompierii încearcă să oprească extinderea flăcărilor, iar populația a primit RO-Alert.";
+  const article = parseArticleHtml(`<h1>Incendiu la un centru de reciclare</h1>
+    <div class="single__header"><div class="single__excerpt">Un incendiu la centrul din Sibiu.</div></div>
+    <div class="article"><div class="article__content"><div>Nazare, vehiculat pentru funcția de premier. Nicușor Dan vorbește despre Guvern.</div></div></div>
+    <div class="single__content"><div class="single__text"><div>
+      <p>${lead}</p><div class="single__inline-gallery"><div>Vezi galeria foto 4 poze</div></div>
+      <p>${next}</p><div class="articles"><div class="article"><div>Alt incendiu la un cămin din Sighișoara, cu zeci de persoane evacuate.</div></div></div>
+      <p>Autoritățile continuă intervenția la centrul de reciclare.</p>
+    </div></div></div>`, "https://www.mediafax.ro/social/incendiu-23818034");
+  assert.ok(article.content.startsWith(lead));
+  assert.ok(article.content.includes(next));
+  assert.match(article.content, /continuă intervenția/);
+  assert.doesNotMatch(article.content, /Nazare|premier|Nicușor|Guvern|Sighișoara|galeria foto/);
+});
+
 test("publication date ignores page clocks, updates and unrelated structured recommendations", () => {
   const article = parseArticleHtml(`<h1>Guvernul prezintă bugetul</h1>
     <time datetime="2026-10-02T01:00:00+03:00">Site clock</time>

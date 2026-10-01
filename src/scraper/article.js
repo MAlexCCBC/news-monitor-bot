@@ -13,7 +13,8 @@ const SITE_CONFIG = {
     content: "article.article-story, div.article-body, div.articol-content, article",
   },
   "mediafax.ro": {
-    content: "article, div.article-content, div#article-body",
+    content: "div.single__text, div.article-content, div#article-body, article",
+    exclude: ".article, .single__inline-gallery, .single__follow, .single__media",
   },
   "hotnews.ro": {
     content: "div.articol-continut, div#continutArticol, article",
@@ -221,6 +222,7 @@ export function parseArticleHtml(html, url) {
 
   $content = $content.clone();
   $content.find("script, style, iframe, .ad, .advertisement, aside, nav, .sgb-google-buttons, #mediakitPlayer, [data-platform], .related-posts, .swiper-widget-article, .video-player, .gdpr-placeholder, .gdpr-social-media, .article-story .article").remove();
+  if (config?.exclude) $content.find(config.exclude).remove();
 
   const title = $("h1").first().text().trim() || $('meta[property="og:title"]').attr("content") || "";
   const { isoDate, publicationDateSource } = extractPublicationMetadata($, url, title);
