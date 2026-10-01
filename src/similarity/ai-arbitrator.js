@@ -183,6 +183,16 @@ function responseText(data) {
     .trim();
 }
 
+function hasClearLowProbabilityNegativeConsensus(checks) {
+  const qualifying = checks.filter((check) =>
+    ["different", "new_development", "related_context"].includes(check.verdict) &&
+    check.validatedVerdict === "uncertain" &&
+    Number.isInteger(check.duplicateProbability) && check.duplicateProbability <= 5 &&
+    /(?<![\p{L}\p{N}])(?:în timp ce|pe când|în schimb|spre deosebire)(?![\p{L}\p{N}])/iu.test(check.reason || "")
+  );
+  return new Set(qualifying.map((check) => check.model).filter((model) => typeof model === "string" && model.trim())).size >= 2;
+}
+
 function normalizeEvidenceText(value) {
   return String(value || "").normalize("NFC").toLocaleLowerCase("ro")
     .replace(/[’‘`]/g, "'").replace(/[“”„]/g, '"').replace(/\s+/g, " ").trim();
@@ -616,7 +626,7 @@ export async function arbitrateSimilarity(incoming, candidates, {
   const checksByCandidate = Array.from({ length: candidates.length }, () => []);
   let unresolvedIndexes = candidates.map((_, index) => index);
   let attempted = 0;
-  while (eligible.length && unresolvedIndexes.length && attempted < MAX_SIMILARITY_MODEL_ATTEMPTS) {
+  while (attempted < eligible.length && unresolvedIndexes.length && attempted < MAX_SIMILARITY_MODEL_ATTEMPTS) {
     const model = eligible[attempted++];
     const attemptCandidateIndexes = [...unresolvedIndexes];
     const attemptCandidates = attemptCandidateIndexes.map((index) => candidates[index]);
@@ -647,6 +657,9 @@ export async function arbitrateSimilarity(incoming, candidates, {
           validatedVerdict: result.verdict,
           duplicateProbability: result.duplicateProbability ?? null,
           reason: result.modelReason || result.reason,
+          ...(result.verdict === "uncertain" && result.modelVerdict !== "uncertain"
+            ? { validationReason: result.reason }
+            : {}),
         });
         const retained = {
           ...result,
@@ -665,10 +678,35 @@ export async function arbitrateSimilarity(incoming, candidates, {
       console.warn(`[similarity-ai] ${model}: ${error.message}; încerc fallbackul următor.`);
     }
   }
-  const results = candidates.map((_, index) => resolvedResults[index] || lastUncertainResults[index] || {
-    verdict: "uncertain",
-    reason: "Niciun model disponibil nu a returnat un verdict complet și validat pentru această pereche.",
-    modelChecks: [...checksByCandidate[index]],
+  const results = candidates.map((_, index) => {
+    if (resolvedResults[index]) return resolvedResults[index];
+    const modelChecks = [...checksByCandidate[index]];
+    const uncertain = lastUncertainResults[index];
+    // One model's low score is not enough to discard a candidate. But when
+    // two distinct models independently call it a clearly different event,
+    // both assign <=5% duplicate probability, and both explicitly contrast
+    // the facts, a mechanical evidence-schema failure must not turn that
+    // agreement into a false manual-duplicate alert.
+    if (hasClearLowProbabilityNegativeConsensus(modelChecks)) {
+      return {
+        ...(uncertain || {}),
+        verdict: "different",
+        reason: "Două modele Gemini au identificat independent fapte centrale distincte și au estimat cel mult 5% probabilitate de duplicat.",
+        duplicateProbability: Math.min(...modelChecks
+          .filter((check) => ["different", "new_development", "related_context"].includes(check.verdict) &&
+            check.validatedVerdict === "uncertain" && Number.isInteger(check.duplicateProbability) &&
+            check.duplicateProbability <= 5)
+          .map((check) => check.duplicateProbability)),
+        modelVerdict: "different",
+        modelReason: modelChecks.find((check) => check.reason)?.reason,
+        modelChecks,
+      };
+    }
+    return uncertain || {
+      verdict: "uncertain",
+      reason: "Niciun model disponibil nu a returnat un verdict complet și validat pentru această pereche.",
+      modelChecks,
+    };
   });
   return {
     model: [...new Set(checksByCandidate.flat().map((check) => check.model))].join(",") || null,

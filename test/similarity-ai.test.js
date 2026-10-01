@@ -166,6 +166,70 @@ test("uncertain pairs get at most three independent model checks", async () => {
   assert.equal(result.results[0].modelChecks.length, 3);
 });
 
+test("two independent low-probability contrastive Gemini verdicts clear an evidence-schema false alarm", async () => {
+  const incoming = {
+    title: "Senatul adoptă proiectul USR împotriva balastierelor ilegale",
+    content: "Plenul Senatului a adoptat inițiativa legislativă privind exploatarea agregatelor minerale și iazurile piscicole.",
+  };
+  const candidate = {
+    title: "Cătălin Predoiu propune refacerea fostei coaliții după eșecul Guvernului Mureșan",
+    content: "Cătălin Predoiu a propus refacerea fostei coaliții după respingerea cabinetului Mureșan de către Parlament.",
+  };
+  const reasons = [
+    "Articolul nou relatează adoptarea proiectului privind balastierele, în timp ce candidatul relatează propunerea lui Predoiu despre refacerea coaliției.",
+    "Știrea nouă descrie votul Senatului asupra balastierelor ilegale, în timp ce candidatul descrie poziția politică a lui Predoiu după căderea guvernului.",
+    "Articolul primit descrie votul proiectului de mediu, pe când candidatul descrie o propunere politică despre guvernare.",
+  ];
+  let calls = 0;
+  const result = await arbitrateSimilarity(incoming, [candidate], {
+    models: ["gemini-distinct-a", "gemini-distinct-b", "gemini-distinct-c"],
+    modelFilter: async (models) => models,
+    callModel: async () => {
+      const reason = reasons[calls++];
+      // Deliberately omit structured evidence: the current evidence validator
+      // turns each raw negative verdict into uncertain, matching the failure
+      // mode seen in production. The independent low-score contrast is clear.
+      return { data: { candidates: [{ content: { parts: [{ text: JSON.stringify({ results: [{
+        id: 1,
+        verdict: "different",
+        duplicate_probability: 0,
+        reason,
+      }] }) }] } }] } };
+    },
+  });
+  assert.equal(calls, 3);
+  assert.equal(result.results[0].verdict, "different");
+  assert.equal(result.results[0].duplicateProbability, 0);
+  assert.equal(result.results[0].modelChecks.length, 3);
+  assert.ok(result.results[0].modelChecks.every((check) => check.validatedVerdict === "uncertain"));
+  const applied = applySimilarityAiReview([{
+    ...candidate, url: "https://example.com/candidate", isDuplicate: true, score: 0.91,
+  }], [{ ...candidate, url: "https://example.com/candidate" }], result);
+  assert.equal(applied.isDuplicate, false);
+  assert.equal(applied.aiVerdict, undefined);
+});
+
+test("one low-probability negative Gemini answer cannot clear an ungrounded candidate", async () => {
+  let calls = 0;
+  const result = await arbitrateSimilarity(
+    { title: "Știre nouă", content: "Articol despre proiectul local." },
+    [{ title: "Candidat", content: "Articol despre alt subiect." }],
+    {
+      models: ["gemini-single"],
+      modelFilter: async (models) => models,
+      callModel: async () => {
+        calls++;
+        return { data: { candidates: [{ content: { parts: [{ text: JSON.stringify({ results: [{
+          id: 1, verdict: "different", duplicate_probability: 0,
+          reason: "Articolul nou descrie proiectul local, în timp ce candidatul descrie alt subiect.",
+        }] }) }] } }] } };
+      },
+    }
+  );
+  assert.equal(calls, 1);
+  assert.equal(result.results[0].verdict, "uncertain");
+});
+
 test("similarity arbitration accepts a verified difference between a planned visit and the meeting itself", async () => {
   let capturedPrompt = "";
   const result = await arbitrateSimilarity(

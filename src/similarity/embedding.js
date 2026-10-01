@@ -661,6 +661,7 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
         aiVerdict: "uncertain",
         aiSuggestedVerdict: verdict.modelVerdict,
         aiRationale: verdict.modelReason,
+        aiValidationReason: verdict.reason !== verdict.modelReason ? verdict.reason : null,
         aiSimilarityProbability: verdict.duplicateProbability,
         aiChecks: verdict.modelChecks || [],
       };

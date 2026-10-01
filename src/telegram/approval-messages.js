@@ -53,10 +53,13 @@ export function formatApprovalText(item) {
   // Un scor de similaritate de vector nu spune nimic despre evenimente, iar
   // amestecul lui cu o decizie automată îl făcea ilizibil.
   const aiVerdict = item.simResult?.aiVerdict;
+  const rawNegativeSuggestion = ["different", "new_development", "related_context"].includes(item.simResult?.aiSuggestedVerdict);
   const comparisonNote = needsManualReview
-    ? (aiRationale
-        ? `Gemini nu a putut decide sigur dacă e aceeași informație. Motivul: ${modelText(aiRationale)}`
-        : "Gemini nu a putut decide sigur dacă e aceeași informație. Verifică cele două linkuri.")
+    ? rawNegativeSuggestion
+      ? `Gemini a indicat că articolele sunt diferite, dar verificarea automată a dovezilor nu a putut confirma verdictul${item.simResult?.aiValidationReason ? `: ${modelText(item.simResult.aiValidationReason)}` : ". Verifică cele două linkuri."}`
+      : (aiRationale
+          ? `Gemini nu a putut decide sigur dacă e aceeași informație. Motivul: ${modelText(aiRationale)}`
+          : "Gemini nu a putut decide sigur dacă e aceeași informație. Verifică cele două linkuri.")
     : aiVerdict === "duplicate"
       ? "Gemini a comparat articolele integral și a confirmat că relatează același fapt."
       : ["different", "new_development", "related_context"].includes(aiVerdict)
@@ -68,7 +71,12 @@ export function formatApprovalText(item) {
     ? `\n\n<i>Verificări păstrate: ${aiChecks.map((check) => {
       const score = Number.isInteger(check.duplicateProbability) ? ` (${check.duplicateProbability}%)` : "";
       const reason = check.reason ? ` — ${modelText(check.reason, 200)}` : "";
-      return `${escapeHtml(check.model)}: ${escapeHtml(check.validatedVerdict || check.verdict)}${score}${reason}`;
+      const validation = check.validationReason ? `; validare: ${modelText(check.validationReason, 140)}` : "";
+      const modelVerdict = check.verdict || check.validatedVerdict;
+      const verdict = check.validatedVerdict && modelVerdict && check.validatedVerdict !== modelVerdict
+        ? `${escapeHtml(modelVerdict)} → ${escapeHtml(check.validatedVerdict)}`
+        : escapeHtml(check.validatedVerdict || check.verdict);
+      return `${escapeHtml(check.model)}: ${verdict}${score}${reason}${validation}`;
     }).join("; ")}</i>`
     : "";
   const relatedLinks = (item.relatedArticles || []).length

@@ -85,6 +85,32 @@ test("an uncertain AI comparison is clearly presented for manual review", () => 
   assert.doesNotMatch(text, /scor semantic 0%/);
 });
 
+test("manual review distinguishes Gemini's negative suggestion from an evidence-validation downgrade", () => {
+  const text = formatApprovalText({
+    kind: "article",
+    url: "https://example.com/incoming",
+    comparisonUrl: "https://example.com/candidate",
+    comparisonTitle: "Articol candidat",
+    similarity: 0.88,
+    simResult: {
+      aiVerdict: "uncertain",
+      aiSuggestedVerdict: "different",
+      aiSimilarityProbability: 0,
+      aiRationale: "Cele două articole descriu evenimente diferite.",
+      aiValidationReason: "Lipsește fișa faptului central necesară pentru a justifica diferența.",
+      aiChecks: [{
+        model: "gemini-test", verdict: "different", validatedVerdict: "uncertain",
+        duplicateProbability: 0, reason: "Evenimente diferite.",
+        validationReason: "Lipsesc câmpurile structurate.",
+      }],
+    },
+  });
+  assert.match(text, /Gemini a indicat că articolele sunt diferite/);
+  assert.match(text, /verificarea automată a dovezilor nu a putut confirma verdictul/);
+  assert.match(text, /different → uncertain \(0%\)/);
+  assert.match(text, /validare: Lipsesc câmpurile structurate/);
+});
+
 test("model-supplied text cannot break the card or inject markup", () => {
   const text = formatApprovalText({
     kind: "article", url: "https://news.example/current",
