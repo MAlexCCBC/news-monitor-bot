@@ -8,7 +8,7 @@ export function createArticleProcessingPolicy({
   return {
     checkSeenUrl: !forceManual,
     checkMinimumContent: !forceManual,
-    checkPublishedToday: !forceManual,
+    checkPublicationFreshness: !forceManual,
     checkKeywords: !forceManual && !bypassFilters,
     checkForeignRelevance: !forceManual && !bypassFilters,
     checkArticleSimilarity: !forceManual && !bypassFilters && !bypassSimilarity,

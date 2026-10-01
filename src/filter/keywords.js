@@ -1,4 +1,6 @@
 // Normalizeaza diacritice ca sa prinda si varianta fara diacritice din articole
+import { parsePublicationDate } from "./publication-date.js";
+
 function normalize(text) {
   return text
     .toLowerCase()
@@ -58,7 +60,12 @@ export function isHistoricalRoundup(title = "", url = "") {
 
 export function matchesKeywords(text, keywords) {
   const normText = normalize(text);
-  const found = keywords.filter((kw) => normText.includes(normalize(kw)));
+  const found = keywords.filter((kw) => {
+    const normalized = normalize(String(kw)).trim();
+    if (!normalized) return false;
+    // Short party acronyms must not match ordinary words.
+    return normalized.length <= 3 ? hasWord(normText, normalized) : normText.includes(normalized);
+  });
   return {
     matched: found.length > 0,
     matchedKeywords: found,
@@ -150,7 +157,7 @@ export function hasStrongRomanianPoliticalContext(text, personalities) {
   const privateLifeHeadline = hasTokenPrefix(title, PRIVATE_LIFE_SIGNALS);
   if (privateLifeHeadline) return false;
 
-  const namedRomanianFigure = personalities.some((name) => norm.includes(normalize(name)));
+  const namedRomanianFigure = personalities.some((name) => hasWord(title, normalize(name)));
   // "Republica Moldova" is a separate state; its domestic politics alone is
   // not proof of Romanian political relevance. Let the classifier judge it.
   const isMoldovanStateOnly = /\brepublic(?:a|ii) moldova\b/.test(norm) &&
@@ -160,10 +167,15 @@ export function hasStrongRomanianPoliticalContext(text, personalities) {
     ROMANIA_INDICATORS.some((w) => hasWord(norm, w))) || namedRomanianFigure;
   if (!hasRomanianContext) return false;
 
-  const hasPoliticalSignal = hasTokenPrefix(norm, ROMANIAN_POLITICAL_HEADLINE_SIGNALS);
+  const hasPoliticalSignal = hasTokenPrefix(title, ROMANIAN_POLITICAL_HEADLINE_SIGNALS.filter((root) => !["psd", "pnl", "usr", "aur"].includes(root))) ||
+    ["psd", "pnl", "usr", "aur"].some((party) => hasWord(title, party));
   const explicitlyQuotedFigureStatement = namedRomanianFigure && /^[^:\n]{1,80}:\s/.test(rawTitle);
   const knownFigureMakingPublicStatement = namedRomanianFigure &&
-    (explicitlyQuotedFigureStatement || hasTokenPrefix(norm, PUBLIC_STATEMENT_SIGNALS));
+    (explicitlyQuotedFigureStatement || hasTokenPrefix(title, PUBLIC_STATEMENT_SIGNALS));
+  // Foreign headlines with incidental Romanian background need a classifier.
+  const foreignHeadline = FOREIGN_INDICATORS.some((word) => hasWord(title, word));
+  const romanianHeadline = ROMANIA_INDICATORS.some((word) => hasWord(title, word)) || namedRomanianFigure;
+  if (foreignHeadline && !romanianHeadline) return false;
   return hasPoliticalSignal || knownFigureMakingPublicStatement;
 }
 
@@ -279,11 +291,12 @@ export function detectSpeaker(title, matchedKeywords) {
 
 // Verifica daca data articolului (ISO, din meta tags: article:published_time)
 // e din ziua curenta, comparat in ora Romaniei (Europe/Bucharest).
-export function isPublishedToday(isoDate) {
+export function isPublishedToday(isoDate, now = Date.now()) {
   if (!isoDate) return false;
 
-  const articleDate = new Date(isoDate);
-  if (isNaN(articleDate.getTime())) return false;
+  const timestamp = parsePublicationDate(isoDate);
+  if (timestamp === null || timestamp > now + 5 * 60_000) return false;
+  const articleDate = new Date(timestamp);
 
   const fmt = (d) =>
     new Intl.DateTimeFormat("ro-RO", {
@@ -293,5 +306,5 @@ export function isPublishedToday(isoDate) {
       day: "2-digit",
     }).format(d);
 
-  return fmt(articleDate) === fmt(new Date());
+  return fmt(articleDate) === fmt(new Date(now));
 }

@@ -1,6 +1,7 @@
 import axios from "axios";
 import * as cheerio from "cheerio";
 import { cleanArticleContent } from "./clean-content.js";
+import { parsePublicationDate } from "../filter/publication-date.js";
 
 // Selectoare de continut per site, cu fallback generic. Nu mai depindem
 // exclusiv de ele pentru data (folosim meta tags, mult mai fiabil).
@@ -38,22 +39,49 @@ const STOP_MARKERS = [
 
 function getSiteConfig(url) {
   const hostname = new URL(url).hostname.replace("www.", "");
-  const key = Object.keys(SITE_CONFIG).find((domain) => hostname.includes(domain));
+  const key = Object.keys(SITE_CONFIG).find((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
   return key ? SITE_CONFIG[key] : null;
 }
 
 // Citim data din meta tags standard (og:, article:published_time), care sunt
 // mult mai stabile decat orice selector CSS vizibil, si le au toate site-urile mari.
-function extractPublishDate($) {
-  const candidates = [
-    $('meta[property="article:published_time"]').attr("content"),
-    $('meta[name="article:published_time"]').attr("content"),
-    $('meta[property="og:article:published_time"]').attr("content"),
-    $('time[datetime]').first().attr("datetime"),
-    $('meta[name="date"]').attr("content"),
-  ];
-  const found = candidates.find((c) => c && c.trim().length > 0);
-  return found || null; // ex: "2026-08-19T14:43:12+00:00"
+function extractPublicationMetadata($, url, title) {
+  const candidates = [];
+  const add = (value, source) => {
+    const timestamp = parsePublicationDate(value);
+    if (timestamp !== null) candidates.push({ value: value.trim(), source, timestamp });
+  };
+  $('meta[property="article:published_time"], meta[name="article:published_time"], meta[property="og:article:published_time"], meta[itemprop="datePublished"], meta[name="datePublished"]').each((_, el) => add($(el).attr("content"), "publication_meta"));
+  const normalizedTitle = (value) => String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/^video\s+/, "").replace(/[^a-z0-9]/g, "");
+  const sameUrl = (value) => {
+    if (!value) return false;
+    try {
+      const candidate = new URL(typeof value === "object" ? value?.["@id"] : value, url);
+      const requested = new URL(url);
+      return candidate.hostname.replace(/^www\./, "") === requested.hostname.replace(/^www\./, "") && candidate.pathname.replace(/\/+$/, "") === requested.pathname.replace(/\/+$/, "");
+    } catch { return false; }
+  };
+  $('script[type="application/ld+json"]').each((_, el) => {
+    let data;
+    try { data = JSON.parse($(el).text()); } catch { return; }
+    const nodes = Array.isArray(data) ? data : [data, ...(Array.isArray(data?.["@graph"]) ? data["@graph"] : [])];
+    for (const node of nodes) {
+      const types = [].concat(node?.["@type"] || []);
+      if (!types.some((type) => /^(?:NewsArticle|Article|ReportageNewsArticle|AnalysisNewsArticle|BlogPosting)$/.test(type))) continue;
+      // Recommendation dates cannot revive an archived story.
+      if (!sameUrl(node.url || node.mainEntityOfPage || node["@id"]) &&
+          (!title || normalizedTitle(node.headline) !== normalizedTitle(title))) continue;
+      add(node.datePublished, "structured_datePublished");
+    }
+  });
+  $('article time[pubdate][datetime], article [itemprop="datePublished"]').each((_, el) => {
+    if ($(el).closest("aside, .related-posts, .swiper-widget-article, .article").length) return;
+    add($(el).attr("datetime") || $(el).attr("content"), "article_datePublished");
+  });
+  // Exclude dateModified and arbitrary time elements. Conflicting publication
+  // sources use the oldest date, so an update cannot make an old story new.
+  candidates.sort((a, b) => a.timestamp - b.timestamp);
+  return { isoDate: candidates[0]?.value || null, publicationDateSource: candidates[0]?.source || null };
 }
 
 // Header-uri complete de browser: unele site-uri (ex. hotnews.ro) resping
@@ -173,7 +201,7 @@ export function buildWordpressArticleHtml(post) {
     ? '<meta property="og:image" content="' + String(featuredImage).replace(/&/g, "&amp;").replace(/"/g, "&quot;") + '">'
     : "";
   return '<html><head><meta property="article:published_time" content="' +
-    String(post.date || "").replace(/"/g, "&quot;") + '">' + imageMeta +
+    String(post.date_gmt ? `${post.date_gmt}Z` : post.date || "").replace(/"/g, "&quot;") + '">' + imageMeta +
     '</head><body><article><h1>' + post.title.rendered +
     '</h1><div class="single__text">' + post.content.rendered +
     '</div></article></body></html>';
@@ -195,7 +223,7 @@ export function parseArticleHtml(html, url) {
   $content.find("script, style, iframe, .ad, .advertisement, aside, nav, .sgb-google-buttons, #mediakitPlayer, [data-platform], .related-posts, .swiper-widget-article, .video-player, .gdpr-placeholder, .gdpr-social-media, .article-story .article").remove();
 
   const title = $("h1").first().text().trim() || $('meta[property="og:title"]').attr("content") || "";
-  const isoDate = extractPublishDate($);
+  const { isoDate, publicationDateSource } = extractPublicationMetadata($, url, title);
 
   // Extragem imaginea principala a articolului (og:image sau prima imagine din continut).
   // Aceasta e CELE MAI FIABILE sursa pentru imagine — articolul contine deja
@@ -246,6 +274,7 @@ export function parseArticleHtml(html, url) {
     url,
     title,
     isoDate,
+    publicationDateSource,
     content: contentText,
     imageUrl,
     fullTextForKeywordCheck: `${title}\n${contentText}`,

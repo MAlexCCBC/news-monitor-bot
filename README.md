@@ -88,8 +88,9 @@ variables -> Actions), cu aceleași nume (incluzând `TG_SESSION`, `CHANNELS`,
 din tab-ul Actions -> Bot -> Run workflow.
 
 ⚠️ **Limitări**: un job GitHub Actions se oprește automat după ~5-6 ore și
-baza de date (`data.sqlite`) nu e persistentă între rulări — deci pentru 24/7
-real e mai potrivit Railway/VPS, nu Actions.
+baza de date (`data.sqlite`) este restaurată din branch-ul `data` și salvată
+periodic plus la oprire. Ultimul interval nesalvat se poate pierde dacă runner-ul
+este oprit forțat. Joburile sunt serializate pentru o singură sesiune Telegram.
 
 ---
 
@@ -97,7 +98,12 @@ real e mai potrivit Railway/VPS, nu Actions.
 
 1. Botul ascultă mesajele din canale (contul tău normal, MTProto)
 2. Când apare un mesaj cu link, extrage, curăță
-3. Verifică dacă data e azi
+3. Verifică publicarea în ultimele `ARTICLE_MAX_AGE_HOURS` (implicit 12 ore),
+   inclusiv peste miezul nopții. Datele fără fus orar folosesc Europe/Bucharest.
+   Lipsa unei date de publicare verificabile, o dată invalidă sau o dată în viitor
+   blochează fluxul automat. `dateModified` și datele recomandărilor nu sunt
+   dovezi de publicare. Vârsta se verifică din nou înainte de redactare și livrare;
+   cererile de aprobare devenite vechi se închid. Linkurile manuale păstrează override-ul.
 4. Caută keywords (lista completă e în `.env`, o poți edita oricând)
 5. Calculează embedding cu Gemini pentru **titlu + întregul articol curățat**,
    în fragmente trimise într-un batch. Compară local cu vectorii salvați ai
@@ -152,6 +158,9 @@ reușește.
 - **Keywords**: `.env` -> `CHANNELS` / `KEYWORDS`
 - **Stilul postării**: `src/ai/rewrite.js` -> `PROMPT_TEMPLATE`
 - **Pragul de similaritate**: `.env` -> `SIMILARITY_THRESHOLD` (0.85 = 85%)
+- **Vârsta maximă a știrilor**: `.env` -> `ARTICLE_MAX_AGE_HOURS` (12 implicit),
+  sau variabila Actions cu același nume. O republicare de context vechi cu o dată
+  nouă poate necesita în continuare verificare editorială și de similaritate.
 - **Selectoare HTML per site** (dacă un site își schimbă structura):
   `src/scraper/article.js` -> `SITE_CONFIG`
 

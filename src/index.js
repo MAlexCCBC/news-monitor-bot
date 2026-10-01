@@ -48,7 +48,9 @@ import { NewMessage } from "telegram/events/index.js";
 import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
-import { matchesKeywords, isPublishedToday, hasStrongRomanianPoliticalContext, hasMajorRomanianEmergencyContext, isForeignOnly, isHistoricalRoundup, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
+import { matchesKeywords, hasStrongRomanianPoliticalContext, hasMajorRomanianEmergencyContext, isForeignOnly, isHistoricalRoundup, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
+import { publicationFreshness } from "./filter/publication-date.js";
+import { articleFocus } from "./scraper/clean-content.js";
 import { createArticleProcessingPolicy } from "./filter/processing-policy.js";
 import { checkSimilarity, createArticleEmbedding } from "./similarity/embedding.js";
 import { prepareArticlePost } from "./ai/prepare-post.js";
@@ -119,9 +121,7 @@ if (dbPersistBranch) {
 // Diagnostic rapid la pornire: confirma ca s-a incarcat cheia corecta din .env
 // (doar prefix + lungime, fara sa afiseze cheia integrala)
 const gemKey = process.env.GEMINI_API_KEY || "";
-console.log(
-  `[config] GEMINI_API_KEY: ${gemKey ? `incarcata (prefix ${gemKey.slice(0, 6)}, lungime ${gemKey.length})` : "LIPSESTE din .env!"}`
-);
+console.log(`[config] GEMINI_API_KEY: ${gemKey ? "setat" : "LIPSESTE din .env!"}`);
 console.log(`[config] TG_SESSION: ${process.env.TG_SESSION ? "setat" : "LIPSESTE"}`);
 console.log(`[config] NOTIFY_BOT_TOKEN: ${process.env.NOTIFY_BOT_TOKEN ? "setat" : "LIPSESTE"}`);
 console.log(`[config] NOTIFY_CHAT_ID: ${process.env.NOTIFY_CHAT_ID ? "setat" : "LIPSESTE"}`);
@@ -269,6 +269,20 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
     const pendingItems = pendingApprovals.listPending();
     const interruptedIds = new Set(interruptedItems.map((item) => item.id));
     for (const item of pendingItems) {
+      if (item.kind === "article" && !publicationFreshness(item.article).fresh) {
+        pendingApprovals.setState(item.id, "expired");
+        const timer = approvalExpiryTimers.get(item.id);
+        if (timer) clearTimeout(timer);
+        approvalExpiryTimers.delete(item.id);
+        if (item.message_id) {
+          await editMessageUnlessUnchanged(notifyBot,
+            `⌛ <b>Știrea nu mai este recentă; cererea a fost închisă.</b>\n\n<b>Titlu:</b> ${escapeHtml(item.article.title)}\n<b>Sursă:</b> ${escapeHtml(item.url)}\n\nPoți trimite linkul manual dacă dorești să o procesezi explicit.`,
+            { chat_id: NOTIFY_CHAT_ID, message_id: item.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
+          ).catch((err) => console.warn("[approval restore] Nu am putut închide cererea veche:", err.message));
+        }
+        await persistPendingApprovals();
+        continue;
+      }
       if (isUrlSeen(item.url)) {
         saveRelatedApprovalArticles(item);
         pendingApprovals.setState(item.id, "done");
@@ -387,7 +401,7 @@ async function handleApprovalCallback(callbackQuery) {
 
   await enqueueProcess(async () => {
     try {
-      await finalizeAndSendArticle(
+      const result = await finalizeAndSendArticle(
         item.article,
         item.url,
         item.simResult,
@@ -397,6 +411,15 @@ async function handleApprovalCallback(callbackQuery) {
           relatedArticles: item.relatedArticles,
         }
       );
+      if (result.status === "skipped") {
+        pendingApprovals.setState(id, "expired");
+        await persistPendingApprovals();
+        await editMessageUnlessUnchanged(notifyBot,
+          `⌛ <b>Știrea nu mai este recentă.</b>\n\n${escapeHtml(item.url)}\n\nTrimite linkul manual pentru o procesare explicită.`,
+          { chat_id: NOTIFY_CHAT_ID, message_id: callbackQuery.message.message_id, parse_mode: "HTML", reply_markup: { inline_keyboard: [] } }
+        ).catch(() => {});
+        return;
+      }
       pendingApprovals.setState(id, "done");
       // Știrea a fost aprobată și trimisă: compararea cu articolul similar era
       // un fals pozitiv. Perechea se reține ca „știri diferite", ca verificarea
@@ -503,6 +526,10 @@ function saveRelatedApprovalArticles(approval) {  for (const related of approval
 }
 
 async function deliverAndSaveArticle(article, url, simResult, matchedKeywords = [], approval = {}) {
+  if (!approval.forceManual && !publicationFreshness(article).fresh) {
+    console.log(`[skip] Articolul a îmbătrânit în coada de procesare: ${url}`);
+    return { status: "skipped", reason: "Articolul nu mai este recent." };
+  }
   // 4. Rescriere AI fără verificare de similaritate și fără embedding de text AI.
   const formattedPost = await timedStage("rewrite", () => prepareArticlePost(article, approval));
 
@@ -534,6 +561,11 @@ async function deliverAndSaveArticle(article, url, simResult, matchedKeywords = 
 
   // 7. Trimitem TIE rezultatul, gata pregatit, pentru aprobare + postare MANUALA.
   const cleanPost = formattedPost.replace(/\*\*/g, "").trim();
+
+  if (!approval.forceManual && !publicationFreshness(article).fresh) {
+    console.log(`[skip] Articolul a îmbătrânit înainte de livrare: ${url}`);
+    return { status: "skipped", reason: "Articolul nu mai este recent la livrare." };
+  }
 
   if (imageResult) {
     await timedStage("telegram_delivery", async () => {
@@ -607,14 +639,16 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       console.log(`[manual] Continut extras scurt (${article.content?.length || 0} caractere); continuam deoarece linkul a fost solicitat explicit.`);
     }
 
-    // 1. Verificare data (trebuie sa fie din ziua curenta)
-    if (policy.checkPublishedToday && !isPublishedToday(article.isoDate)) {
-      console.log(`[skip] Nu e din ziua curenta (data gasita: "${article.isoDate}")`);
-      return { status: "skipped", reason: `Articolul nu pare publicat azi (data identificată: ${article.isoDate || "necunoscută"}).` };
+    // Publication age is continuous across midnight; updates never reset it.
+    const freshness = publicationFreshness(article);
+    console.log(`[publication] ${JSON.stringify({ url, date: article.isoDate, source: article.publicationDateSource, ...freshness })}`);
+    if (policy.checkPublicationFreshness && !freshness.fresh) {
+      console.log(`[skip] Data publicării nu confirmă o știre recentă: ${freshness.reason}`);
+      return { status: "skipped", reason: `Publicare neconfirmată ca recentă (${freshness.reason}; ${article.isoDate || "dată necunoscută"}).` };
     }
 
     // Textul esential al stirii = titlul + primul paragraf.
-    const essentialText = `${article.title}\n${(article.content || "").slice(0, 500)}`;
+    const essentialText = `${article.title}\n${articleFocus(article.content || "", article.title).slice(0, 500)}`;
 
     // 2. Verificare keywords (pe titlu + primul paragraf).
     const { matched, matchedKeywords } = matchesKeywords(essentialText, keywordsList);
@@ -723,7 +757,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     }
 
     // Daca a trecut toate filtrele sau e pe acelasi site / bypass, finalizam
-    return await finalizeAndSendArticle(article, url, simResult, matchedKeywords);
+    return await finalizeAndSendArticle(article, url, simResult, matchedKeywords, { forceManual });
   } catch (err) {
     console.error(`[eroare] la procesarea ${url}:`, err.message);
     await notify(`❌ Eroare la procesarea unui articol:\n${url}\n${err.message}`).catch(() => {});

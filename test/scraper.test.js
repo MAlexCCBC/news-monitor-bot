@@ -4,6 +4,35 @@ import axios from "axios";
 import { buildWordpressArticleHtml, fetchArticle, parseArticleHtml } from "../src/scraper/article.js";
 import { articleFocus, cleanArticleContent } from "../src/scraper/clean-content.js";
 
+test("publication date ignores page clocks, updates and unrelated structured recommendations", () => {
+  const article = parseArticleHtml(`<h1>Guvernul prezintă bugetul</h1>
+    <time datetime="2026-10-02T01:00:00+03:00">Site clock</time>
+    <meta property="article:modified_time" content="2026-10-02T01:00:00+03:00">
+    <meta property="article:published_time" content="invalid">
+    <script type="application/ld+json">${JSON.stringify({ "@graph": [
+      { "@type": "NewsArticle", headline: "Guvernul prezintă bugetul", datePublished: "2026-09-20T10:00:00+03:00", dateModified: "2026-10-02T01:00:00+03:00" },
+      { "@type": "NewsArticle", headline: "Altă știre", url: "https://example.com/recommendation", datePublished: "2026-10-02T01:00:00+03:00" },
+    ] })}</script><article><p>Guvernul prezintă proiectul bugetului pentru dezbatere publică.</p></article>`, "https://example.com/budget");
+  assert.equal(article.isoDate, "2026-09-20T10:00:00+03:00");
+  assert.equal(article.publicationDateSource, "structured_datePublished");
+});
+
+test("modified-only pages have no confirmed publication date", () => {
+  const article = parseArticleHtml('<h1>Știre</h1><meta name="date" content="2026-10-01"><time datetime="2026-10-01">Actualizat</time><article><p>Textul articolului actualizat recent, dar fără data publicării.</p></article>', "https://example.com/story");
+  assert.equal(article.isoDate, null);
+});
+
+test("conflicting publication metadata cannot revive an old article", () => {
+  const article = parseArticleHtml(`<h1>Știre</h1><meta property="article:published_time" content="2026-10-01T12:00:00Z">
+    <script type="application/ld+json">{"@type":"NewsArticle","headline":"Știre","datePublished":"2026-09-01T12:00:00Z"}</script>`, "https://example.com/story");
+  assert.equal(article.isoDate, "2026-09-01T12:00:00Z");
+});
+
+test("WordPress GMT publication timestamps preserve their explicit timezone", () => {
+  const article = parseArticleHtml(buildWordpressArticleHtml({ date: "2026-10-02T01:00:00", date_gmt: "2026-10-01T22:00:00", title: { rendered: "Știre" }, content: { rendered: "<p>Textul articolului publicat recent la ora României.</p>" } }), "https://www.g4media.ro/story.html");
+  assert.equal(article.isoDate, "2026-10-01T22:00:00Z");
+});
+
 test("G4Media leaf divs preserve the lead and do not import site furniture", () => {
   const lead = "Grupul parlamentar se întrunește astăzi pentru prezentarea programului.";
   const next = "Premierul desemnat participă la ședință și prezintă planurile sale.";

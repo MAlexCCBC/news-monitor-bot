@@ -12,6 +12,17 @@ import {
   matchesKeywords,
 } from "../src/filter/keywords.js";
 
+test("short party acronyms do not match ordinary words or empty configuration", () => {
+  assert.equal(matchesKeywords("Un restaurant inaugurat în București", ["AUR", "USR", "PNL", ""]).matched, false);
+  assert.equal(matchesKeywords("AUR critică USR și PNL", ["AUR", "USR", "PNL"]).matchedKeywords.length, 3);
+});
+
+test("incidental Romanian political background cannot fast-track a foreign headline", () => {
+  assert.equal(hasStrongRomanianPoliticalContext("Protestele elevilor din Franța: un liceu a fost incendiat\nNicușor Dan a anunțat consultări în Parlament.", ["Nicușor Dan"]), false);
+  assert.equal(hasStrongRomanianPoliticalContext("Un restaurant cu ornamente aurii din București\nMinistrul a vizitat localul.", []), false);
+  assert.equal(hasStrongRomanianPoliticalContext("Bolojan anunță consultări cu partidele după vot", ["Bolojan"]), true);
+});
+
 test("core political topics stay included even if external KEYWORDS configuration omits them", () => {
   for (const headline of [
     "Mureșan vorbește despre proiectul de lege",
