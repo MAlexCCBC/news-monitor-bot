@@ -1,7 +1,22 @@
 export function parseApprovalCallback(data = "") {
+  if (data.startsWith("diff_")) return { action: "process", id: data.slice(5), feedback: "distinct" };
+  if (data.startsWith("same_")) return { action: "ignore", id: data.slice(5), feedback: "same_story" };
   if (data.startsWith("proc_")) return { action: "process", id: data.slice(5) };
   if (data.startsWith("ign_")) return { action: "ignore", id: data.slice(4) };
   return null;
+}
+
+export function approvalMarkup(id) {
+  return { inline_keyboard: [
+    [
+      { text: "✅ Procesează oricum", callback_data: `proc_${id}` },
+      { text: "❌ Ignoră", callback_data: `ign_${id}` },
+    ],
+    [
+      { text: "🆕 Știre diferită · procesează", callback_data: `diff_${id}` },
+      { text: "🔁 Aceeași știre · ignoră", callback_data: `same_${id}` },
+    ],
+  ] };
 }
 
 export async function answerCallbackSafely(bot, callbackQuery, options, logger = console) {

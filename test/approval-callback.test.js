@@ -1,7 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 
-import { answerCallbackSafely, closeStaleApprovalMessage, parseApprovalCallback } from "../src/telegram/approval-callback.js";
+import { answerCallbackSafely, approvalMarkup, closeStaleApprovalMessage, parseApprovalCallback } from "../src/telegram/approval-callback.js";
+
+test("editorial choices carry no semantic feedback; explicit similarity choices do", () => {
+  const keyboard = approvalMarkup("a123xyz").inline_keyboard.flat();
+  const actions = keyboard.map((button) => parseApprovalCallback(button.callback_data));
+  assert.equal(actions[0].feedback, undefined);
+  assert.equal(actions[1].feedback, undefined);
+  assert.deepEqual(actions[2], { action: "process", id: "a123xyz", feedback: "distinct" });
+  assert.deepEqual(actions[3], { action: "ignore", id: "a123xyz", feedback: "same_story" });
+});
 
 test("process and ignore callback payloads retain the full durable request ID", () => {
   assert.deepEqual(parseApprovalCallback("proc_a123xyz"), { action: "process", id: "a123xyz" });

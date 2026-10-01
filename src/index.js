@@ -64,7 +64,7 @@ import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
 import { formatChannelAudit } from "./telegram/channel-audit.js";
 import { createPollingErrorHandler } from "./telegram/polling-health.js";
-import { answerCallbackSafely, closeStaleApprovalMessage, parseApprovalCallback } from "./telegram/approval-callback.js";
+import { answerCallbackSafely, approvalMarkup, closeStaleApprovalMessage, parseApprovalCallback } from "./telegram/approval-callback.js";
 import { formatApprovalText } from "./telegram/approval-messages.js";
 import { splitTelegramText } from "./telegram/text-chunks.js";
 import { editMessageUnlessUnchanged } from "./telegram/message-edit.js";
@@ -165,13 +165,6 @@ async function timedStage(name, operation) {
   }
 }
 
-function approvalMarkup(id) {
-  return { inline_keyboard: [[
-    { text: "✅ Procesează știrea", callback_data: `proc_${id}` },
-    { text: "❌ Ignoră", callback_data: `ign_${id}` },
-  ]] };
-}
-
 async function sendApprovalPrompt(item) {
   return notifyBot.sendMessage(NOTIFY_CHAT_ID, formatApprovalText(item), {
     parse_mode: "HTML",
@@ -247,6 +240,7 @@ async function createApprovalRequest(item) {
 }
 
 let restoringPendingApprovals = false;
+const ambiguousApprovalWarnings = new Map();
 async function restorePendingApprovalRequests({ recoverInterrupted = false } = {}) {
   if (restoringPendingApprovals) return;
   restoringPendingApprovals = true;
@@ -267,6 +261,10 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
       await persistPendingApprovals();
     }
     const pendingItems = pendingApprovals.listPending();
+    const pendingIds = new Set(pendingItems.map((item) => item.id));
+    for (const id of ambiguousApprovalWarnings.keys()) {
+      if (!pendingIds.has(id)) ambiguousApprovalWarnings.delete(id);
+    }
     const interruptedIds = new Set(interruptedItems.map((item) => item.id));
     for (const item of pendingItems) {
       if (item.kind === "article" && !publicationFreshness(item.article).fresh) {
@@ -311,11 +309,18 @@ async function restorePendingApprovalRequests({ recoverInterrupted = false } = {
     if (recoverInterrupted) await persistPendingApprovals();
     for (const item of pendingApprovals.listPending()) {
       scheduleApprovalExpiry(item);
-      if (item.message_id) continue;
-      if (item.message_send_state !== "not_sent") {
-        console.warn(`[approval restore] Nu retrimit cererea ${item.id} pentru ${item.url}: starea trimiterii este ${item.message_send_state} și Telegram poate să fi livrat deja mesajul. Dacă lipsește din chat, retrimite linkul manual.`);
+      if (item.message_id) {
+        ambiguousApprovalWarnings.delete(item.id);
         continue;
       }
+      if (item.message_send_state !== "not_sent") {
+        if (ambiguousApprovalWarnings.get(item.id) !== item.message_send_state) {
+          ambiguousApprovalWarnings.set(item.id, item.message_send_state);
+          console.warn(`[approval restore] Nu retrimit cererea ${item.id} pentru ${item.url}: starea trimiterii este ${item.message_send_state} și Telegram poate să fi livrat deja mesajul. Dacă lipsește din chat, retrimite linkul manual.`);
+        }
+        continue;
+      }
+      ambiguousApprovalWarnings.delete(item.id);
       if (!pendingApprovals.claimMessageSend(item.id)) continue;
       try {
         await persistPendingApprovals();
@@ -367,9 +372,8 @@ async function handleApprovalCallback(callbackQuery) {
     if (timer) clearTimeout(timer);
     approvalExpiryTimers.delete(id);
     pendingApprovals.setState(id, "ignored");
-    // Cererea ignorată înseamnă că omul a considerat știrea deja acoperită:
-    // perechea se reține ca adevăr, ca să nu mai fie întrebată din nou.
-    recordSimilarityFeedback(item, "same_story");
+    // Editorial rejection alone says nothing about semantic similarity.
+    if (action.feedback === "same_story") recordSimilarityFeedback(item, "same_story");
     await persistPendingApprovals();
     await answerCallbackSafely(notifyBot, callbackQuery, { text: "Știre ignorată." });
     try {
@@ -421,10 +425,8 @@ async function handleApprovalCallback(callbackQuery) {
         return;
       }
       pendingApprovals.setState(id, "done");
-      // Știrea a fost aprobată și trimisă: compararea cu articolul similar era
-      // un fals pozitiv. Perechea se reține ca „știri diferite", ca verificarea
-      // să nu se mai repete pentru aceleași două linkuri.
-      recordSimilarityFeedback(item, "distinct");
+      // Processing a duplicate intentionally is not proof of a false positive.
+      if (action.feedback === "distinct") recordSimilarityFeedback(item, "distinct");
       await persistPendingApprovals();
       try {
         const status = "Știre procesată și trimisă cu succes!";

@@ -145,6 +145,12 @@ vechi pentru link din ultimele 12 ore se prelungesc și butoanele se retrimit.
 Pe GitHub Actions, baza de date se restaurează și se salvează în branch-ul
 `data`.
 
+Butoanele „Procesează oricum” și „Ignoră” exprimă doar alegerea editorială.
+Pentru feedback de similaritate, folosește „Știre diferită · procesează” sau
+„Aceeași știre · ignoră”. Numai aceste clasificări explicite influențează
+comparațiile viitoare. Deciziile deduse anterior din aprobări/ignorări rămân în
+arhivă, dar nu mai sunt aplicate ca dovezi semantice.
+
 Indiferent de `KEYWORDS`, sunt păstrate și știrile despre Mureșan, Bolojan,
 PNL, USR și politică; setările existente rămân active în plus.
 

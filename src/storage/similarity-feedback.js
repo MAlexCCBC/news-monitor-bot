@@ -4,10 +4,9 @@ import { sameArticleUrl } from "../utils/article-url.js";
  * Feedback de similaritate din deciziile umane.
  *
  * Nu putem cunoaște de acum ce știri vor apărea, deci nu există o listă de
- * excepții care să rezolve problema. Singura sursă de adevăr despre ce
- * consideră omul „aceeași știre" sunt propriile sale decizii: când aprobă o
- * cerere marcată ca posibil duplicat, perechea era de fapt distinctă (false
- * positive), iar când o ignoră, era într-adevăr aceeași știre (true positive).
+ * excepții care să rezolve problema. O clasificare explicită „știre diferită”
+ * sau „aceeași știre” este feedback semantic. Aprobarea ori ignorarea obișnuită
+ * este doar o preferință editorială și nu dovedește similaritatea.
  *
  * Aceste perechi se rețin și se aplică direct înaintea oricărei comparații
  * cu model, fără costuri API. Feedbackul este limitat la perechi încă
@@ -22,6 +21,7 @@ export function createSimilarityFeedbackStore(db, { windowMs = 24 * 60 * 60 * 10
       article_title TEXT,
       comparison_url TEXT NOT NULL,
       decision TEXT NOT NULL CHECK (decision IN ('distinct', 'same_story')),
+      source TEXT NOT NULL DEFAULT 'legacy_action',
       zone TEXT,
       created_at INTEGER NOT NULL
     );
@@ -30,21 +30,25 @@ export function createSimilarityFeedbackStore(db, { windowMs = 24 * 60 * 60 * 10
     CREATE INDEX IF NOT EXISTS idx_similarity_feedback_created
       ON similarity_feedback(created_at);
   `);
+  const columns = db.prepare("PRAGMA table_info(similarity_feedback)").all().map((column) => column.name);
+  if (!columns.includes("source")) {
+    db.exec("ALTER TABLE similarity_feedback ADD COLUMN source TEXT NOT NULL DEFAULT 'legacy_action'");
+  }
 
   const insert = db.prepare(`
-    INSERT INTO similarity_feedback (article_url, article_title, comparison_url, decision, zone, created_at)
-    VALUES (?, ?, ?, ?, ?, ?)
+    INSERT INTO similarity_feedback (article_url, article_title, comparison_url, decision, zone, created_at, source)
+    VALUES (?, ?, ?, ?, ?, ?, 'explicit_similarity')
   `);
   // Rândul nou este întotdeauna ultima decizie, chiar și când două acțiuni
   // umane cad în aceeași secundă: ordonăm și după id, care crește strict.
   const findExact = db.prepare(`
     SELECT decision, zone, created_at FROM similarity_feedback
-    WHERE article_url = ? AND comparison_url = ?
+    WHERE article_url = ? AND comparison_url = ? AND source = 'explicit_similarity'
     ORDER BY created_at DESC, id DESC LIMIT 1
   `);
   const findByArticle = db.prepare(`
     SELECT comparison_url, decision, zone FROM similarity_feedback
-    WHERE article_url = ? ORDER BY created_at DESC, id DESC LIMIT 50
+    WHERE article_url = ? AND source = 'explicit_similarity' ORDER BY created_at DESC, id DESC LIMIT 50
   `);
 
   return {

@@ -98,5 +98,5 @@ export function formatApprovalText(item) {
     `<b>Link primit:</b> ${currentLink}\n` +
     `<b>${comparisonLabel}:</b> ${comparisonTitle} — ${comparisonLink}\n\n` +
     `<i>${comparisonNote}</i>${aiChecksExplanation}${relatedLinks}\n\n` +
-    `<i>Dorești să fie procesată și trimisă oricum? Cererea expiră în 12 ore.</i>`;
+    `<i>Dorești să fie procesată și trimisă oricum? Pentru a corecta comparația, alege explicit „Știre diferită” sau „Aceeași știre”. Cererea expiră în cel mult 12 ore, mai devreme dacă publicarea devine veche.</i>`;
 }

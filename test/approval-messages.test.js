@@ -24,7 +24,8 @@ test("link similarity prompt labels the link-to-link comparison and exposes both
   assert.match(text, /<a href="https:\/\/news\.example\/current\?id=1&amp;x=2">https:\/\/news\.example\/current\?id=1&amp;x=2<\/a>/);
   assert.match(text, /<a href="https:\/\/news\.example\/previous">https:\/\/news\.example\/previous<\/a>/);
   assert.doesNotMatch(text, /Deschide știrea/);
-  assert.match(text, /expiră în 12 ore/);
+  assert.match(text, /expiră în cel mult 12 ore/);
+  assert.match(text, /alege explicit „Știre diferită” sau „Aceeași știre”/);
 });
 
 test("legacy link approvals recover their comparison URL from the saved similarity result", () => {

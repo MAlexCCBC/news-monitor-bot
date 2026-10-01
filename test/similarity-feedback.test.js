@@ -9,6 +9,20 @@ function storeWith(windowMs) {
   return createSimilarityFeedbackStore(db, { windowMs });
 }
 
+test("legacy approve/ignore inferences are retained but cannot become semantic truth", () => {
+  const db = new Database(":memory:");
+  db.exec(`CREATE TABLE similarity_feedback (id INTEGER PRIMARY KEY AUTOINCREMENT, article_url TEXT, article_title TEXT, comparison_url TEXT, decision TEXT, zone TEXT, created_at INTEGER)`);
+  const now = Date.now();
+  db.prepare("INSERT INTO similarity_feedback (article_url, comparison_url, decision, created_at) VALUES (?, ?, ?, ?)").run("https://a.example/1", "https://b.example/2", "same_story", now);
+  const feedback = createSimilarityFeedbackStore(db);
+  assert.equal(feedback.lookup({ articleUrl: "https://a.example/1", comparisonUrl: "https://b.example/2", now }), null);
+  assert.deepEqual(feedback.listForArticle("https://a.example/1"), []);
+  assert.equal(db.prepare("SELECT source FROM similarity_feedback").get().source, "legacy_action");
+  feedback.record({ articleUrl: "https://a.example/1", comparisonUrl: "https://b.example/2", decision: "distinct", now });
+  assert.equal(feedback.lookup({ articleUrl: "https://a.example/1", comparisonUrl: "https://b.example/2", now }).decision, "distinct");
+  db.close();
+});
+
 test("a human decision is stored and returned for the same pair", () => {
   const feedback = storeWith();
   assert.equal(feedback.record({
