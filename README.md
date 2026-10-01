@@ -148,7 +148,10 @@ Pe GitHub Actions, baza de date se restaurează și se salvează în branch-ul
 Butoanele „Procesează oricum” și „Ignoră” exprimă doar alegerea editorială.
 Pentru feedback de similaritate, folosește „Știre diferită · procesează” sau
 „Aceeași știre · ignoră”. Numai aceste clasificări explicite influențează
-comparațiile viitoare. Deciziile deduse anterior din aprobări/ignorări rămân în
+comparațiile viitoare, pentru aceleași versiuni ale titlului și corpului ambelor
+articole. O actualizare de conținut cere o nouă comparație; URL-ul singur nu
+transferă verdictul. Cererile vechi fără versiuni păstrează acțiunea editorială,
+dar nu produc feedback reutilizabil. Deciziile deduse anterior din aprobări/ignorări rămân în
 arhivă, dar nu mai sunt aplicate ca dovezi semantice.
 
 Indiferent de `KEYWORDS`, sunt păstrate și știrile despre Mureșan, Bolojan,

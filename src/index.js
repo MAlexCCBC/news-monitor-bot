@@ -58,7 +58,7 @@ import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage } from "./image/search.js";
 import { saveNews, saveAiPost, saveArticleFailure, getRecentArticleSimilarityCandidates, isUrlSeen, cleanupOld, pendingApprovals, similarityFeedback } from "./storage/db.js";
-import { feedbackLookupFrom } from "./storage/similarity-feedback.js";
+import { feedbackLookupFrom, articleContentVersion } from "./storage/similarity-feedback.js";
 import { ARTICLE_HISTORY_HOURS } from "./storage/article-history.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
@@ -501,14 +501,16 @@ function recordSimilarityFeedback(item, decision) {
   const comparisonUrl = item?.comparisonUrl || item?.simResult?.similarUrl;
   if (!item?.url || !comparisonUrl) return;
   try {
-    similarityFeedback.record({
+    const recorded = similarityFeedback.record({
       articleUrl: item.url,
       articleTitle: item.article?.title || "",
+      articleVersion: articleContentVersion(item.article),
+      comparisonVersion: item.simResult?.comparisonVersion,
       comparisonUrl,
       decision,
       zone: item.simResult?.similarityZone || null,
     });
-    console.log(`[feedback] ${decision}: ${item.url} ↔ ${comparisonUrl}`);
+    if (recorded) console.log(`[feedback] ${decision}: ${item.url} ↔ ${comparisonUrl}`);
   } catch (err) {
     console.warn(`[feedback] Nu am putut reține decizia: ${err.message}`);
   }
@@ -705,7 +707,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       // Păstrăm separatorul ca să delimităm titlul de corpul integral în arbitraj.
       const textToEmbed = `${article.title}\n${article.content || ""}`;
       simResult = await timedStage("article_similarity", () => checkSimilarity(
-        textToEmbed, recentNews, threshold, url, { feedbackLookup: feedbackLookupFrom(similarityFeedback) }
+        textToEmbed, recentNews, threshold, url, { feedbackLookup: feedbackLookupFrom(similarityFeedback, article) }
       ));
 
       if (simResult.isDuplicate) {
@@ -732,6 +734,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
           `[similar] ${simResult.similarityZone}: scor embedding ${(simResult.similarity * 100).toFixed(1)}%${Number.isInteger(simResult.aiSimilarityProbability) ? `; estimare Gemini duplicat ${simResult.aiSimilarityProbability}%` : ""} cu ${simResult.similarUrl} - ${simResult.similarityReason}`
         );
         const comparison = recentNews.find((entry) => entry.url === simResult.similarUrl);
+        simResult.comparisonVersion = articleContentVersion(comparison);
         await createApprovalRequest({
           kind: "article",
           url,

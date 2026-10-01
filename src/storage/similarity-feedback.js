@@ -1,4 +1,14 @@
-import { sameArticleUrl } from "../utils/article-url.js";
+import { createHash } from "node:crypto";
+
+// Cosmetic whitespace changes do not change the version; wording, numbers and
+// event stages do. Missing bodies cannot establish a reusable semantic verdict.
+export function articleContentVersion(article) {
+  if (!article?.title?.trim() || !article?.content?.trim()) return null;
+  const normalize = (text) => text.normalize("NFC").replace(/\s+/gu, " ").trim();
+  return createHash("sha256").update(JSON.stringify([
+    normalize(article.title), normalize(article.content),
+  ])).digest("hex");
+}
 
 /**
  * Feedback de similaritate din deciziile umane.
@@ -35,14 +45,18 @@ export function createSimilarityFeedbackStore(db, { windowMs = 24 * 60 * 60 * 10
     db.exec("ALTER TABLE similarity_feedback ADD COLUMN source TEXT NOT NULL DEFAULT 'legacy_action'");
   }
 
+  for (const column of ["article_version", "comparison_version"]) {
+    if (!columns.includes(column)) db.exec(`ALTER TABLE similarity_feedback ADD COLUMN ${column} TEXT`);
+  }
+
   const insert = db.prepare(`
-    INSERT INTO similarity_feedback (article_url, article_title, comparison_url, decision, zone, created_at, source)
-    VALUES (?, ?, ?, ?, ?, ?, 'explicit_similarity')
+    INSERT INTO similarity_feedback (article_url, article_title, comparison_url, decision, zone, created_at, source, article_version, comparison_version)
+    VALUES (?, ?, ?, ?, ?, ?, 'explicit_similarity', ?, ?)
   `);
   // Rândul nou este întotdeauna ultima decizie, chiar și când două acțiuni
   // umane cad în aceeași secundă: ordonăm și după id, care crește strict.
   const findExact = db.prepare(`
-    SELECT decision, zone, created_at FROM similarity_feedback
+    SELECT decision, zone, created_at, article_version, comparison_version FROM similarity_feedback
     WHERE article_url = ? AND comparison_url = ? AND source = 'explicit_similarity'
     ORDER BY created_at DESC, id DESC LIMIT 1
   `);
@@ -52,19 +66,19 @@ export function createSimilarityFeedbackStore(db, { windowMs = 24 * 60 * 60 * 10
   `);
 
   return {
-    record({ articleUrl, articleTitle, comparisonUrl, decision, zone, now = Date.now() }) {
-      if (!articleUrl || !comparisonUrl || !["distinct", "same_story"].includes(decision)) return false;
+    record({ articleUrl, articleTitle, comparisonUrl, decision, zone, articleVersion, comparisonVersion, now = Date.now() }) {
+      if (!articleVersion || !comparisonVersion || !articleUrl || !comparisonUrl || !["distinct", "same_story"].includes(decision)) return false;
       // O pereche poate reapărea după repetarea aceleiași știri pe alt canal;
       // ultima decizie a omului este cea care contează.
-      insert.run(articleUrl, articleTitle || null, comparisonUrl, decision, zone || null, now);
+      insert.run(articleUrl, articleTitle || null, comparisonUrl, decision, zone || null, now, articleVersion, comparisonVersion);
       return true;
     },
 
     // Decizia înregistrată pentru această pereche exactă, dacă e încă relevantă.
-    lookup({ articleUrl, comparisonUrl, now = Date.now() }) {
-      if (!articleUrl || !comparisonUrl) return null;
+    lookup({ articleUrl, comparisonUrl, articleVersion, comparisonVersion, now = Date.now() }) {
+      if (!articleUrl || !comparisonUrl || !articleVersion || !comparisonVersion) return null;
       const row = findExact.get(articleUrl, comparisonUrl);
-      if (!row) return null;
+      if (!row || row.article_version !== articleVersion || row.comparison_version !== comparisonVersion) return null;
       if (now - row.created_at > windowMs) return null;
       return row;
     },
@@ -114,9 +128,12 @@ export function applyLearnedFeedback(candidates, lookup) {
   return { candidates: resolved, hits };
 }
 
-export function feedbackLookupFrom(feedback) {
+export function feedbackLookupFrom(feedback, incomingArticle) {
+  const articleVersion = articleContentVersion(incomingArticle);
   return (candidate) => feedback.lookup({
     articleUrl: candidate.incomingUrl,
     comparisonUrl: candidate.url,
+    articleVersion,
+    comparisonVersion: articleContentVersion(candidate),
   });
 }
