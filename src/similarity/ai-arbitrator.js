@@ -316,7 +316,10 @@ function conceptTokens(value) {
     tokens.add("alimente");
   }
   for (const token of [...tokens]) {
-    if (token.startsWith("energi") || token.startsWith("energetic")) {
+    if (token.startsWith("combustibil")) {
+      tokens.delete(token);
+      tokens.add("combustibil");
+    } else if (token.startsWith("energi") || token.startsWith("energetic")) {
       tokens.delete(token);
       tokens.add("energie");
     } else if (token.startsWith("hidrologic")) {
@@ -500,18 +503,49 @@ function validateDuplicateEvidence(result, incoming, candidate) {
 // aproape orice pereche corectă la verificare manuală, ceea ce golea
 // coada de semnal și o făcea inutilă. Aici verificăm doar că diferența e
 // reală și susținută de paragrafe din ambele corpuri.
+
+// Repair negative evidence references only from literal body quotes. Never
+// trust an invented ID, a title-only quote, or another candidate's paragraph.
+
+function distinctiveObjectTermIsGrounded(value, other, evidence) {
+  const own = conceptTokens(value);
+  const shared = conceptTokens(other);
+  const source = conceptTokens(evidence);
+  return [...own].some(token => !shared.has(token) && source.has(token));
+}
+
+function bodyEvidenceIdsFromQuotes(quotes, article) {
+  if (!Array.isArray(quotes)) return null;
+  const units = articleEvidenceUnits(article);
+  const ids = new Set();
+  for (const quote of quotes) {
+    if (typeof quote !== "string" || normalizeQuote(quote).length < 25) continue;
+    const needle = normalizeQuote(quote);
+    for (let index = 1; index < units.length; index++) {
+      if (normalizeQuote(units[index]).includes(needle)) ids.add("E" + (index + 1));
+    }
+  }
+  return ids.size && ids.size <= 3 ? [...ids] : null;
+}
+
 function validateDifferentEvidence(result, incoming, candidate) {
   const incomingFact = result.incoming_fact || {};
   const candidateFact = result.candidate_fact || {};
   const fields = ["actor", "action", "object", "stage"];
-  const factsComplete = fields.every((field) => typeof incomingFact[field] === "string" && incomingFact[field].trim() &&
+  // One traceable central difference is enough; missing unrelated fields
+  // (often stage) must not erase a grounded actor/action/object distinction.
+  const comparableField = fields.some((field) => typeof incomingFact[field] === "string" && incomingFact[field].trim() &&
     typeof candidateFact[field] === "string" && candidateFact[field].trim());
-  if (!factsComplete) return "Lipsește fișa faptului central necesară pentru a justifica diferența.";
+  if (!comparableField) return "Lipsește fișa faptului central necesară pentru a justifica diferența.";
 
-  const incomingEvidence = evidenceFromUnitIds(result.incoming_evidence_ids, incoming);
-  const candidateEvidence = evidenceFromUnitIds(result.candidate_evidence_ids, candidate);
+  const incomingIds = evidenceFromUnitIds(result.incoming_evidence_ids, incoming) && includesBodyEvidence(result.incoming_evidence_ids, incoming)
+    ? result.incoming_evidence_ids : bodyEvidenceIdsFromQuotes(result.incoming_quotes, incoming);
+  const candidateIds = evidenceFromUnitIds(result.candidate_evidence_ids, candidate) && includesBodyEvidence(result.candidate_evidence_ids, candidate)
+    ? result.candidate_evidence_ids : bodyEvidenceIdsFromQuotes(result.candidate_quotes, candidate);
+  const incomingEvidence = evidenceFromUnitIds(incomingIds, incoming);
+  const candidateEvidence = evidenceFromUnitIds(candidateIds, candidate);
   if (!incomingEvidence || !candidateEvidence) return "Referințele care ar demonstra diferența nu indică unități valide din ambele articole.";
-  if (!includesBodyEvidence(result.incoming_evidence_ids, incoming) || !includesBodyEvidence(result.candidate_evidence_ids, candidate)) {
+  if (!includesBodyEvidence(incomingIds, incoming) || !includesBodyEvidence(candidateIds, candidate)) {
     return "O diferență între evenimente trebuie susținută și de corpul ambelor articole, nu doar de titluri.";
   }
   // O singură diferență concretă și verificată este suficientă pentru a
@@ -536,8 +570,8 @@ function validateDifferentEvidence(result, incoming, candidate) {
     actionIsGrounded(incomingFact.action, incomingEvidence) &&
     actionIsGrounded(candidateFact.action, candidateEvidence);
   const objectDifferenceGrounded = objectDiffers &&
-    factFieldHasGroundedTerm(incomingFact.object, incomingEvidence) &&
-    factFieldHasGroundedTerm(candidateFact.object, candidateEvidence);
+    distinctiveObjectTermIsGrounded(incomingFact.object, candidateFact.object, incomingEvidence) &&
+    distinctiveObjectTermIsGrounded(candidateFact.object, incomingFact.object, candidateEvidence);
   const concreteDifferenceGrounded = actorDifferenceGrounded || actionDifferenceGrounded || objectDifferenceGrounded;
   if (!concreteDifferenceGrounded) {
     if (objectDiffers) return "Diferența de obiect nu este susținută de fragmentele citate.";

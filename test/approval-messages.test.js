@@ -79,7 +79,7 @@ test("an uncertain AI comparison is clearly presented for manual review", () => 
     simResult: { similarityBasis: "ai_cross_embedding", aiVerdict: "uncertain", aiSuggestedVerdict: "same_report", aiSimilarityProbability: 96, aiRationale: "Ambele redau aceeași declarație despre alegerile anticipate și rectificarea bugetară.", aiChecks: [{ model: "gemini-test", validatedVerdict: "uncertain", duplicateProbability: 96, reason: "Ambele redau aceeași declarație despre alegerile anticipate." }] },
   });
   assert.match(text, /Verificare manuală/);
-  assert.match(text, /96% estimare Gemini/);
+  assert.match(text, /96% probabilitate de duplicat estimată de Gemini/);
   // The concrete reason from the model is the useful part of this card.
   assert.match(text, /Motivul: Ambele redau aceeași declarație/);
   assert.match(text, /Verificări păstrate: gemini-test: uncertain \(96%\)/);
@@ -148,7 +148,18 @@ test("confirmed duplicate approval never says Gemini rejected the match", () => 
     similarity: 0.97,
     simResult: { similarityBasis: "semantic_ai", aiVerdict: "duplicate", aiSimilarityProbability: 97 },
   });
-  assert.match(text, /97% estimare Gemini/);
+  assert.match(text, /97% probabilitate de duplicat estimată de Gemini/);
   assert.match(text, /Gemini .* a confirmat că relatează același fapt/);
   assert.doesNotMatch(text, /a decis că nu este același fapt|a respins potrivirea/);
+});
+
+test("30% evidence review does not label the comparison as an already similar story",()=>{
+  const text=formatApprovalText({
+    kind:"article",url:"https://example.com/current",comparisonUrl:"https://example.com/prior",
+    similarity:.94,simResult:{aiVerdict:"uncertain",aiSuggestedVerdict:"different",aiSimilarityProbability:30,aiValidationReason:"Diferența concretă nu a putut fi demonstrată."}
+  });
+  assert.match(text,/Verificare manuală a dovezilor/);
+  assert.match(text,/30% probabilitate de duplicat estimată de Gemini/);
+  assert.match(text,/Articol comparat din istoric/);
+  assert.doesNotMatch(text,/Știre similară deja procesată|Posibil duplicat/);
 });

@@ -658,6 +658,24 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
   const resolved = candidates.map((candidate) => {
     const verdict = verdictByUrl.get(candidate.url);
     if (verdict?.verdict === "uncertain") {
+      // A low-probability unresolved backfill is not positive duplicate evidence.
+      // Preserve review for an anchored candidate, a positive model claim, or
+      // missing/high probability. Do not promote an unrelated recent item.
+      const lowProbability = Number.isInteger(verdict.duplicateProbability) && verdict.duplicateProbability < 50;
+      const negativeOrAbstention = ["different", "new_development", "related_context", "uncertain"].includes(verdict.modelVerdict || verdict.verdict);
+      const anchored = candidate.isDuplicate || candidate.sameArticleIdentity || Number.isFinite(candidate.lexicalRetrievalScore);
+      if (lowProbability && negativeOrAbstention && !anchored) {
+        return {
+          ...candidate, isDuplicate: false,
+          similarityZone: "AI NECONFIRMAT (probabilitate mică, fără ancoră de duplicat)",
+          similarityReason: "Gemini estimează sub 50% duplicat, iar candidatul nu are dovezi independente de aceeași știre; nu creez o cerere manuală.",
+          similarityBasis: candidate.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
+          aiVerdict: "unconfirmed_low_probability",
+          aiSuggestedVerdict: verdict.modelVerdict,
+          aiSimilarityProbability: verdict.duplicateProbability,
+          aiChecks: verdict.modelChecks || [],
+        };
+      }
       return {
         ...candidate,
         // Similarity gates lead to human approval, not automatic rejection.

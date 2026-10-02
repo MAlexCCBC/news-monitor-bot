@@ -33,12 +33,14 @@ function modelText(value, limit = 300) {
 export function formatApprovalText(item) {
   const title = escapeHtml(item.article?.title || "(fără titlu)");
   const comparisonTitle = escapeHtml(item.comparisonTitle || "Știre anterioară");
-  const comparisonLabel = item.simResult?.isPendingApproval
+  const needsManualReview = item.simResult?.aiVerdict === "uncertain";
+  const comparisonLabel = needsManualReview
+    ? (item.simResult?.isPendingApproval ? "Articol comparat dintr-o cerere în așteptare" : "Articol comparat din istoric")
+    : item.simResult?.isPendingApproval
     ? "Știre similară cu o cerere deja în așteptare"
     : "Știre similară deja procesată";
-  const needsManualReview = item.simResult?.aiVerdict === "uncertain";
   const aiProbability = Number.isInteger(item.simResult?.aiSimilarityProbability)
-    ? `${item.simResult.aiSimilarityProbability}% estimare Gemini`
+    ? `${item.simResult.aiSimilarityProbability}% probabilitate de duplicat estimată de Gemini`
     : null;
   const aiRationale = item.simResult?.aiRationale || (needsManualReview ? item.simResult?.similarityReason : null);
   const aiChecks = Array.isArray(item.simResult?.aiChecks) ? item.simResult.aiChecks : [];
@@ -93,7 +95,7 @@ export function formatApprovalText(item) {
       `<i>Filtrul pe texte AI a fost eliminat. Poți reîncerca trimiterea textului salvat.</i>`;
   }
 
-  return `${needsManualReview ? "❔" : "⏭️"} <b>${needsManualReview ? `Verificare manuală${aiProbability ? ` · ${score}` : ""}` : `Posibil duplicat · ${score}`}</b>\n\n` +
+  return `${needsManualReview ? "❔" : "⏭️"} <b>${needsManualReview ? `Verificare manuală a dovezilor${aiProbability ? ` · ${score}` : ""}` : `Posibil duplicat · ${score}`}</b>\n\n` +
     `<b>Comparație între link-uri</b>\n` +
     `<b>Link primit:</b> ${currentLink}\n` +
     `<b>${comparisonLabel}:</b> ${comparisonTitle} — ${comparisonLink}\n\n` +

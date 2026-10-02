@@ -842,3 +842,74 @@ test("an unsupported Gemini duplicate reaches manual review instead of blocking 
   assert.equal(final.aiVerdict, "uncertain");
   assert.match(final.similarityZone, /NECESITĂ VERIFICARE/);
 });
+
+test("30% grounded negative remains different even when unrelated fact fields are missing", () => {
+  const incoming={title:"Măsura privind alimentele",content:"Guvernul a anunțat reducerea TVA pentru alimente în proiectul fiscal prezentat astăzi."};
+  const candidate={title:"Măsura privind combustibilul",content:"Guvernul a anunțat reducerea TVA pentru combustibil în proiectul fiscal prezentat astăzi."};
+  const [result]=parseSimilarityReview(JSON.stringify({results:[{
+    id:1,verdict:"different",duplicate_probability:30,
+    incoming_fact:{actor:"Guvernul",object:"TVA pentru alimente"},
+    candidate_fact:{actor:"Guvernul",object:"TVA pentru combustibil"},
+    incoming_evidence_ids:["E2"],candidate_evidence_ids:["E2"],
+  }]}),1,incoming,[candidate]);
+  assert.equal(result.verdict,"different",result.reason);
+  assert.equal(result.duplicateProbability,30);
+  const prior={...candidate,url:"https://example.com/older",score:.93,isDuplicate:true,embeddingComparable:true};
+  assert.equal(applySimilarityAiReview([prior],[prior],{results:[result]}).isDuplicate,false);
+});
+
+test("literal body quotes repair a negative 30% verdict's malformed paragraph IDs", () => {
+  const incoming={title:"TVA pentru alimente",content:"Guvernul a anunțat reducerea TVA pentru alimente în proiectul fiscal prezentat astăzi."};
+  const candidate={title:"TVA pentru combustibil",content:"Guvernul a anunțat reducerea TVA pentru combustibil în proiectul fiscal prezentat astăzi."};
+  const item={
+    id:1,verdict:"different",duplicate_probability:30,
+    incoming_fact:{actor:"Guvernul",object:"TVA pentru alimente"},
+    candidate_fact:{actor:"Guvernul",object:"TVA pentru combustibil"},
+    incoming_evidence_ids:["E99"],candidate_evidence_ids:["E99"],
+    incoming_quotes:[incoming.content],candidate_quotes:[candidate.content],
+  };
+  assert.equal(parseSimilarityReview(JSON.stringify({results:[item]}),1,incoming,[candidate])[0].verdict,"different");
+  for(const quotes of [[incoming.title,candidate.title],["Un citat inventat care nu apare în articol.","Alt citat inventat care nu apare în articol."],[candidate.content,incoming.content]]) {
+    const [result]=parseSimilarityReview(JSON.stringify({results:[{...item,incoming_quotes:[quotes[0]],candidate_quotes:[quotes[1]]}]}),1,incoming,[candidate]);
+    assert.equal(result.verdict,"uncertain");
+  }
+});
+
+test("a shared generic object word cannot ground an invented central object difference", () => {
+  const incoming={title:"TVA pentru alimente",content:"Guvernul a anunțat reducerea TVA pentru alimente în proiectul fiscal prezentat astăzi."};
+  const candidate={...incoming};
+  const [result]=parseSimilarityReview(JSON.stringify({results:[{
+    id:1,verdict:"different",duplicate_probability:30,
+    incoming_fact:{actor:"Guvernul",object:"TVA pentru medicamente"},
+    candidate_fact:{actor:"Guvernul",object:"TVA pentru combustibil"},
+    incoming_evidence_ids:["E2"],candidate_evidence_ids:["E2"],
+  }]}),1,incoming,[candidate]);
+  assert.equal(result.verdict,"uncertain");
+});
+
+test("low-probability unanchored recent candidates do not become manual duplicate alarms", () => {
+  const candidate={url:"https://example.com/backfill",isDuplicate:false,score:.62,embeddingComparable:true};
+  for(const probability of [0,30,49]) {
+    const result=applySimilarityAiReview([candidate],[candidate],{results:[{verdict:"uncertain",modelVerdict:"different",duplicateProbability:probability,reason:"bad reference"}]});
+    assert.equal(result.isDuplicate,false);
+    assert.equal(result.aiVerdict,"unconfirmed_low_probability");
+    assert.equal(result.aiSimilarityProbability,probability);
+  }
+  for(const anchor of [{isDuplicate:true},{sameArticleIdentity:true},{lexicalRetrievalScore:.8}]) {
+    const result=applySimilarityAiReview([{...candidate,...anchor}],[candidate],{results:[{verdict:"uncertain",modelVerdict:"different",duplicateProbability:30}]});
+    assert.equal(result.isDuplicate,true);
+  }
+  for(const review of [{verdict:"uncertain",modelVerdict:"same_report",duplicateProbability:30},{verdict:"uncertain",duplicateProbability:50},{verdict:"uncertain",duplicateProbability:null}]) {
+    assert.equal(applySimilarityAiReview([candidate],[candidate],{results:[review]}).isDuplicate,true);
+  }
+});
+
+test("clearing a weak 30% candidate cannot hide another confirmed or anchored duplicate", () => {
+  const weak={url:"https://example.com/weak",isDuplicate:false,score:.98,embeddingComparable:true};
+  const strong={url:"https://example.com/strong",isDuplicate:true,score:.88,embeddingComparable:true};
+  const results=[{verdict:"uncertain",modelVerdict:"different",duplicateProbability:30},{verdict:"duplicate",duplicateProbability:98}];
+  const result=applySimilarityAiReview([weak,strong],[weak,strong],{results});
+  assert.equal(result.isDuplicate,true);
+  assert.equal(result.url,strong.url);
+  assert.equal(result.aiVerdict,"duplicate");
+});
