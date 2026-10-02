@@ -1,6 +1,6 @@
 export function requiresIncidentReview(title = "", focus = "") {
   const norm = (title + "\n" + focus).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  return /\b(?:incendiu|incendiul|incendii|incendiile|incendiilor|incendiat[aei]?|incendiere[a]?|flacarile|explozie|explozii|explozia|evacuati|evacuate|ro[\s-]alert)\b/.test(norm);
+  return /\b(?:incendi(?:u(?:l(?:ui)?)?|i(?:le|lor)?|at[aei]?|er(?:e|ea|i|ii|ile|ilor))|flacarile|explozie|explozii|explozia|evacuati|evacuate|ro[\s-]alert)\b/.test(norm);
 }
 const normalize = value => String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
 export function incidentEvidenceDecision(text, {title, excerpt, hasRomanianContext, hasMajorEmergency}) {

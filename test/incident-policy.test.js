@@ -63,3 +63,11 @@ test("automatic Digi24 incident review survives channel bypass while manual comm
   assert.equal(shouldReviewIncident({...request,title:"PNL prezintă bugetul"}),false);
   assert.equal(shouldReviewIncident({...request,url:"https://example.com/game-news"}),false);
 });
+
+test("Romanian fire inflections cannot hide an incident behind an official's statement",()=>{
+  for(const word of ["incendiu","incendiul","incendiului","incendii","incendiile","incendiilor","incendiat","incendiată","incendiați","incendiere","incendierii"]) {
+    const title="Premierul din România transmite un mesaj despre "+word;
+    assert.equal(requiresIncidentReview(title),true,word);
+    assert.equal(hasStrongRomanianPoliticalContext(title,[]),false,word);
+  }
+});
