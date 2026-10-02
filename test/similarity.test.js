@@ -135,6 +135,23 @@ test("likely active-approval matches receive a reserved Gemini slot", () => {
   assert.ok(selected.includes(pending));
 });
 
+test("a prior version at the same canonical URL cannot be crowded out", () => {
+  const distractors = Array.from({ length: 12 }, (_, index) => ({
+    url: `https://other.example/${index}`, score: .99 - index * .005, isDuplicate: true,
+    embeddingComparable: true, samePublisher: false, sameArticleIdentity: false,
+    lexicalRetrievalScore: null, historyRecencyRank: index,
+  }));
+  const priorVersion = {
+    url: "https://digi24.ro/stiri/politica/titlu-vechi-3960029",
+    score: .31, isDuplicate: false, embeddingComparable: true, samePublisher: true,
+    sameArticleIdentity: true, lexicalRetrievalScore: null, historyRecencyRank: 20,
+  };
+  const selected = selectAiReviewCandidates([...distractors, priorVersion]);
+  assert.equal(selected.length, 8);
+  assert.equal(selected[0], priorVersion);
+  assert.ok(selected.includes(priorVersion));
+});
+
 test("a confirmed duplicate prefers the active approval so callers can avoid a second card", () => {
   const published = { url: "published", score: .99, isDuplicate: true, embeddingComparable: true };
   const pending = {

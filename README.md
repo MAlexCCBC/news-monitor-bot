@@ -159,6 +159,9 @@ neschimbate. Dacă editorul actualizează efectiv același articol, versiunea no
 trece din nou prin toate filtrele de dată, relevanță și similaritate. Istoricul
 vechi este înlocuit numai după o livrare reușită, astfel încât o actualizare
 eșuată sau respinsă nu șterge dovada folosită la comparație.
+Versiunea anterioară a aceluiași URL canonic primește un loc garantat în lotul
+de arbitraj Gemini; celelalte semnale vectoriale, lexicale și cereri în așteptare
+împart locurile rămase din același apel limitat.
 
 Indiferent de `KEYWORDS`, sunt păstrate și știrile despre Mureșan, Bolojan,
 PNL, USR și politică; setările existente rămân active în plus.

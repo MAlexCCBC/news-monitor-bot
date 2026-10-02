@@ -3,6 +3,7 @@ import { cleanArticleContent, articleFocus } from "../scraper/clean-content.js";
 import { arbitrateSimilarity } from "./ai-arbitrator.js";
 import { applyLearnedFeedback } from "../storage/similarity-feedback.js";
 import { withGeminiRetries } from "../ai/gemini-client.js";
+import { sameArticleUrl } from "../utils/article-url.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
@@ -555,6 +556,9 @@ function lexicalRetrievalScore(title, content, old) {
 }
 
 export function selectAiReviewCandidates(candidates) {
+  const canonicalArticleCandidates = candidates
+    .filter((item) => item.sameArticleIdentity)
+    .sort((a, b) => (a.historyRecencyRank || 0) - (b.historyRecencyRank || 0));
   const vectorCandidates = candidates
     .filter((item) => (item.embeddingComparable &&
       (item.score >= AI_RETRIEVAL_FLOOR || item.isDuplicate) &&
@@ -592,6 +596,10 @@ export function selectAiReviewCandidates(candidates) {
       (b.lexicalRetrievalScore || 0) - (a.lexicalRetrievalScore || 0) ||
       (b.score || 0) - (a.score || 0) ||
       (a.historyRecencyRank || 0) - (b.historyRecencyRank || 0));
+  // A prior version at the same canonical publisher URL is the only direct
+  // evidence for deciding whether an edit is a true new stage. It must not be
+  // crowded out by unrelated high-vector stories in the fixed-size batch.
+  addCandidates(canonicalArticleCandidates, 1);
   addCandidates(vectorCandidates.filter((item) => item.isDuplicate), 2);
   addCandidates(lexicalCandidates, 2);
   // Reserve two Gemini slots for likely matches that have not yet been
@@ -756,6 +764,7 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
   const candidates = historyItems.map((item, historyRecencyRank) => {
     const embeddingComparable = compatibleUrls.has(item.url);
     const samePublisher = isSamePublisherSource(incomingUrl, item.url);
+    const sameArticleIdentity = sameArticleUrl(incomingUrl, item.url);
     const rawSim = embeddingComparable ? cosineSimilarity(newEmbedding, item.embedding) : 0;
     const result = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, item.title || "", item.content || "", threshold, {
       samePublisher,
@@ -769,6 +778,7 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
       score: rawSim,
       embeddingComparable,
       samePublisher,
+      sameArticleIdentity,
       historyRecencyRank,
       samePublisherThreshold: Math.max(threshold, 0.97),
       lexicalRetrievalScore: samePublisher && embeddingComparable ? null : lexicalRetrievalScore(titleNew, leadNew, item),
@@ -794,6 +804,7 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
         candidate.embeddingComparable && candidate.score >= AI_RETRIEVAL_FLOOR ? `vector=${Math.round(candidate.score * 100)}%` : null,
         Number.isFinite(candidate.lexicalRetrievalScore) ? `text=${Math.round(candidate.lexicalRetrievalScore * 100)}%` : null,
         candidate.isPendingApproval ? "pending" : null,
+        candidate.sameArticleIdentity ? "same-url-version" : null,
         !candidate.isDuplicate && !Number.isFinite(candidate.lexicalRetrievalScore) &&
           !(candidate.embeddingComparable && candidate.score >= AI_RETRIEVAL_FLOOR) ? "recent-backfill" : null,
       ].filter(Boolean).join(",");
