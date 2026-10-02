@@ -2,6 +2,7 @@ import axios from "axios";
 import sharp from "sharp";
 import { getRecentImages, saveImage } from "../storage/db.js";
 import { getFaceBox, verifyCandidate, verifyPersonByName } from "./vision.js";
+import { imageIdentity, recentImageKeys, diverseImageCandidates, commonsPhotoCandidates } from "./selection.js";
 import { isArticleImageCandidate, isVerifiedPersonImageAllowed } from "./policy.js";
 
 const TAVILY_KEY = () => process.env.TAVILY_API_KEY;
@@ -145,7 +146,9 @@ async function searchWikimediaCommons(query) {
         gsrsearch: query,
         gsrnamespace: 6,
         prop: "imageinfo",
-        iiprop: "url|size",
+        gsrlimit: 20,
+        iiprop: "url|size|mime|extmetadata",
+        iiextmetadatafilter: "DateTimeOriginal",
         iiurlwidth: 800,
         format: "json",
       },
@@ -153,9 +156,7 @@ async function searchWikimediaCommons(query) {
       timeout: 15000,
     });
     const pages = Object.values(res.data?.query?.pages || {});
-    return pages
-      .map((p) => p.imageinfo?.[0]?.thumburl || p.imageinfo?.[0]?.url)
-      .filter((u) => u && /^https?:\/\//.test(u) && /\.(jpe?g|png|webp)/i.test(u));
+    return commonsPhotoCandidates(pages);
   } catch (err) {
     console.warn(`[image] Wikimedia Commons search esuat: ${err.message}`);
     return [];
@@ -234,7 +235,7 @@ async function downloadImage(imageUrl) {
       headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" },
     });
     const meta = await sharp(res.data).metadata();
-    if (!meta.width || !meta.height || meta.width < 100 || meta.height < 100) return null;
+    if (!meta.width || !meta.height || meta.width < 320 || meta.height < 320) return null;
     return { width: meta.width, height: meta.height, buffer: res.data };
   } catch {
     return null;
@@ -289,30 +290,6 @@ export async function cropPortrait3x4(buffer, faceBox = null) {
     .toBuffer();
 }
 
-// Verifica daca numele persoanei apare in URL-ul imaginii (ex:
-// "Portret_George_Simion.jpg"). Cand modelul de viziune respinge o poza DAR
-// numele e chiar in fisier, cel mai probabil e o respingere falsa a unui
-// model slab (Gemma) si o acceptam cu avertisment.
-// Strict: TOATE cuvintele semnificative ale numelui trebuie prezente, iar
-// URL-ul sa nu indice continut non-persona (cladiri, galerii, monumente) -
-// altfel o poza cu "casa-mita-biciclista" trecea ca portret.
-function urlMentionsPerson(imgUrl, personName) {
-  try {
-    const decoded = decodeURIComponent(imgUrl).toLowerCase().replace(/[-_]/g, " ");
-    const tokens = personName
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((tok) => tok.length > 3);
-    if (tokens.length === 0) return false;
-    if (!tokens.every((tok) => decoded.includes(tok))) return false;
-
-    const NON_PERSON = /\b(cladire|cladiri|casa|caselor|monument|statuie|galerie|galerie foto|arhitectura|strada|bulevard|cartier|oras|localitate|harta)\b/;
-    return !NON_PERSON.test(decoded);
-  } catch {
-    return false;
-  }
-}
-
 // Descarca, verifica si decupeaza un candidat.
 // referenceBuffer: poza oficiala a vorbitorului (Wikipedia). Candidatul e
 // acceptat numai daca Gemini confirmă identitatea; fără referință sau verdict,
@@ -330,24 +307,7 @@ async function buildCandidate(imgUrl, personName, referenceBuffer) {
     return null;
   }
 
-    // Respingere pt. text vizibil (watermark, logo post TV, titluri, subtitrari)
-    if (verdict.hasText === true) {
-      console.log(`[image] Respins (are text vizibil in imagine): ${imgUrl}`);
-      return null;
-    }
-
-    if (verdict.samePerson === false && urlMentionsPerson(imgUrl, personName)) {
-      console.log(`[image] Model a zis NU DAR numele apare in URL - accept (${personName}): ${imgUrl}`);
-    } else if (verdict.samePerson === false) {
-      console.log(`[image] Respins (NU e ${personName}): ${imgUrl}`);
-      return null;
-    } else if (verdict.samePerson === null) {
-      // Analiza nedisponibila: acceptam, dar logam - mai bine o poza plauzibila
-      // decat deloc (numele era deja cel al vorbitorului in cautare).
-      console.log(`[image] Verificare faciala indisponibila, accept oricum: ${imgUrl}`);
-    } else {
-      console.log(`[image] Confirmat facial (${personName}): ${imgUrl}`);
-    }
+  console.log(`[image] Confirmat facial (${personName}): ${imgUrl}`);
   const faceBox = await getFaceBox(dims.buffer);
   const finalBuffer = await cropPortrait3x4(dims.buffer, faceBox);
   return {
@@ -359,18 +319,10 @@ async function buildCandidate(imgUrl, personName, referenceBuffer) {
   };
 }
 
-// Flux complet pentru o persoana/subiect:
-//  1. Ia portretul Wikipedia ca REFERINTA faciala (nu il posteaza).
-//  2. Cauta poze pe net (Tavily -> DuckDuckGo -> Bing) cu numele vorbitorului.
-//  3. Fiecare candidat e verificat facial + anti-text contra referintei, apoi
-//     cropuit centrat pe fata. Primul confirmat castiga; pozele folosite in
-//     ultimele IMAGE_HISTORY_DAYS zile sunt sarite (fara repetitii).
-//  4. Nimic nou verificat => portretul Wikipedia (daca nu e repetat recent),
-//     apoi reutilizare LRU, iar portretul Wikipedia repetat e ultima rezerva.
+// Prefer fresh, diverse verified candidates; never repeat a recent image as fallback.
 export async function findImage(personOrTopic, articleTitle, articleImageUrl = null) {
   const recentImages = getRecentImages(IMAGE_HISTORY_DAYS());
-  const usedUrls = new Set(recentImages.map((i) => i.image_url));
-  const usedMeta = new Map(recentImages.map((i) => [i.image_url, i]));
+  const usedKeys = recentImageKeys(recentImages);
 
   // 1. Referinta faciala + sanity-check: portretul trebuie sa contina o FATA.
   //    Pentru institutii/partide Wikipedia intoarce steme/logo-uri - fara fata
@@ -384,16 +336,9 @@ export async function findImage(personOrTopic, articleTitle, articleImageUrl = n
     referenceFaceBox = await getFaceBox(referenceBuffer);
     if (!referenceFaceBox) {
       console.log("[image] Referinta Wikipedia fara fata detectabila - nu o folosesc");
-      // This Wikipedia page was selected by an exact person-name match. If
-      // automated face detection misses, use only this source-verified image;
-      // do not compare unrelated candidates against it.
-      const officialImage = {
-        buffer: await cropPortrait3x4(referenceBuffer),
-        sourceUrl: reference.url || null,
-        note: "Imaginea oficială de pe pagina persoanei (Wikipedia); verificarea facială automată nu a fost disponibilă.",
-      };
-      saveImage({ imageUrl: reference.url || "", personOrTopic });
-      return officialImage;
+      // Detection failure must not short-circuit diversity or bypass identity checks.
+      referenceBuffer = null;
+
     }
   }
 
@@ -402,10 +347,11 @@ export async function findImage(personOrTopic, articleTitle, articleImageUrl = n
   // 2. Candidati din motoare
   const exactPerson = `"${String(personOrTopic).replaceAll('"', "")}"`;
   const queries = [
+    `${exactPerson} ${new Date().getUTCFullYear()}`,
+    exactPerson,
     `${exactPerson} portret`,
     `${exactPerson} fotografie oficială`,
     `${exactPerson} România politician`,
-    exactPerson,
     articleTitle ? articleTitle.slice(0, 100) : null,
   ].filter((q) => q && q.trim());
 
@@ -417,22 +363,17 @@ export async function findImage(personOrTopic, articleTitle, articleImageUrl = n
     searchDuckDuckGo,
     searchBingRss,
   ];
-  const seen = new Set();
-  let winner = null;
-
-  // Search engines can return dozens of unrelated results for common names
-  // (e.g. Dominic Fritz -> Dominic Toretto/Monaghan). Search quoted names and
-  // verify a small high-ranked set, then use the exact Wikipedia portrait
-  // fallback instead of blocking the serial article queue for minutes.
-  const MAX_FACE_CHECKS = 8;
+  const seenKeys = new Set(usedKeys);
+  // Keep cost bounded while giving multiple providers a chance.
+  const MAX_FACE_CHECKS = 12;
   let faceChecks = 0;
 
   // Try the publisher's own image first, but never trust it merely because
   // it is an og:image: it must pass the same positive face-identity check as
   // search results. This recovers relevant portraits without reviving random
   // screenshots, document scans, or unrelated article photos.
-  if (isArticleImageCandidate({ speaker: personOrTopic, imageUrl: articleImageUrl }) && !usedUrls.has(articleImageUrl)) {
-    seen.add(articleImageUrl);
+  if (isArticleImageCandidate({ speaker: personOrTopic, imageUrl: articleImageUrl }) && !seenKeys.has(imageIdentity(articleImageUrl))) {
+    seenKeys.add(imageIdentity(articleImageUrl));
     faceChecks++;
     const candidate = await buildCandidate(articleImageUrl, personOrTopic, referenceBuffer);
     if (candidate) {
@@ -441,84 +382,39 @@ export async function findImage(personOrTopic, articleTitle, articleImageUrl = n
     }
   }
 
-  searchLoop: for (const q of queries) {
-    for (const engine of engines) {
-      let imgs = [];
+  for (const q of queries) {
+    // One bounded request per provider, in parallel; do not consume the whole
+    // vision budget before later providers are even queried.
+    const pools = await Promise.all(engines.map(async engine => {
       try {
-        imgs = await engine(q);
+        const imgs = await engine((engine === searchWikimediaCommons || engine === searchWikipediaImages) ? personOrTopic : q);
+        console.log(`[image] ${engine.name} pentru "${q}": ${imgs.length} rezultate`);
+        return imgs;
       } catch (err) {
-        console.warn(`[image] Eroare la apel motor imagini: ${err.message}`);
-        continue;
+        console.warn(`[image] Motor indisponibil: ${engine.name}`);
+        return [];
       }
-      console.log(`[image] ${engine.name || "search"} pentru "${q}": ${imgs.length} rezultate`);
-      for (const imgUrl of imgs) {
-        if (!imgUrl || typeof imgUrl !== "string") continue;
-        if (seen.has(imgUrl)) continue;
-        seen.add(imgUrl);
-        if (usedUrls.has(imgUrl)) continue;
-        if (faceChecks >= MAX_FACE_CHECKS) break searchLoop;
-
-        faceChecks++;
-        const candidate = await buildCandidate(imgUrl, personOrTopic, referenceBuffer);
-        if (candidate) {
-          saveImage({ imageUrl: imgUrl, personOrTopic });
-          winner = candidate;
-          break searchLoop;
-        }
-      }
-    }
-  }
-  console.log(`[image] Verificați ${faceChecks} candidați pentru ${personOrTopic}; rezultat: ${winner ? "imagine găsită" : "niciun match"}`);
-  if (!winner) {
-    // 4. Nimic nou verificat. ORDINEA conteaza ca sa evitam repetarile:
-    //    a) daca portretul Wikipedia NU a fost folosit recent -> il folosim
-    //       (persoana corecta garantat);
-    //    b) daca A fost folosit recent (ex: acelasi politician la doua stiri in
-    //       aceeasi zi) -> incercam intai reutilizarea LRU a altor poze vechi
-    //       ale lui, ca sa nu repetam identic;
-    //    c) abia daca nu exista nimic altceva, repetam si portretul Wikipedia
-    //       (mai bine o poza repetata decat una gresita sau deloc).
-    const wikiRecentlyUsed = reference?.url ? usedUrls.has(reference.url) : false;
-
-    // Reutilizare LRU din istoricul recent (poze vechi care au reaparut in
-    // rezultatele de azi; sortate ca sa luam cea mai putin folosita).
-    const reusePool = [];
-    for (const imgUrl of seen) {
-      const meta = usedMeta.get(imgUrl);
-      if (meta) reusePool.push({ url: imgUrl, lastUsed: meta.last_used, usedCount: meta.used_count });
-    }
-    reusePool.sort((a, b) => a.lastUsed - b.lastUsed || a.usedCount - b.usedCount);
-
-    if (referenceBuffer && !wikiRecentlyUsed) {
-      const processed = {
-        buffer: await cropPortrait3x4(referenceBuffer, referenceFaceBox),
-        sourceUrl: reference.url || null,
-        note: "Portret oficial (Wikipedia) - nu am gasit poze noi verificate facial.",
-      };
-      saveImage({ imageUrl: reference.url || "", personOrTopic });
-      console.log("[image] Fallback: folosesc portretul Wikipedia al vorbitorului");
-      return processed;
-    }
-
-    for (const { url } of reusePool) {
-      const candidate = await buildCandidate(url, personOrTopic, referenceBuffer);
+    }));
+    const candidates = diverseImageCandidates(pools, seenKeys, Math.min(6, MAX_FACE_CHECKS - faceChecks));
+    for (const imgUrl of candidates) {
+      seenKeys.add(imageIdentity(imgUrl));
+      faceChecks++;
+      const candidate = await buildCandidate(imgUrl, personOrTopic, referenceBuffer);
       if (candidate) {
-        saveImage({ imageUrl: url, personOrTopic });
+        saveImage({ imageUrl: imgUrl, personOrTopic });
         return candidate;
       }
     }
-
-    if (referenceBuffer && wikiRecentlyUsed) {
-      const processed = {
-        buffer: await cropPortrait3x4(referenceBuffer, referenceFaceBox),
-        sourceUrl: reference.url || null,
-        note: "Portret oficial (Wikipedia) - reutilizat; nu am gasit alta poza verificata.",
-      };
-      saveImage({ imageUrl: reference.url || "", personOrTopic });
-      console.log("[image] Ultima rezerva: repetau portretul Wikipedia (deja folosit recent)");
-      return processed;
+    if (faceChecks >= MAX_FACE_CHECKS) break;
+  }
+  console.log(`[image] Verificați ${faceChecks} candidați pentru ${personOrTopic}; nicio imagine nouă confirmată`);
+  if (referenceBuffer && referenceFaceBox && reference?.url && !usedKeys.has(imageIdentity(reference.url))) {
+    const candidate = await buildCandidate(reference.url, personOrTopic, referenceBuffer);
+    if (candidate) {
+      saveImage({ imageUrl: reference.url, personOrTopic });
+      return candidate;
     }
   }
-
-  return winner;
+  console.warn("[image] Nicio imagine nouă verificată; omit fotografia, fără repetare automată.");
+  return null;
 }

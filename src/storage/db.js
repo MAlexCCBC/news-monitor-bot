@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { readRecentImages, cleanupImageHistory } from "./image-history.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import { createPendingApprovalStore } from "./pending-approvals.js";
@@ -108,11 +109,7 @@ export function saveImage({ imageUrl, personOrTopic }) {
 }
 
 export function getRecentImages(daysBack) {
-  const cutoff = Date.now() - daysBack * 24 * 60 * 60 * 1000;
-  const stmt = db.prepare(`
-    SELECT image_url, person_or_topic, used_count, last_used FROM image_history WHERE created_at >= ?
-  `);
-  return stmt.all(cutoff);
+  return readRecentImages(db, daysBack);
 }
 
 export function getActiveModelCooldowns(now = Date.now()) {
@@ -133,9 +130,8 @@ export function saveModelCooldown(model, cooldownUntil) {
 
 export function cleanupOld(hoursBack, daysBackImages) {
   const cutoff = Date.now() - hoursBack * 60 * 60 * 1000 * 2; // pastram 2x ca marja
-  const cutoffImg = Date.now() - daysBackImages * 24 * 60 * 60 * 1000 * 2;
   db.prepare(`DELETE FROM news_history WHERE created_at < ?`).run(cutoff);
-  db.prepare(`DELETE FROM image_history WHERE created_at < ?`).run(cutoffImg);
+  cleanupImageHistory(db, daysBackImages);
   db.prepare(`DELETE FROM ai_model_cooldowns WHERE cooldown_until <= ?`).run(Date.now());
   similarityFeedback.cleanup();
 }
