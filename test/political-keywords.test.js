@@ -23,6 +23,20 @@ test("incidental Romanian political background cannot fast-track a foreign headl
   assert.equal(hasStrongRomanianPoliticalContext("Bolojan anunță consultări cu partidele după vot", ["Bolojan"]), true);
 });
 
+test("completed-run false admissions cannot regain the political fast path", () => {
+  const schoolComparison = "Diferențe majore între școala japoneză și cea din România: Elevii nu sunt scoși la tablă, nu dau teze\nUn profesor de științe politice explică sistemul japonez.";
+  assert.equal(matchesKeywords(schoolComparison, ["politic"]).matched, true);
+  assert.equal(hasStrongRomanianPoliticalContext(schoolComparison, ["Nicușor Dan"]), false);
+
+  const screensStory = "Mirabela Grădinaru: Trebuie să vorbim despre lumea în care cresc copiii noștri\nPartenera lui Nicușor Dan a discutat despre expunerea copiilor la ecrane.";
+  assert.equal(matchesKeywords(screensStory, ["Nicușor Dan"]).matched, true);
+  assert.equal(hasStrongRomanianPoliticalContext(screensStory, ["Nicușor Dan"]), false);
+
+  const foreignInvestigation = "KimberlyGate: Congresmani democrați cer investigarea ambasadoarei SUA\nÎn alte știri, Bolojan a participat la ședința Guvernului.";
+  assert.equal(matchesKeywords(foreignInvestigation, ["Bolojan", "Guvern"]).matched, true);
+  assert.equal(hasStrongRomanianPoliticalContext(foreignInvestigation, ["Bolojan"]), false);
+});
+
 test("core political topics stay included even if external KEYWORDS configuration omits them", () => {
   for (const headline of [
     "Mureșan vorbește despre proiectul de lege",
