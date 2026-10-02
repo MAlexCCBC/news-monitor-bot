@@ -78,7 +78,7 @@ export function matchesKeywords(text, keywords) {
 // accidents: require a vegetation/forest fire, an official response, and a
 // strong scale signal such as multi-county operations or military aircraft.
 export function hasMajorRomanianEmergencyContext(text) {
-  const norm = normalize(String(text || ""));
+  const norm = normalize(String(text || "")).split(/[.!?;\n]/).filter(clause => !/\b(?:nu|fara|nici|nicio|niciun)\b/.test(clause)).join(" ");
   const vegetationFire = /\bincendi\w*\b/.test(norm) && /\b(?:vegetati\w*|padur\w*|fond forestier)\b/.test(norm);
   const officialResponse = /\b(?:autoritati|pompieri|isu|igsu|dsu|mapn|mai|interven\w*|mobiliz\w*)\b/.test(norm);
   const counties = ["caras-severin", "valcea", "mehedinti", "gorj", "dolj", "tulcea", "constanta", "sibiu", "brasov", "prahova", "arges", "buzau", "suceava", "neamt", "bacau", "cluj", "mures"];
@@ -160,7 +160,7 @@ export function hasStrongRomanianPoliticalContext(text, personalities) {
   const norm = normalize(text || "");
   const rawTitle = String(text || "").split("\n", 1)[0];
   const title = normalize(rawTitle);
-  if (requiresIncidentReview(rawTitle)) return false;
+  if (requiresIncidentReview(text)) return false;
   const privateLifeHeadline = hasTokenPrefix(title, PRIVATE_LIFE_SIGNALS);
   if (privateLifeHeadline) return false;
 

@@ -1,5 +1,5 @@
-export function requiresIncidentReview(title = "") {
-  const norm = title.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+export function requiresIncidentReview(title = "", focus = "") {
+  const norm = (title + "\n" + focus).toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
   return /\b(?:incendiu|incendiul|incendii|incendiile|incendiilor|incendiat[aei]?|incendiere[a]?|flacarile|explozie|explozii|explozia|evacuati|evacuate|ro[\s-]alert)\b/.test(norm);
 }
 const normalize = value => String(value || "").toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();

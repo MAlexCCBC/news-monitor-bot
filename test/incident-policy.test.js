@@ -43,3 +43,14 @@ test("large burned area or a single-county military intervention is not national
   assert.equal(hasMajorRomanianEmergencyContext("Incendii de pădure în Franța în două județe; peste 300 de pompieri intervin."),false);
   assert.equal(hasMajorRomanianEmergencyContext(FIRE_AUDIT_CASES.at(-1).title+"\n"+FIRE_AUDIT_CASES.at(-1).excerpt),true);
 });
+
+test("fire evidence in the lead also disables an official-statement fast path",()=>{
+  const title="Primarul din Sibiu anunță intervenția autorităților";
+  const lead="Pompierii intervin la un incendiu într-un depozit din Sibiu.";
+  assert.equal(requiresIncidentReview(title,lead),true);
+  assert.equal(hasStrongRomanianPoliticalContext(title+"\n"+lead,[]),false);
+});
+test("negated exceptional resources cannot turn a local fire into a national emergency",()=>{
+  assert.equal(hasMajorRomanianEmergencyContext("Incendiu de pădure în Sibiu. Nu există aeronave militare sau o urgență națională."),false);
+  assert.equal(hasMajorRomanianEmergencyContext("Incendii de pădure în două județe din România. Nu au fost mobilizați peste 300 de pompieri."),false);
+});

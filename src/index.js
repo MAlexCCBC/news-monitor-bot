@@ -693,7 +693,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       return { status: "skipped", reason };
     }
 
-    const incident = requiresIncidentReview(article.title);
+    const incident = requiresIncidentReview(article.title, articleFocus(article.content || "", article.title));
     if (policy.checkForeignRelevance && (incident || !hasStrongRomanianPoliticalContext(essentialText, romanianPersonalities))) {
       const relevant = await timedStage("relevance", () => isRelevantToRomania(
         article.title,

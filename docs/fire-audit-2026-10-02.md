@@ -64,3 +64,13 @@ No data branch edit. Validation uses an ephemeral checkout database only.
 Existing active job keeps SHA a9ae1a1 until it exits naturally; pushes queue
 the new bot behind it. This is a tested hardening checkpoint, not a guarantee
 that an arbitrary future publisher layout or model output cannot fail.
+
+## Regression caught before deployment
+
+The first Node 22 validation rejected checkpoint fc4e762 because the negative
+fixture's phrase "no military aircraft or national emergency" still matched
+emergency vocabulary. The benchmark and bot job did not run for that failed
+validation. The next checkpoint excludes clauses explicitly negating resources,
+mobilization or emergency facts; this is tested rather than removing the case.
+Incident detection now also covers the clean lead, so a headline about an
+official's announcement cannot hide a fire described only in the opening body.
