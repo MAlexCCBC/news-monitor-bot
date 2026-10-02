@@ -25,11 +25,11 @@ const SITE_CONFIG = {
 
 // Recommendation labels are local boundaries, never an end-of-article signal.
 // Match labels, not editorial headings such as "Recomandări pentru populație".
-const RECOMMENDATION_LABEL = /^(?:citeste si|vezi si|recomandarea video|recomandari|articole similare|citeste continuarea)(?:\\s*[:：–—-]\\s*.*)?$/;
+const RECOMMENDATION_LABEL = /^(?:citeste si|vezi si|recomandarea video|recomandari|articole similare|citeste continuarea)(?:\s*[:：–—-]\s*.*)?$/;
 
 function recommendationText(text) {
-  return text.toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g, "")
-    .replace(/\\s+/g, " ").trim();
+  return text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ").trim();
 }
 
 function getSiteConfig(url) {
