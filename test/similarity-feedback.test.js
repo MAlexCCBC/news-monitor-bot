@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import Database from "better-sqlite3";
 import { createPendingApprovalStore } from "../src/storage/pending-approvals.js";
 
-import { applyLearnedFeedback, createSimilarityFeedbackStore, feedbackLookupFrom, articleContentVersion } from "../src/storage/similarity-feedback.js";
+import { applyLearnedFeedback, createSimilarityFeedbackStore, feedbackLookupFrom, articleContentVersion, articleRevisionStatus } from "../src/storage/similarity-feedback.js";
 
 const article = { title: "Știrea A", content: "Guvernul a propus o măsură." };
 const comparison = { title: "Știrea B", content: "Măsura a fost discutată." };
@@ -139,6 +139,13 @@ test("content versions ignore whitespace but retain new stages, numbers and head
   assert.notEqual(articleContentVersion({ ...article, content: "Guvernul a adoptat o măsură." }), versions.articleVersion);
   assert.notEqual(articleContentVersion({ ...article, title: "Știrea actualizată" }), versions.articleVersion);
   assert.equal(articleContentVersion({ title: "A", content: "" }), null);
+});
+
+test("seen articles proceed only when complete editorial content changed", () => {
+  assert.equal(articleRevisionStatus(null, article), "new");
+  assert.equal(articleRevisionStatus(article, { title: "Știrea  A", content: "Guvernul a propus\n o măsură." }), "unchanged");
+  assert.equal(articleRevisionStatus(article, { ...article, content: "Guvernul a adoptat măsura." }), "changed");
+  assert.equal(articleRevisionStatus(article, { title: article.title, content: "" }), "unverifiable");
 });
 
 

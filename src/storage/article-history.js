@@ -2,6 +2,44 @@ import { sameArticleUrl } from "../utils/article-url.js";
 
 export const ARTICLE_HISTORY_HOURS = 24;
 
+export function findSeenArticle(db, url) {
+  if (!url) return null;
+  const exact = db.prepare(`
+    SELECT id, url, title, content, embedding, embedding_model, embedding_version, created_at
+    FROM news_history WHERE url = ? LIMIT 1
+  `).get(url);
+  if (exact) return exact;
+
+  return db.prepare(`
+    SELECT id, url, title, content, embedding, embedding_model, embedding_version, created_at
+    FROM news_history WHERE url IS NOT NULL ORDER BY created_at DESC
+  `).all().find((row) => sameArticleUrl(row.url, url)) || null;
+}
+
+// A successfully delivered update replaces the prior version of the same
+// publisher article. Until delivery succeeds, the old version stays available
+// as similarity evidence and no history is lost.
+export function saveArticleHistory(db, {
+  url, title, content, embedding, embeddingModel = null, embeddingVersion = null,
+}, now = Date.now()) {
+  const existing = findSeenArticle(db, url);
+  if (existing) {
+    db.prepare(`
+      UPDATE news_history SET
+        url = ?, title = ?, content = ?, embedding = ?, embedding_model = ?,
+        embedding_version = ?, created_at = ?
+      WHERE id = ?
+    `).run(url, title, content, JSON.stringify(embedding), embeddingModel, embeddingVersion, now, existing.id);
+    return { updated: true, id: existing.id };
+  }
+  const result = db.prepare(`
+    INSERT INTO news_history
+      (url, title, content, embedding, embedding_model, embedding_version, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+  `).run(url, title, content, JSON.stringify(embedding), embeddingModel, embeddingVersion, now);
+  return { updated: false, id: result.lastInsertRowid };
+}
+
 // One rolling window for live comparisons and restoration of pending requests.
 // Old HISTORY_HOURS environment values must not silently expand it after deploy.
 export function readArticleSimilarityHistory(db, now = Date.now()) {

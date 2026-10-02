@@ -154,6 +154,12 @@ transferă verdictul. Cererile vechi fără versiuni păstrează acțiunea edito
 dar nu produc feedback reutilizabil. Deciziile deduse anterior din aprobări/ignorări rămân în
 arhivă, dar nu mai sunt aplicate ca dovezi semantice.
 
+Un URL deja publicat nu este retrimis dacă titlul și corpul editorial sunt
+neschimbate. Dacă editorul actualizează efectiv același articol, versiunea nouă
+trece din nou prin toate filtrele de dată, relevanță și similaritate. Istoricul
+vechi este înlocuit numai după o livrare reușită, astfel încât o actualizare
+eșuată sau respinsă nu șterge dovada folosită la comparație.
+
 Indiferent de `KEYWORDS`, sunt păstrate și știrile despre Mureșan, Bolojan,
 PNL, USR și politică; setările existente rămân active în plus.
 

@@ -3,9 +3,8 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { createPendingApprovalStore } from "./pending-approvals.js";
 import { createAiPostHistoryStore } from "./ai-post-history.js";
-import { mergePendingArticleApprovals, readArticleSimilarityHistory } from "./article-history.js";
+import { findSeenArticle, mergePendingArticleApprovals, readArticleSimilarityHistory, saveArticleHistory } from "./article-history.js";
 import { createSimilarityFeedbackStore } from "./similarity-feedback.js";
-import { sameArticleUrl } from "../utils/article-url.js";
 import { ensureColumn } from "./migrations.js";
 import { createArticleFailureStore } from "./article-failures.js";
 
@@ -59,11 +58,7 @@ ensureColumn(db, "image_history", "last_used", "INTEGER");
 db.exec(`UPDATE image_history SET last_used = created_at WHERE last_used IS NULL`);
 
 export function saveNews({ url, title, content, embedding, embeddingModel = null, embeddingVersion = null }) {
-  const stmt = db.prepare(`
-    INSERT OR IGNORE INTO news_history (url, title, content, embedding, embedding_model, embedding_version, created_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?)
-  `);
-  stmt.run(url, title, content, JSON.stringify(embedding), embeddingModel, embeddingVersion, Date.now());
+  saveArticleHistory(db, { url, title, content, embedding, embeddingModel, embeddingVersion });
   articleFailures.clear(url);
 }
 
@@ -90,11 +85,11 @@ export function getRecentArticleSimilarityCandidates(now = Date.now()) {
 }
 
 export function isUrlSeen(url) {
-  const exact = db.prepare(`SELECT 1 FROM news_history WHERE url = ?`);
-  if (exact.get(url)) return true;
+  return Boolean(findSeenArticle(db, url));
+}
 
-  return db.prepare(`SELECT url FROM news_history WHERE url IS NOT NULL`).all()
-    .some((row) => sameArticleUrl(row.url, url));
+export function getSeenArticle(url) {
+  return findSeenArticle(db, url);
 }
 
 export function saveImage({ imageUrl, personOrTopic }) {

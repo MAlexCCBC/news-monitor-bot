@@ -57,8 +57,8 @@ import { prepareArticlePost } from "./ai/prepare-post.js";
 import { isRelevantToRomania } from "./ai/relevance.js";
 import { extractSpeakerFromArticle } from "./ai/speaker.js";
 import { findImage } from "./image/search.js";
-import { saveNews, saveAiPost, saveArticleFailure, getRecentArticleSimilarityCandidates, isUrlSeen, cleanupOld, pendingApprovals, similarityFeedback } from "./storage/db.js";
-import { feedbackLookupFrom, articleContentVersion } from "./storage/similarity-feedback.js";
+import { saveNews, saveAiPost, saveArticleFailure, getRecentArticleSimilarityCandidates, getSeenArticle, isUrlSeen, cleanupOld, pendingApprovals, similarityFeedback } from "./storage/db.js";
+import { feedbackLookupFrom, articleContentVersion, articleRevisionStatus } from "./storage/similarity-feedback.js";
 import { ARTICLE_HISTORY_HOURS } from "./storage/article-history.js";
 import { persistNow } from "./storage/persist.js";
 import { createManualMessageHandler } from "./telegram/manual-links.js";
@@ -616,10 +616,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
   const articleStartedAt = Date.now();
   const policy = createArticleProcessingPolicy({ bypassFilters, bypassSimilarity, forceManual });
   try {
-    if (policy.checkSeenUrl && isUrlSeen(url)) {
-      console.log(`[skip] URL deja procesat: ${url}`);
-      return { status: "skipped", reason: "URL-ul a fost deja procesat." };
-    }
+    const seenArticle = policy.checkSeenUrl ? getSeenArticle(url) : null;
     if (!forceManual) {
       const pending = pendingApprovals.findActiveByUrl(url);
       if (pending) {
@@ -641,6 +638,15 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     }
     if (!policy.checkMinimumContent && (!article.content || article.content.length < 100)) {
       console.log(`[manual] Continut extras scurt (${article.content?.length || 0} caractere); continuam deoarece linkul a fost solicitat explicit.`);
+    }
+
+    if (seenArticle) {
+      const revisionStatus = articleRevisionStatus(seenArticle, article);
+      if (revisionStatus !== "changed") {
+        console.log(`[skip] URL deja procesat fără conținut editorial nou: ${url}`);
+        return { status: "skipped", reason: "URL-ul a fost deja procesat, iar conținutul editorial nu s-a schimbat." };
+      }
+      console.log(`[update] URL procesat anterior, dar titlul/corpul s-au schimbat; reevaluez toate filtrele: ${url}`);
     }
 
     // Publication age is continuous across midnight; updates never reset it.

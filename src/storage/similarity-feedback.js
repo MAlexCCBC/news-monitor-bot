@@ -10,6 +10,14 @@ export function articleContentVersion(article) {
   ])).digest("hex");
 }
 
+export function articleRevisionStatus(previousArticle, currentArticle) {
+  if (!previousArticle) return "new";
+  const previousVersion = articleContentVersion(previousArticle);
+  const currentVersion = articleContentVersion(currentArticle);
+  if (!previousVersion || !currentVersion) return "unverifiable";
+  return previousVersion === currentVersion ? "unchanged" : "changed";
+}
+
 /**
  * Feedback de similaritate din deciziile umane.
  *
