@@ -48,7 +48,10 @@ Reguli STRICTE:
    unitate, subliniind ca presedintele este stabilit exclusiv prin votul membrilor."
 6. La final, un citat REAL, copiat cat mai exact (cuvant cu cuvant) dintr-o
    declaratie care apare intre ghilimele in articol, urmat de numele si functia
-   persoanei. Citatul incepe cu litera mare. DACA articolul NU contine niciun
+   persoanei, numai daca functia este precizata in articol. Daca functia
+   lipseste, atribuie citatul DOAR numelui persoanei: nu inventa functia si nu
+   adauga paranteze sau note precum "(functia nu este precizata in articol)",
+   "functie necunoscuta" ori "rol nementionat". Citatul incepe cu litera mare. DACA articolul NU contine niciun
    citat intre ghilimele, NU inventa unul: in schimb, scrie o fraza de rezumat
    de tip "Oficialul a declarat ca ...", fara ghilimele.
 7. Ultima parte: o intrebare deschisa catre cititori, precedata de 💬, pe o
@@ -71,6 +74,19 @@ ${articleText}
 
 Raspunde DOAR cu postarea finala, fara alte comentarii sau explicatii.
 `;
+
+// Remove only missing-role editorial notes from an attribution at line end.
+// Never fill in a role, modify quoted words, or strip factual parentheses.
+export function sanitizePostAttribution(text) {
+  return String(text || "").split("\n").map((line) => {
+    const match = line.match(/^(.*[—–]\s*[^()\n]+?)\s*\(([^()\n]*)\)([.!]?)\s*$/u);
+    if (!match) return line;
+    const note = match[2].toLowerCase().normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim();
+    const missingRole = /^(?:functia|rolul|titlul)(?: (?:sa|persoanei))? (?:nu (?:este|e) (?:precizat[ae]?|mentionat[ae]?|specificat[ae]?|indicat[ae]?)|neprecizat[ae]?|nementionat[ae]?|necunoscut[ae]?)(?: (?:in|de) (?:articol(?:ul)?(?: sursa)?|sursa|text(?:ul)?))?\.?$/;
+    return missingRole.test(note) ? match[1].trimEnd() + match[3] : line;
+  }).join("\n");
+}
 
 export function isCompleteRewrite(text, finishReason) {
   const cleaned = String(text || "").trim();
@@ -197,7 +213,7 @@ async function rewriteWithOpenAI(articleText) {
   // diagnostics run; any non-empty GPT draft is sent without invoking another
   // paid model, even when the response is incomplete or local checks complain.
   logOpenAiUsage(response.data?.usage);
-  const text = extractOpenAIRewriteText(response.data);
+  const text = sanitizePostAttribution(extractOpenAIRewriteText(response.data));
   if (!text) throw new Error(`Răspuns gol de la OpenAI (status=${response.data?.status || "necunoscut"})`);
   const diagnostics = [];
   if (response.data?.status && response.data.status !== "completed") {
@@ -260,7 +276,7 @@ export async function rewriteArticle(articleText) {
         }
       ));
       const candidate = res.data.candidates?.[0];
-      const text = extractFinalRewriteText(candidate);
+      const text = sanitizePostAttribution(extractFinalRewriteText(candidate));
       const finishReason = candidate?.finishReason;
       if (!text) throw new Error(`Răspuns gol de la model (finishReason=${finishReason || "necunoscut"})`);
       if (!isCompleteRewrite(text, finishReason)) {
