@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { imageIdentity, recentImageKeys, diverseImageCandidates, commonsPhotoCandidates } from "../src/image/selection.js";
+import { imageIdentity, recentImageKeys, diverseImageCandidates, commonsPhotoCandidates, imageFingerprint, isRecentVisualDuplicate } from "../src/image/selection.js";
 
 test("Commons thumbnails and WordPress size variants retain photograph identity", () => {
   const original = "https://upload.wikimedia.org/wikipedia/commons/a/ab/Test.jpg";
@@ -25,4 +25,16 @@ test("Commons prefers capture dates, excludes small/non-photo files and does not
   const small = photo("https://x/small.jpg","2026-10-01"); small.imageinfo[0].width=80;
   const logo = photo("https://x/logo.svg","2026-10-01"); logo.imageinfo[0].mime="image/svg+xml";
   assert.deepEqual(commonsPhotoCandidates([old,unknown,small,logo,recent]), ["https://x/recent.jpg","https://x/old.jpg","https://x/unknown.jpg"]);
+});
+
+test("visual fingerprints catch URL-independent near duplicates but preserve different images", () => {
+  const rising = Uint8Array.from({length:72},(_,i)=>i%9);
+  const falling = Uint8Array.from({length:72},(_,i)=>8-i%9);
+  assert.equal(imageFingerprint(rising),"0000000000000000");
+  assert.equal(imageFingerprint(falling),"ffffffffffffffff");
+  assert.equal(isRecentVisualDuplicate("0123456789abcdef",[{visual_hash:"0123456789abcdef"}]),true);
+  assert.equal(isRecentVisualDuplicate("0123456789abcdee",[{visual_hash:"0123456789abcdef"}]),true);
+  assert.equal(isRecentVisualDuplicate(imageFingerprint(rising),[{visual_hash:imageFingerprint(falling)}]),false);
+  assert.equal(isRecentVisualDuplicate("0123456789abcdef",[{visual_hash:null}]),false);
+  assert.throws(()=>imageFingerprint(new Uint8Array(71)));
 });

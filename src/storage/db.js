@@ -56,6 +56,7 @@ ensureColumn(db, "news_history", "embedding_version", "TEXT");
 // (used_count = de cate ori a fost folosita imaginea, last_used = ultima folosire).
 ensureColumn(db, "image_history", "used_count", "INTEGER NOT NULL DEFAULT 1");
 ensureColumn(db, "image_history", "last_used", "INTEGER");
+ensureColumn(db, "image_history", "visual_hash", "TEXT");
 db.exec(`UPDATE image_history SET last_used = created_at WHERE last_used IS NULL`);
 
 export function saveNews({ url, title, content, embedding, embeddingModel = null, embeddingVersion = null }) {
@@ -93,18 +94,18 @@ export function getSeenArticle(url) {
   return findSeenArticle(db, url);
 }
 
-export function saveImage({ imageUrl, personOrTopic }) {
+export function saveImage({ imageUrl, personOrTopic, visualHash = null }) {
   const ts = Date.now();
   const existing = db.prepare(`SELECT id FROM image_history WHERE image_url = ?`).get(imageUrl);
   if (existing) {
     db.prepare(
-      `UPDATE image_history SET used_count = used_count + 1, last_used = ? WHERE image_url = ?`
-    ).run(ts, imageUrl);
+      `UPDATE image_history SET used_count = used_count + 1, last_used = ?, visual_hash = COALESCE(?, visual_hash) WHERE image_url = ?`
+    ).run(ts, visualHash, imageUrl);
   } else {
     db.prepare(
-      `INSERT INTO image_history (image_url, person_or_topic, created_at, used_count, last_used)
-       VALUES (?, ?, ?, 1, ?)`
-    ).run(imageUrl, personOrTopic, ts, ts);
+      `INSERT INTO image_history (image_url, person_or_topic, created_at, used_count, last_used, visual_hash)
+       VALUES (?, ?, ?, 1, ?, ?)`
+    ).run(imageUrl, personOrTopic, ts, ts, visualHash);
   }
 }
 

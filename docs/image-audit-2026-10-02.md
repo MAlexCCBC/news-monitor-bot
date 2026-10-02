@@ -38,3 +38,19 @@ No live GPT/OpenAI or Gemini call was made in this image audit.
 Operations: no workflow cancelled, disabled, enabled or modified. No data-branch
 write. A running process keeps its previous SHA; the new deployment waits in
 the existing serialized Actions group.
+
+## Validated checkpoint and visual duplicate follow-up
+
+Checkpoint abf45597dc176801391ddea3175ef58fd9903988 passed all 221 tests and
+syntax validation in Node 22 (run 36990415953, validation job 110785054841).
+The bot job remains pending behind the active a9ae1a1 process.
+
+The next checkpoint additionally stores a nullable 64-bit dHash of each new
+selected photograph, computed from auto-oriented grayscale pixels before crop
+and before Vision. Candidates within four bits of a recently selected photo
+are rejected even at unrelated URLs, saving unnecessary model checks.
+Legacy image rows remain unchanged except for the additive nullable column;
+they use URL identity until a fingerprint becomes available. dHash is an
+approximate conservative rejection filter, not proof of photographic identity:
+materially different crops can evade it, similar low-detail scenes can collide.
+No previous photo archive exists locally to backfill legacy hashes safely.

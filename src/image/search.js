@@ -2,7 +2,7 @@ import axios from "axios";
 import sharp from "sharp";
 import { getRecentImages, saveImage } from "../storage/db.js";
 import { getFaceBox, verifyCandidate, verifyPersonByName } from "./vision.js";
-import { imageIdentity, recentImageKeys, diverseImageCandidates, commonsPhotoCandidates } from "./selection.js";
+import { imageIdentity, recentImageKeys, diverseImageCandidates, commonsPhotoCandidates, imageFingerprint, isRecentVisualDuplicate } from "./selection.js";
 import { isArticleImageCandidate, isVerifiedPersonImageAllowed } from "./policy.js";
 
 const TAVILY_KEY = () => process.env.TAVILY_API_KEY;
@@ -295,9 +295,15 @@ export async function cropPortrait3x4(buffer, faceBox = null) {
 // acceptat numai daca Gemini confirmă identitatea; fără referință sau verdict,
 // nu postăm imaginea.
 // Intoarce null daca imaginea respinsa (persoana diferita / nefaciala / moarta).
-async function buildCandidate(imgUrl, personName, referenceBuffer) {
+async function buildCandidate(imgUrl, personName, referenceBuffer, recentImages = []) {
   const dims = await downloadImage(imgUrl);
   if (!dims) return null;
+  const pixels = await sharp(dims.buffer).rotate().resize(9, 8, { fit: "fill" }).grayscale().removeAlpha().raw().toBuffer();
+  const visualHash = imageFingerprint(pixels);
+  if (isRecentVisualDuplicate(visualHash, recentImages)) {
+    console.log("[image] Fotografie recentă identică/aproape identică la alt URL; o sar înainte de Vision.");
+    return null;
+  }
 
   const verdict = referenceBuffer
     ? await verifyCandidate(referenceBuffer, dims.buffer)
@@ -313,6 +319,7 @@ async function buildCandidate(imgUrl, personName, referenceBuffer) {
   return {
     buffer: finalBuffer,
     sourceUrl: imgUrl,
+    visualHash,
     note: faceBox
       ? "Imagine verificata facial (fara text vizibil), decupata centrat pe fata."
       : "Imagine decupata la 3:4 cu focalizare pe subiect.",
@@ -375,9 +382,9 @@ export async function findImage(personOrTopic, articleTitle, articleImageUrl = n
   if (isArticleImageCandidate({ speaker: personOrTopic, imageUrl: articleImageUrl }) && !seenKeys.has(imageIdentity(articleImageUrl))) {
     seenKeys.add(imageIdentity(articleImageUrl));
     faceChecks++;
-    const candidate = await buildCandidate(articleImageUrl, personOrTopic, referenceBuffer);
+    const candidate = await buildCandidate(articleImageUrl, personOrTopic, referenceBuffer, recentImages);
     if (candidate) {
-      saveImage({ imageUrl: articleImageUrl, personOrTopic });
+      saveImage({ imageUrl: articleImageUrl, personOrTopic, visualHash: candidate.visualHash });
       return candidate;
     }
   }
@@ -399,9 +406,9 @@ export async function findImage(personOrTopic, articleTitle, articleImageUrl = n
     for (const imgUrl of candidates) {
       seenKeys.add(imageIdentity(imgUrl));
       faceChecks++;
-      const candidate = await buildCandidate(imgUrl, personOrTopic, referenceBuffer);
+      const candidate = await buildCandidate(imgUrl, personOrTopic, referenceBuffer, recentImages);
       if (candidate) {
-        saveImage({ imageUrl: imgUrl, personOrTopic });
+        saveImage({ imageUrl: imgUrl, personOrTopic, visualHash: candidate.visualHash });
         return candidate;
       }
     }
@@ -409,9 +416,9 @@ export async function findImage(personOrTopic, articleTitle, articleImageUrl = n
   }
   console.log(`[image] Verificați ${faceChecks} candidați pentru ${personOrTopic}; nicio imagine nouă confirmată`);
   if (referenceBuffer && referenceFaceBox && reference?.url && !usedKeys.has(imageIdentity(reference.url))) {
-    const candidate = await buildCandidate(reference.url, personOrTopic, referenceBuffer);
+    const candidate = await buildCandidate(reference.url, personOrTopic, referenceBuffer, recentImages);
     if (candidate) {
-      saveImage({ imageUrl: reference.url, personOrTopic });
+      saveImage({ imageUrl: reference.url, personOrTopic, visualHash: candidate.visualHash });
       return candidate;
     }
   }

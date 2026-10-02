@@ -52,3 +52,28 @@ export function commonsPhotoCandidates(pages) {
     .sort((a, b) => (Number.isFinite(b.takenAt) ? b.takenAt : 0) - (Number.isFinite(a.takenAt) ? a.takenAt : 0))
     .map(item => item.url);
 }
+
+export function imageFingerprint(pixels) {
+  if (pixels.length !== 72) throw new Error("Expected 9x8 grayscale pixels");
+  let value = 0n;
+  for (let row = 0; row < 8; row++) {
+    for (let col = 0; col < 8; col++) {
+      value = (value << 1n) | (pixels[row * 9 + col] > pixels[row * 9 + col + 1] ? 1n : 0n);
+    }
+  }
+  return value.toString(16).padStart(16, "0");
+}
+
+export function isRecentVisualDuplicate(fingerprint, history) {
+  if (!/^[a-f0-9]{16}$/i.test(fingerprint || "")) return false;
+  return history.some(item => {
+    if (!/^[a-f0-9]{16}$/i.test(item.visual_hash || "")) return false;
+    let difference = BigInt("0x" + fingerprint) ^ BigInt("0x" + item.visual_hash);
+    let distance = 0;
+    while (difference && distance <= 4) {
+      difference &= difference - 1n;
+      distance++;
+    }
+    return distance <= 4;
+  });
+}
