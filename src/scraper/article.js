@@ -23,22 +23,14 @@ const SITE_CONFIG = {
   },
 };
 
-// Markeri de text care indica inceputul sectiunii de "recomandari" /
-// "citeste si" / related — oprim extragerea de paragrafe cand le intalnim,
-// pentru ca aceste site-uri baga link-uri recomandate CA paragrafe normale
-// in acelasi container, nu intr-un div separat usor de exclus.
-const STOP_MARKERS = [
-  "citeste si",
-  "citește și",
-  "recomandarea video",
-  "recomandari",
-  "recomandări",
-  "articole similare",
-  "citeste continuarea",
-  "citește continuarea",
-  "vezi si",
-  "vezi și",
-];
+// Recommendation labels are local boundaries, never an end-of-article signal.
+// Match labels, not editorial headings such as "Recomandări pentru populație".
+const RECOMMENDATION_LABEL = /^(?:citeste si|vezi si|recomandarea video|recomandari|articole similare|citeste continuarea)(?:\\s*[:：–—-]\\s*.*)?$/;
+
+function recommendationText(text) {
+  return text.toLowerCase().normalize("NFD").replace(/[\\u0300-\\u036f]/g, "")
+    .replace(/\\s+/g, " ").trim();
+}
 
 function getSiteConfig(url) {
   const hostname = new URL(url).hostname.replace("www.", "");
@@ -252,28 +244,40 @@ export function parseArticleHtml(html, url) {
   }
 
   const paragraphs = [];
-  let stopped = false;
+  let recommendationLinks = false;
+  let recommendationsSkipped = 0;
 
   $content.find("p, h2, h3, li, div").each((_, el) => {
-    if (stopped) return;
     // WordPress pasted text may live in leaf divs. Do not add ancestor divs
     // as well, which would duplicate the same paragraphs in the embedding.
     if (el.tagName === "div" && $(el).find("p, h2, h3, li, div").length) return;
-    const t = $(el).text().trim().toLowerCase();
+    const originalText = $(el).text().trim();
+    const withoutLinks = $(el).clone();
+    withoutLinks.find("a").remove();
+    const unlinkedText = recommendationText(withoutLinks.text());
+    const hasLinks = $(el).find("a[href]").length > 0;
+    const label = recommendationText(originalText);
+    const isRecommendation = RECOMMENDATION_LABEL.test(label) ||
+      (hasLinks && RECOMMENDATION_LABEL.test(unlinkedText));
 
-    if (STOP_MARKERS.some((marker) => t.startsWith(marker))) {
-      // Inline recommendations are often followed by the rest of the story.
-      // A recommendations heading, on the other hand, starts a footer section.
-      stopped = el.tagName === "h2" || el.tagName === "h3";
+    if (isRecommendation) {
+      recommendationLinks = true;
+      recommendationsSkipped++;
       return;
     }
+    // A bare list of linked headlines immediately after a recommendation
+    // label belongs to that block. Resume at prose or a real editorial heading.
+    if (recommendationLinks && hasLinks && !unlinkedText.replace(/[•·:–—-]/g, "").trim()) {
+      recommendationsSkipped++;
+      return;
+    }
+    if (originalText) recommendationLinks = false;
 
-    const originalText = $(el).text().trim();
     if (originalText.length > 20) paragraphs.push(originalText);
   });
 
   const contentText = cleanArticleContent(paragraphs.join("\n\n"));
-  console.log(`[scraper] Articol extras: ${contentText.length} caractere, ${paragraphs.length} paragrafe, ${stopped ? "oprit la marker de conținut recomandat" : "fără marker de oprire"} (${url})`);
+  console.log(`[scraper] Articol extras: ${contentText.length} caractere, ${paragraphs.length} paragrafe, ${recommendationsSkipped} elemente recomandate excluse (${url})`);
 
   return {
     url,
