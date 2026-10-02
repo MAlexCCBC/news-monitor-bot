@@ -49,7 +49,7 @@ import TelegramBot from "node-telegram-bot-api";
 
 import { fetchArticle } from "./scraper/article.js";
 import { matchesKeywords, hasStrongRomanianPoliticalContext, hasMajorRomanianEmergencyContext, isForeignOnly, isHistoricalRoundup, detectSpeaker, isPlausiblePersonName, CORE_POLITICAL_KEYWORDS, CORE_ROMANIAN_POLITICAL_CONTEXT } from "./filter/keywords.js";
-import { requiresIncidentReview } from "./filter/incident-policy.js";
+import { requiresIncidentReview, shouldReviewIncident } from "./filter/incident-policy.js";
 import { publicationFreshness } from "./filter/publication-date.js";
 import { articleFocus } from "./scraper/clean-content.js";
 import { createArticleProcessingPolicy } from "./filter/processing-policy.js";
@@ -694,7 +694,11 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
     }
 
     const incident = requiresIncidentReview(article.title, articleFocus(article.content || "", article.title));
-    if (policy.checkForeignRelevance && (incident || !hasStrongRomanianPoliticalContext(essentialText, romanianPersonalities))) {
+    const incidentReview = shouldReviewIncident({
+      title: article.title, focus: articleFocus(article.content || "", article.title),
+      url, checkForeignRelevance: policy.checkForeignRelevance, forceManual,
+    });
+    if (incidentReview || (policy.checkForeignRelevance && !hasStrongRomanianPoliticalContext(essentialText, romanianPersonalities))) {
       const relevant = await timedStage("relevance", () => isRelevantToRomania(
         article.title,
         (article.content || "").slice(0, 1500),

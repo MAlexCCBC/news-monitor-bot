@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import {requiresIncidentReview,incidentEvidenceDecision} from "../src/filter/incident-policy.js";
+import {requiresIncidentReview,incidentEvidenceDecision,shouldReviewIncident} from "../src/filter/incident-policy.js";
 import {hasStrongRomanianPoliticalContext,hasStrongRomanianContext,hasMajorRomanianEmergencyContext} from "../src/filter/keywords.js";
 import {FIRE_AUDIT_CASES} from "./fixtures/fire-cases.js";
 const check=(item,category,quotes=[{source:"excerpt",quote:item.excerpt}])=>incidentEvidenceDecision(JSON.stringify({category,evidence:quotes}),{
@@ -53,4 +53,13 @@ test("fire evidence in the lead also disables an official-statement fast path",(
 test("negated exceptional resources cannot turn a local fire into a national emergency",()=>{
   assert.equal(hasMajorRomanianEmergencyContext("Incendiu de pădure în Sibiu. Nu există aeronave militare sau o urgență națională."),false);
   assert.equal(hasMajorRomanianEmergencyContext("Incendii de pădure în două județe din România. Nu au fost mobilizați peste 300 de pompieri."),false);
+});
+
+test("automatic Digi24 incident review survives channel bypass while manual commands remain explicit overrides",()=>{
+  const request={title:"Incendiu la o hală în Sibiu",url:"https://www.digi24.ro/stiri/incendiu-1234567",checkForeignRelevance:false};
+  assert.equal(shouldReviewIncident(request),true);
+  assert.equal(shouldReviewIncident({...request,forceManual:true}),false);
+  assert.equal(shouldReviewIncident({...request,url:"https://digi24.ro.evil.example/story"}),false);
+  assert.equal(shouldReviewIncident({...request,title:"PNL prezintă bugetul"}),false);
+  assert.equal(shouldReviewIncident({...request,url:"https://example.com/game-news"}),false);
 });

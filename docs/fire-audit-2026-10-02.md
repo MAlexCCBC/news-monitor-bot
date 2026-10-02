@@ -38,8 +38,9 @@ Direct code inspection confirmed independent admission paths:
   blocks/captions are removed. Missing known story containers fail extraction
   rather than scrape the whole page. Other publishers' fallback behavior is
   unchanged.
-- Explicit user-sent manual links and intentionally configured bypass channels
-  retain existing overrides; these are not automatic editorial approvals.
+- Explicit user-sent manual links retain their override. Automatic Digi24
+  incidents require review even if their channel is configured to bypass normal
+  editorial filters; unrelated bypass channels retain their behavior.
 
 ## Validation and live benchmark
 
@@ -74,3 +75,25 @@ validation. The next checkpoint excludes clauses explicitly negating resources,
 mobilization or emergency facts; this is tested rather than removing the case.
 Incident detection now also covers the clean lead, so a headline about an
 official's announcement cannot hide a fire described only in the opening body.
+
+## Validated live checkpoint
+
+Commit 72e0510 passed 232/232 offline tests and syntax validation in Node 22:
+run 36995027590, validation job 110799681991. On 2 October 2026 at
+10:21:49–10:21:55 UTC, gemini-3.5-flash-lite passed all seven labelled synthetic
+cases and both real-article reviews (nine live Gemini classifications total).
+No GPT/OpenAI live test was called.
+
+Real publisher extraction: Nantes yielded 1,236 characters, Sibiu 1,045,
+both containing the incident and neither containing the checked political
+contaminants. Both received OTHER/false relevance. Political accountability,
+Romanian drone security, and coordinated national firefighting were accepted.
+
+Final route follow-up: automatic Digi24 incident review now survives a
+channel-level bypass, while explicit manual links remain user overrides.
+This route is covered by offline regressions; classification behavior is
+unchanged from the live validated checkpoint.
+
+The specific new uploaded log remains unreadable because its download requires
+the disconnected execution environment. Active production process still runs
+the old SHA; the validated bot deployment is pending rather than already live.
