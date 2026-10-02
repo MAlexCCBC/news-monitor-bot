@@ -10,7 +10,9 @@ const SITE_CONFIG = {
     content: "div.single__text, div.entry-content, div.post-content, article",
   },
   "digi24.ro": {
-    content: "article.article-story, div.article-body, div.articol-content, article",
+    content: "div.article-body, div.articol-content, article.article-story",
+    requireBody: true,
+    exclude: "article, .article, .story-card, .related, .recommended, .recommendations, [class*='related-'], [class*='recommend-'], [data-widget='related'], figure, figcaption",
   },
   "mediafax.ro": {
     content: "div.single__text, div.article-content, div#article-body, article",
@@ -218,6 +220,7 @@ export function parseArticleHtml(html, url) {
   // body over its enclosing article and over recommendation cards.
   const selector = contentSelector.split(",").find((part) => $(part.trim()).length);
   let $content = selector ? $(selector.trim()).first() : $([]);
+  if ($content.length === 0 && config?.requireBody) throw new Error("Digi24: corpul principal lipsește; refuz extragerea întregii pagini");
   if ($content.length === 0) $content = $("body"); // ultim fallback
 
   $content = $content.clone();

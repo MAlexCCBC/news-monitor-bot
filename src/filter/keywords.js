@@ -1,4 +1,5 @@
 // Normalizeaza diacritice ca sa prinda si varianta fara diacritice din articole
+import { requiresIncidentReview } from "./incident-policy.js";
 import { parsePublicationDate } from "./publication-date.js";
 
 function normalize(text) {
@@ -80,10 +81,15 @@ export function hasMajorRomanianEmergencyContext(text) {
   const norm = normalize(String(text || ""));
   const vegetationFire = /\bincendi\w*\b/.test(norm) && /\b(?:vegetati\w*|padur\w*|fond forestier)\b/.test(norm);
   const officialResponse = /\b(?:autoritati|pompieri|isu|igsu|dsu|mapn|mai|interven\w*|mobiliz\w*)\b/.test(norm);
-  const multiRegion = /\b(?:mai multe judete|doua judete|in doua judete|in mai multe judete|la nivel national)\b/.test(norm);
+  const counties = ["caras-severin", "valcea", "mehedinti", "gorj", "dolj", "tulcea", "constanta", "sibiu", "brasov", "prahova", "arges", "buzau", "suceava", "neamt", "bacau", "cluj", "mures"];
+  const distinctCounties = counties.filter(county => hasWord(norm, county)).length >= 2;
+  const multiRegion = /\b(?:mai multe judete|doua judete|in doua judete|la nivel national)\b/.test(norm) || distinctCounties;
+  const nationalEmergency = /\b(?:urgenta nationala|stare de urgenta)\b/.test(norm);
   const exceptionalResources = /\b(?:black hawk|spartan|aeronave? militare?|avioane? militare?)\b/.test(norm);
-  const largeDeployment = /\b(?:peste|mai mult de)\s*(?:[1-9]\d{2,})\s*(?:de\s+)?(?:pompieri|salvatori|hectare)\b/.test(norm);
-  return vegetationFire && officialResponse && (multiRegion || exceptionalResources || largeDeployment);
+  // Hectares measure burned area, not coordinated personnel/resources.
+  const largeDeployment = /\b(?:peste|mai mult de)\s*(?:[1-9]\d{2,})\s*(?:de\s+)?(?:pompieri|salvatori)\b/.test(norm);
+  const domestic = /\b(?:romania|romaniei|romanesc|romaneasca|igsu|dsu|mapn)\b/.test(norm) || counties.some(county => hasWord(norm, county));
+  return vegetationFire && officialResponse && domestic && (multiRegion || nationalEmergency) && (exceptionalResources || largeDeployment);
 }
 
 // Indicatori ca stirea are subiectul in ALTA tara (fara implicare romaneasca).
@@ -154,6 +160,7 @@ export function hasStrongRomanianPoliticalContext(text, personalities) {
   const norm = normalize(text || "");
   const rawTitle = String(text || "").split("\n", 1)[0];
   const title = normalize(rawTitle);
+  if (requiresIncidentReview(rawTitle)) return false;
   const privateLifeHeadline = hasTokenPrefix(title, PRIVATE_LIFE_SIGNALS);
   if (privateLifeHeadline) return false;
 

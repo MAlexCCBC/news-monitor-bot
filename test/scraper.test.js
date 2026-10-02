@@ -164,3 +164,22 @@ test("article focus skips captions, dates, and a repeated headline before select
 
   assert.equal(articleFocus(body, title), `${lead} ${next}`);
 });
+
+test("Digi24 prefers the actual body and excludes recommendations without carousel wrappers", () => {
+  const article = parseArticleHtml(`<h1>Incendiu la un depozit din Sibiu</h1>
+    <article class="article-story"><div class="article-body">
+      <p>Un incendiu a izbucnit la un depozit din Sibiu. Pompierii locali intervin.</p>
+      <section class="related-news"><p>Bolojan și PNL discută despre bugetul Guvernului.</p></section>
+      <article><p>Nicușor Dan anunță consultări cu USR în Parlament.</p></article>
+      <div class="story-card"><p>Ministrul anunță o nouă reformă politică.</p></div>
+      <figure><figcaption>Premierul Bolojan, imagine dintr-un alt articol.</figcaption></figure>
+      <p>Populația din apropiere a primit un mesaj RO-Alert pentru fum.</p>
+    </div></article>`, "https://www.digi24.ro/stiri/actualitate/incendiu-1234567");
+  assert.match(article.content,/Pompierii locali/);
+  assert.match(article.content,/RO-Alert/);
+  assert.doesNotMatch(article.content,/Bolojan|PNL|Guvern|Nicușor|USR|reformă/);
+});
+test("Digi24 missing article-body refuses unrelated whole-page evidence", () => {
+  assert.throws(()=>parseArticleHtml('<h1>Incendiu local</h1><article><p>Bolojan și Guvernul discută despre buget în altă știre recomandată.</p></article>',
+    "https://www.digi24.ro/stiri/actualitate/incendiu-1234567"),/corpul principal lipsește/);
+});

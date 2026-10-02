@@ -1,4 +1,6 @@
 import axios from "axios";
+import { incidentPrompt, incidentEvidenceDecision } from "../filter/incident-policy.js";
+import { hasStrongRomanianContext, hasMajorRomanianEmergencyContext } from "../filter/keywords.js";
 import { filterModels, recordModelFailure } from "./models.js";
 import { modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "./gemini-client.js";
 
@@ -73,7 +75,7 @@ Linia 2: motiv scurt (maxim 15 cuvinte)
 //   false -> stirea nu are relevanta politica romaneasca (se arunca)
 //   null  -> AI-ul nu a putut decide (toate modelele au esuat) => apelantul
 //            decide ce fallback foloseste.
-export async function isRelevantToRomania(title, excerpt) {
+export async function isRelevantToRomania(title, excerpt, { incident = false, personalities = [] } = {}) {
   const models = await filterModels(CLASSIFY_MODELS);
   let lastError;
   for (const model of models) {
@@ -81,8 +83,8 @@ export async function isRelevantToRomania(title, excerpt) {
       const res = await withGeminiRetries(() => axios.post(
         `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
         {
-          contents: [{ parts: [{ text: PROMPT_TEMPLATE(title, excerpt) }] }],
-          generationConfig: modelGenerationConfig(model, { temperature: 0 }),
+          contents: [{ parts: [{ text: incident ? incidentPrompt(title, excerpt) : PROMPT_TEMPLATE(title, excerpt) }] }],
+          generationConfig: modelGenerationConfig(model, { temperature: 0, ...(incident && !model.startsWith("gemma-") ? { responseMimeType: "application/json" } : {}) }),
         },
         {
           timeout: modelRequestTimeout(model, 30000),
@@ -95,6 +97,15 @@ export async function isRelevantToRomania(title, excerpt) {
       const text = res.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
       if (!text) throw new Error("Raspuns gol de la model");
 
+      if (incident) {
+        const decision = incidentEvidenceDecision(text, {
+          title, excerpt,
+          hasRomanianContext: proof => hasStrongRomanianContext(proof, personalities),
+          hasMajorEmergency: hasMajorRomanianEmergencyContext,
+        });
+        console.log(`[relevanta-incident] ${model}: ${decision.relevant ? "DA" : "NU"} - ${decision.reason}`);
+        return decision.relevant;
+      }
       const verdict = text.split("\n")[0].trim().toUpperCase();
       if (verdict !== "DA" && verdict !== "NU") {
         throw new Error(`Verdict de relevanță neconform: ${verdict.slice(0, 40)}`);
