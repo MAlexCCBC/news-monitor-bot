@@ -183,3 +183,50 @@ test("Digi24 missing article-body refuses unrelated whole-page evidence", () => 
   assert.throws(()=>parseArticleHtml('<h1>Incendiu local</h1><article><p>Bolojan și Guvernul discută despre buget în altă știre recomandată.</p></article>',
     "https://www.digi24.ro/stiri/actualitate/incendiu-1234567"),/corpul principal lipsește/);
 });
+
+for (const [host, container] of [
+  ["g4media.ro", "single__text"],
+  ["digi24.ro", "article-body"],
+  ["hotnews.ro", "articol-continut"],
+  ["mediafax.ro", "single__text"],
+]) {
+  for (const heading of ["h2", "h3"]) {
+    test(host + " keeps article continuation after an inline recommendation " + heading, () => {
+      const lead = "Autoritățile descriu intervenția la depozitul local, fără implicații politice.";
+      const continuation = "Echipele locale continuă intervenția, iar locuitorii sunt sfătuiți să evite zona.";
+      const article = parseArticleHtml(`<h1>Intervenție la un depozit</h1>
+        <meta property="og:image" content="https://cdn.example/main.jpg">
+        <meta property="article:published_time" content="2026-10-02T07:00:00+03:00">
+        <div class="${container}"><p>${lead}</p>
+          <${heading}>Citește și:</${heading}>
+          <p><a href="/other">Bolojan și Nicușor Dan discută despre schimbarea Guvernului.</a></p>
+          <ul><li><a href="/another">PNL și USR pregătesc o nouă reformă în Parlament.</a></li></ul>
+          <p>${continuation}</p>
+          <h2>Recomandări pentru populație</h2>
+          <p>Recomandările pompierilor sunt să închidă ferestrele până la disiparea fumului.</p>
+          <h3>Vezi și ce măsuri au luat autoritățile</h3>
+          <p>Documentul oficial este disponibil <a href="/document">pe pagina instituției</a>.</p>
+          <h2>Articole similare</h2>
+          <p><a href="/footer">Premierul anunță negocieri politice cu partidele parlamentare.</a></p>
+        </div>`, "https://www." + host + "/stire-1234567");
+      assert.ok(article.content.startsWith(lead));
+      assert.ok(article.content.includes(continuation));
+      assert.match(article.content, /Recomandări pentru populație/);
+      assert.match(article.content, /Recomandările pompierilor/);
+      assert.match(article.content, /Vezi și ce măsuri/);
+      assert.match(article.content, /Documentul oficial/);
+      assert.doesNotMatch(article.content, /Bolojan|Nicușor|PNL|USR|Premierul|Citește și:|Articole similare/);
+      assert.equal(article.imageUrl, "https://cdn.example/main.jpg");
+      assert.equal(article.isoDate, "2026-10-02T07:00:00+03:00");
+    });
+  }
+}
+test("inline linked recommendations are skipped without swallowing the next article paragraph", () => {
+  const article = parseArticleHtml(`<article><h1>Relatare locală</h1>
+    <p>Primul paragraf al relatării descrie situația din localitate.</p>
+    <p><strong>VEZI ȘI</strong> <a href="/unrelated">Guvernul Bolojan în negocieri politice.</a></p>
+    <div>Ultimul paragraf al relatării rămâne disponibil pentru verificare.</div>
+  </article>`, "https://example.com/story");
+  assert.match(article.content, /Ultimul paragraf/);
+  assert.doesNotMatch(article.content, /Bolojan|negocieri politice/);
+});
