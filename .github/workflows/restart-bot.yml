@@ -1,0 +1,77 @@
+name: Restart News Monitor
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths: [.github/workflows/restart-bot.yml]
+permissions:
+  contents: read
+  actions: write
+concurrency:
+  group: news-bot-administration
+  cancel-in-progress: false
+jobs:
+  restart:
+    if: github.event_name == 'workflow_dispatch' || contains(github.event.head_commit.message, '[restart-actions]')
+    runs-on: ubuntu-latest
+    timeout-minutes: 9
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Stop existing runs and manually start current master
+        run: |
+          python3 - <<'PY'
+          import json, os, subprocess, time
+          
+          repo = os.environ["GITHUB_REPOSITORY"]
+          own = int(os.environ["GITHUB_RUN_ID"])
+          active_states = {"queued", "in_progress", "waiting", "pending", "requested"}
+          
+          def gh(*args):
+              return subprocess.check_output(["gh", *args], text=True)
+          
+          def active_runs():
+              pages = json.loads(gh("api", "--paginate", "--slurp",
+                  f"repos/{repo}/actions/runs?per_page=100"))
+              return [r for page in pages for r in page["workflow_runs"]
+                      if r["id"] != own and r["status"] in active_states]
+          
+          # Confirm a durable database checkpoint before interrupting any process.
+          tree = json.loads(gh("api", f"repos/{repo}/git/trees/data?recursive=1"))
+          db = next((entry for entry in tree["tree"] if entry["path"] == "data.sqlite"), None)
+          if not db or not db.get("size"):
+              raise SystemExit("No saved database found; restart aborted before cancellation.")
+          print("Saved database confirmed:", db["sha"], db["size"], "bytes", flush=True)
+          
+          cancelled = set()
+          deadline = time.monotonic() + 360
+          while True:
+              runs = active_runs()
+              if not runs:
+                  break
+              # Empty the queue first, then stop active jobs, preventing an old queued
+              # commit from taking over when the current runner exits.
+              runs.sort(key=lambda r: r["status"] == "in_progress")
+              for run in runs:
+                  run_id = run["id"]
+                  if run_id in cancelled:
+                      continue
+                  result = subprocess.run(["gh", "api", "--method", "POST",
+                      f"repos/{repo}/actions/runs/{run_id}/cancel"],
+                      text=True, capture_output=True)
+                  if result.returncode:
+                      current = json.loads(gh("api", f"repos/{repo}/actions/runs/{run_id}"))
+                      if current["status"] != "completed":
+                          raise SystemExit(f"Cancellation rejected for run {run_id}; restart aborted.")
+                  cancelled.add(run_id)
+                  print("Cancellation requested:", run_id, run["name"], flush=True)
+              if time.monotonic() > deadline:
+                  raise SystemExit("Existing runs did not stop within 6 minutes; no replacement dispatched.")
+              time.sleep(5)
+          
+          # Dispatch exactly once, after all prior runs are terminal.
+          print("All prior runs stopped. Dispatching bot.yml on master.", flush=True)
+          gh("workflow", "run", "bot.yml", "--repo", repo, "--ref", "master")
+          print("Manual dispatch accepted.", flush=True)
+          
+          PY
