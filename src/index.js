@@ -650,7 +650,7 @@ async function processArticleUrl(url, { bypassFilters = false, bypassSimilarity 
       console.log(`[update] URL procesat anterior, dar titlul/corpul s-au schimbat; reevaluez toate filtrele: ${url}`);
     }
 
-    // Publication age is continuous across midnight; updates never reset it.
+    // Require today's publication date in Romania; publication hour is optional.
     const freshness = publicationFreshness(article);
     console.log(`[publication] ${JSON.stringify({ url, date: article.isoDate, source: article.publicationDateSource, ...freshness })}`);
     if (policy.checkPublicationFreshness && !freshness.fresh) {

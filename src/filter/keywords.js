@@ -1,6 +1,6 @@
 // Normalizeaza diacritice ca sa prinda si varianta fara diacritice din articole
 import { requiresIncidentReview } from "./incident-policy.js";
-import { parsePublicationDate } from "./publication-date.js";
+import { publicationFreshness } from "./publication-date.js";
 
 function normalize(text) {
   return text
@@ -299,19 +299,5 @@ export function detectSpeaker(title, matchedKeywords) {
 // Verifica daca data articolului (ISO, din meta tags: article:published_time)
 // e din ziua curenta, comparat in ora Romaniei (Europe/Bucharest).
 export function isPublishedToday(isoDate, now = Date.now()) {
-  if (!isoDate) return false;
-
-  const timestamp = parsePublicationDate(isoDate);
-  if (timestamp === null || timestamp > now + 5 * 60_000) return false;
-  const articleDate = new Date(timestamp);
-
-  const fmt = (d) =>
-    new Intl.DateTimeFormat("ro-RO", {
-      timeZone: "Europe/Bucharest",
-      year: "numeric",
-      month: "2-digit",
-      day: "2-digit",
-    }).format(d);
-
-  return fmt(articleDate) === fmt(new Date(now));
+  return publicationFreshness({ isoDate }, { now }).fresh;
 }

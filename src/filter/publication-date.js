@@ -35,14 +35,26 @@ export function parsePublicationDate(value) {
 }
 
 export function publicationFreshness(article, {
-  now = Date.now(), maxAgeHours = Number(process.env.ARTICLE_MAX_AGE_HOURS || 12),
-  futureToleranceMs = 5 * 60_000,
+  now = Date.now(), maxAgeHours = null, futureToleranceMs = null,
 } = {}) {
-  if (!Number.isFinite(maxAgeHours) || maxAgeHours <= 0) maxAgeHours = 12;
   const timestamp = parsePublicationDate(article?.isoDate);
   if (timestamp === null) return { fresh: false, reason: "missing_or_invalid_publication_date" };
   const ageMs = now - timestamp;
-  if (ageMs < -futureToleranceMs) return { fresh: false, reason: "future_publication_date", timestamp, ageHours: ageMs / 3_600_000 };
-  if (ageMs > maxAgeHours * 3_600_000) return { fresh: false, reason: "stale_publication_date", timestamp, ageHours: ageMs / 3_600_000 };
-  return { fresh: true, reason: "recent_publication", timestamp, ageHours: Math.max(0, ageMs / 3_600_000) };
+  const published = localParts(timestamp);
+  const today = localParts(now);
+  // The default editorial rule is today's calendar date in Romania. The
+  // clock is optional: date-only metadata and morning stories remain valid
+  // all day, and a previous-day story cannot cross midnight on an age window.
+  const dayKey = ({ year, month, day }) => year * 10000 + month * 100 + day;
+  if (dayKey(published) !== dayKey(today)) {
+    return { fresh: false, reason: dayKey(published) > dayKey(today) ? "future_publication_day" : "previous_publication_day", timestamp, ageHours: ageMs / 3_600_000 };
+  }
+  // Time checks are opt-in options for a caller, never an implicit env default.
+  if (Number.isFinite(futureToleranceMs) && futureToleranceMs >= 0 && ageMs < -futureToleranceMs) {
+    return { fresh: false, reason: "future_publication_date", timestamp, ageHours: ageMs / 3_600_000 };
+  }
+  if (Number.isFinite(maxAgeHours) && maxAgeHours > 0 && ageMs > maxAgeHours * 3_600_000) {
+    return { fresh: false, reason: "stale_publication_date", timestamp, ageHours: ageMs / 3_600_000 };
+  }
+  return { fresh: true, reason: "publication_today", timestamp, ageHours: Math.max(0, ageMs / 3_600_000) };
 }
