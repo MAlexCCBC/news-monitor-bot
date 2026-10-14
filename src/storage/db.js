@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import fs from "fs";
 import { readRecentImages, cleanupImageHistory } from "./image-history.js";
 import path from "path";
 import { fileURLToPath } from "url";
@@ -10,7 +11,8 @@ import { ensureColumn } from "./migrations.js";
 import { createArticleFailureStore } from "./article-failures.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const db = new Database(path.join(__dirname, "../../data.sqlite"));
+const dbPath = path.join(__dirname, "../../data.sqlite");
+const db = new Database(dbPath);
 const articleFailures = createArticleFailureStore(db);
 const similarityFeedback = createSimilarityFeedbackStore(db);
 
@@ -131,10 +133,19 @@ export function saveModelCooldown(model, cooldownUntil) {
 
 export function cleanupOld(hoursBack, daysBackImages) {
   const cutoff = Date.now() - hoursBack * 60 * 60 * 1000 * 2; // pastram 2x ca marja
-  db.prepare(`DELETE FROM news_history WHERE created_at < ?`).run(cutoff);
-  cleanupImageHistory(db, daysBackImages);
+  const removedNews = db.prepare(`DELETE FROM news_history WHERE created_at < ?`).run(cutoff).changes;
+  const removedImages = cleanupImageHistory(db, daysBackImages).changes;
+  const removedApprovals = pendingApprovals.cleanupOld(Date.now());
   db.prepare(`DELETE FROM ai_model_cooldowns WHERE cooldown_until <= ?`).run(Date.now());
   similarityFeedback.cleanup();
+
+  // SQLite nu micșorează fișierul după DELETE. Eliberează paginile vechi când
+  // baza este mare, altfel snapshot-ul din GitHub Actions continuă să crească
+  // chiar dacă datele nu mai sunt necesare pentru fereastra de similaritate.
+  if (removedNews + removedImages + removedApprovals > 0 && fs.statSync(dbPath).size >= 32 * 1024 * 1024) {
+    checkpointDb();
+    db.exec("VACUUM");
+  }
 }
 
 // Forteaza scrierea completa pe disc a bazei de date (folosit inainte de a

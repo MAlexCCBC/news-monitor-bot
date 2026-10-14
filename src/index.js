@@ -810,6 +810,18 @@ notifyBot.on("message", (message) => {
 });
 
 async function main() {
+  // Curățăm baza restaurată înainte de orice restaurare/aprobare care ar putea
+  // declanșa un push; runner-ele Actions rulează doar 4h50, nu 6h.
+  const cleanupDatabase = () => {
+    try {
+      cleanupOld(historyHours, Number(process.env.IMAGE_HISTORY_DAYS || 7));
+    } catch (err) {
+      console.error("[database] Curățarea bazei de date a eșuat:", err.message);
+    }
+  };
+  cleanupDatabase();
+  setInterval(cleanupDatabase, 30 * 60 * 1000);
+
   let botIdentity;
   try {
     botIdentity = await notifyBot.getMe();
@@ -857,9 +869,6 @@ async function main() {
 
   await client.connect();
   console.log("✅ Conectat la Telegram (MTProto)");
-
-  // Curatam periodic istoricul vechi (o data la 6 ore)
-  setInterval(() => cleanupOld(historyHours, Number(process.env.IMAGE_HISTORY_DAYS || 7)), 6 * 60 * 60 * 1000);
 
   // Salvam periodic baza de date in git (pe Actions filesystem-ul e efemer;
   // fara asta istoricul de 24h s-ar pierde la fiecare oprire).

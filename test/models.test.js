@@ -10,7 +10,10 @@ test("rewrite cascade keeps Gemini 3.8 first and excludes retired 2.5 endpoints"
   assert.ok(TEXT_MODELS.includes("gemini-3-flash-preview"));
   assert.ok(!TEXT_MODELS.includes("gemini-2.5-flash"));
   assert.ok(!TEXT_MODELS.includes("gemini-2.5-flash-lite"));
-  assert.ok(TEXT_MODELS.indexOf("gemini-3.7-flash") < TEXT_MODELS.indexOf("gemini-3.5-flash-lite"));
+  assert.ok(TEXT_MODELS.includes("gemini-3.8-flash"));
+  assert.ok(TEXT_MODELS.includes("gemini-3.6-flash"));
+  assert.ok(!TEXT_MODELS.includes("gemini-3.7-flash"));
+  assert.ok(!TEXT_MODELS.includes("gemini-3.5-flash"));
 });
 
 test("eligible model cascade doesn't apply local quota counters and retains supported fallbacks", () => {

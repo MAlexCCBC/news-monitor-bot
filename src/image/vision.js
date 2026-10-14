@@ -17,14 +17,12 @@ const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 // actual, Gemma 4 = ultima linie (14.4K/zi). Modelele care dau 404 (3-flash,
 // 2.5-*) sunt scoase; filterModels le exclude oricum dinamic.
 const VISION_MODELS = [
-  "gemini-3.7-flash",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
   "gemini-3.8-flash",
   "gemma-4-31b-it",
   "gemma-4-26b-a4b-it",
   "gemini-3.6-flash",
-  "gemini-3.5-flash",
   "gemini-flash-latest",
 ];
 let workingVisionModel = null;

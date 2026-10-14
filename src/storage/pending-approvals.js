@@ -17,6 +17,7 @@ function decode(row) {
 
 export const ARTICLE_APPROVAL_TTL_MS = 12 * 60 * 60 * 1000;
 const LEGACY_ARTICLE_APPROVAL_TTL_MS = 60 * 60 * 1000;
+const TERMINAL_APPROVAL_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Durable Telegram approvals. SQLite is also restored from the data branch
  * on GitHub Actions, so callback buttons survive process restarts. */
@@ -235,6 +236,16 @@ export function createPendingApprovalStore(db) {
         .run(now);
       return db.prepare(`SELECT * FROM pending_approvals WHERE state = 'pending' ORDER BY created_at`)
         .all().map(decode);
+    },
+
+    cleanupOld(now = Date.now()) {
+      // Keep active buttons (including non-expiring AI-text requests) intact.
+      // Terminal requests are useful for audit/recovery for seven days, then
+      // their full article and embedding payloads only inflate the DB forever.
+      this.listPending(now);
+      return db.prepare(`DELETE FROM pending_approvals
+        WHERE state IN ('done', 'ignored', 'expired') AND created_at < ?`)
+        .run(now - TERMINAL_APPROVAL_RETENTION_MS).changes;
     },
 
     claim(id, now = Date.now()) {

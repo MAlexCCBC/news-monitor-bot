@@ -1,11 +1,16 @@
 import { execFile } from "child_process";
+import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
-import { checkpointDb } from "./db.js";
+import { checkpointDb, cleanupOld } from "./db.js";
+import { ARTICLE_HISTORY_HOURS } from "./article-history.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.join(__dirname, "../..");
 const DB_REL = "data.sqlite";
+// GitHub blocks individual files at 100 MB (decimal). Keep a safety margin
+// and prune the already-defined 48h DB retention window before a snapshot.
+const MAX_SNAPSHOT_BYTES = 90_000_000;
 
 // Salveaza periodic data.sqlite in git (branch-ul "data"), ca baza de date sa
 // nu se piarda cand botul se opreste / ruleaza pe GitHub Actions (unde
@@ -33,6 +38,9 @@ async function pushSnapshot(branch) {
       return;
     } catch (error) {
       lastError = error;
+      // A GitHub file-size rejection cannot heal with retries. Stop hammering
+      // the same permanent failure; the next scheduled cleanup can compact it.
+      if (/exceeds GitHub.s file size limit|GH001/i.test(error.message)) break;
       if (attempt < 4) await new Promise((resolve) => setTimeout(resolve, 1000 * (2 ** attempt)));
     }
   }
@@ -43,6 +51,15 @@ async function pushSnapshot(branch) {
 async function persistSnapshot(branch, { throwOnError = false } = {}) {
   try {
     checkpointDb();
+    const dbPath = path.join(REPO_ROOT, DB_REL);
+    if (fs.statSync(dbPath).size >= MAX_SNAPSHOT_BYTES) {
+      cleanupOld(ARTICLE_HISTORY_HOURS, Number(process.env.IMAGE_HISTORY_DAYS || 7));
+      checkpointDb();
+      const size = fs.statSync(dbPath).size;
+      if (size >= MAX_SNAPSHOT_BYTES) {
+        throw new Error(`Baza de date are ${(size / 1_000_000).toFixed(1)} MB chiar după curățarea ferestrei de 48h; snapshot oprit preventiv sub limita GitHub de 100 MB.`);
+      }
+    }
     await runGit(["add", "-f", DB_REL]);
     // Limitează commitul la baza de date și nu include accidental fișiere
     // care ar putea fi deja staged în checkout.

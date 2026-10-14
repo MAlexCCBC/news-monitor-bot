@@ -89,6 +89,26 @@ test("link approval remains processable for 12 hours, while AI-text approval has
   db.close();
 });
 
+test("database cleanup preserves live approvals and prunes only terminal approvals older than seven days", () => {
+  const db = new Database(":memory:");
+  const store = createPendingApprovalStore(db);
+  const now = 30 * 24 * 60 * 60 * 1000;
+  const base = { url: "https://example.com/old", article: { title: "Titlu", content: "Text" }, matchedKeywords: [] };
+  store.create({ ...base, id: "old-terminal", kind: "article", simResult: {}, createdAt: now - 8 * 24 * 60 * 60 * 1000, expiresAt: now - 8 * 24 * 60 * 60 * 1000 });
+  store.setState("old-terminal", "done");
+  store.create({ ...base, id: "recent-terminal", url: "https://example.com/recent", kind: "article", simResult: {}, createdAt: now - 2 * 24 * 60 * 60 * 1000, expiresAt: now - 2 * 24 * 60 * 60 * 1000 });
+  store.setState("recent-terminal", "ignored");
+  store.create({ ...base, id: "live", url: "https://example.com/live", kind: "article", simResult: {}, createdAt: now - 20 * 24 * 60 * 60 * 1000, expiresAt: now + ARTICLE_APPROVAL_TTL_MS });
+  store.create({ ...base, id: "non-expiring-ai", url: "https://example.com/ai", kind: "ai_text", simResult: {}, createdAt: now - 20 * 24 * 60 * 60 * 1000 });
+
+  assert.equal(store.cleanupOld(now), 1);
+  assert.equal(store.get("old-terminal"), null);
+  assert.equal(store.get("recent-terminal").state, "ignored");
+  assert.equal(store.get("live").state, "pending");
+  assert.equal(store.get("non-expiring-ai").state, "pending");
+  db.close();
+});
+
 test("only one active article approval can exist per URL", () => {
   const db = new Database(":memory:");
   const store = createPendingApprovalStore(db);

@@ -19,7 +19,7 @@ const SPEAKER_MODELS = [
   "gemini-3.1-flash-lite",
   "gemini-flash-lite-latest",
   "gemini-3.8-flash",
-  "gemini-3.7-flash",
+  "gemini-3.6-flash",
   "gemma-4-31b-it",
 ];
 
