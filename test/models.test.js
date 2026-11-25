@@ -1,8 +1,10 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import axios from "axios";
 
 import db, { getActiveModelCooldowns, saveModelCooldown } from "../src/storage/db.js";
-import { describeGeminiError, eligibleModels, filterCoolingModels, recordModelFailure } from "../src/ai/models.js";
+import { describeGeminiError, eligibleModels, filterCoolingModels, listAvailableModels, recordModelFailure } from "../src/ai/models.js";
+import { SIMILARITY_AI_MODELS } from "../src/similarity/ai-arbitrator.js";
 import { extractFinalRewriteText, TEXT_MODELS } from "../src/ai/rewrite.js";
 
 test("rewrite cascade keeps Gemini 3.8 first and excludes retired 2.5 endpoints", () => {
@@ -148,4 +150,37 @@ test("Gemini error formatting preserves server quota details for diagnosis", () 
     }),
     "HTTP 429: RESOURCE_EXHAUSTED: Per-day quota exceeded"
   );
+});
+
+
+test("similarity reaches three distinct high-quota models within its attempt budget", () => {
+  assert.deepEqual(SIMILARITY_AI_MODELS.slice(0, 3), [
+    "gemini-3.5-flash-lite", "gemini-3.1-flash-lite", "gemma-4-31b-it",
+  ]);
+  assert.ok([...TEXT_MODELS, ...SIMILARITY_AI_MODELS].every((model) => !model.endsWith("-latest")));
+});
+
+test("an explicit minute quota takes precedence over generic free-tier metric text", () => {
+  const now = 500_000;
+  recordModelFailure("test-minute-with-generic-metric", {
+    response: { status: 429, data: { error: {
+      message: "Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests",
+      details: [{ violations: [{ quotaId: "GenerateRequestsPerMinutePerProjectPerModel-FreeTier" }] }],
+    } } },
+  }, now);
+  assert.deepEqual(filterCoolingModels(["test-minute-with-generic-metric"], now + 59_999), []);
+  assert.deepEqual(filterCoolingModels(["test-minute-with-generic-metric"], now + 60_000), ["test-minute-with-generic-metric"]);
+});
+
+test("model discovery reads subsequent pages and filters by API method", async (t) => {
+  const get = t.mock.method(axios, "get", async (_url, { params }) => ({
+    data: params.pageToken ? {
+      models: [{ name: "models/gemma-4-31b-it", supportedGenerationMethods: ["generateContent"] }],
+    } : {
+      models: [{ name: "models/gemini-embedding-001", supportedGenerationMethods: ["embedContent"] }],
+      nextPageToken: "second",
+    },
+  }));
+  assert.deepEqual(await listAvailableModels(), ["gemma-4-31b-it"]);
+  assert.deepEqual(get.mock.calls.map((call) => call.arguments[1].params.pageToken), [undefined, "second"]);
 });

@@ -1,6 +1,6 @@
 import axios from "axios";
 import { filterModels, recordModelFailure } from "./models.js";
-import { modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "./gemini-client.js";
+import { finalGeminiText, modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "./gemini-client.js";
 
 // Extrage DINAMIC numele persoanei care declara, CITIND articolul (titlu +
 // fragment). Nu depinde de liste predefinite si NU intoarce institutii sau
@@ -10,16 +10,11 @@ import { modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from ".
 // apeluri de verificare faciala pe un "nume" inexistent.
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
-// Lite-urile primele: extragerea vorbitorului e o clasificare simpla pe care
-// le fac la fel de bine, iar cotele lor (500/zi) sunt mult mai mari decat ale
-// flash-urilor (20/zi) - asa pastram cota modelelor bune pentru rescriere si
-// verificarea faciala. Aliasul -latest si Gemma 4 = rezerve.
+// Use the high-quota Gemma 26B for simple text extraction, with Lite fallbacks.
 const SPEAKER_MODELS = [
-  "gemini-3.5-flash-lite",
+  "gemma-4-26b-a4b-it",
   "gemini-3.1-flash-lite",
-  "gemini-flash-lite-latest",
-  "gemini-3.8-flash",
-  "gemini-3.6-flash",
+  "gemini-3.5-flash-lite",
   "gemma-4-31b-it",
 ];
 
@@ -85,7 +80,7 @@ export async function extractSpeakerFromArticle(title, excerpt, keywordHint = ""
           },
         }
       ));
-      const raw = res.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      const raw = finalGeminiText(res.data.candidates?.[0]);
       if (!raw) throw new Error("raspuns gol");
 
       const answer = raw.split("\n")[0].trim().replace(/^["']|["']$/g, "");

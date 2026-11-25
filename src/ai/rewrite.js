@@ -1,6 +1,6 @@
 import axios from "axios";
 import { describeGeminiError, filterModels, recordModelFailure } from "./models.js";
-import { isRequestTimeout, modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "./gemini-client.js";
+import { finalGeminiText, isRequestTimeout, modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "./gemini-client.js";
 
 // Citim cheia DINAMIC, in momentul apelului (nu la import): index.js ruleaza
 // dotenv.config() dupa ce modulele sunt deja importate (ESM hoisting), deci la
@@ -10,21 +10,15 @@ const OPENAI_KEY = () => process.env.OPENAI_API_KEY;
 const OPENAI_MODEL = "gpt-6-luna";
 let missingOpenAiKeyLogged = false;
 
-// Cascada începe cu modelul preferat, apoi încearcă Flash/Lite/Gemma ca rezerve.
-// gemini-flash-latest e alias care
-// indica mereu cel mai nou flash - plasă de siguranță dacă o versiune dispare.
-// ListModels elimină automat modelele care nu suportă generateContent pe cheia
-// curentă; variantele preview/legacy rămân rezerve dacă sunt disponibile.
+// Keep Gemini 3.8 as the first rewrite fallback after OpenAI.
 export const TEXT_MODELS = [
   "gemini-3.8-flash",
-  "gemini-3.6-flash",
-  "gemini-3-flash-preview",
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
   "gemma-4-31b-it",
   "gemma-4-26b-a4b-it",
-  "gemini-flash-lite-latest",
-  "gemini-flash-latest",
+  "gemini-3.6-flash",
+  "gemini-3-flash-preview",
 ];
 
 const PROMPT_TEMPLATE = (articleText) => `
@@ -153,11 +147,7 @@ export function validateRewriteGrounding(text, articleText) {
 }
 
 export function extractFinalRewriteText(candidate) {
-  return (candidate?.content?.parts || [])
-    .filter((part) => part && part.thought !== true && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("")
-    .trim();
+  return finalGeminiText(candidate);
 }
 
 export function extractOpenAIRewriteText(response) {
@@ -249,7 +239,7 @@ export async function rewriteArticle(articleText) {
   const models = await filterModels(TEXT_MODELS);
   if (!models.length) {
     const prefix = openAiFailure ? `Fallback OpenAI eșuat (${openAiFailure}). ` : "";
-    const error = new Error(`${prefix}Toate modelele text sunt temporar în cooldown după erori de cotă; articolul nu a fost trimis către Gemini. Reîncearcă după resetarea cotei.`);
+    const error = new Error(`${prefix}Toate modelele text sunt temporar indisponibile; articolul nu a fost trimis către Gemini. Reîncearcă mai târziu.`);
     if (openAiDraft) error.generatedDraft = openAiDraft;
     throw error;
   }

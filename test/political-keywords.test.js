@@ -133,3 +133,9 @@ test("foreign-only security stories are identifiable without a Romanian link", (
   assert.equal(isForeignOnly("O dronă rusă a avariat un punct de frontieră ucrainean la granița cu Polonia", []), true);
   assert.equal(isForeignOnly("România convoacă ambasadorul Rusiei după incidentul de la graniță", []), false);
 });
+
+
+test("Romanian party and agency in the headline keep an article about Romanian officials abroad", () => {
+  assert.equal(isForeignOnly("Ministrul PSD Florin Barbu, fotografiat în China", []), false);
+  assert.equal(isForeignOnly("Șeful ANSVSA a vizitat Marele Zid Chinezesc", []), false);
+});

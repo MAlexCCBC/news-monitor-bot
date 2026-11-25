@@ -90,9 +90,10 @@ export function recordModelFailure(model, err, now = Date.now()) {
   const quotaEvidence = `${quotaMetrics} ${apiError.message || ""}`.toLowerCase();
   // Do not infer a daily lockout from generic 429 text; Google also exposes
   // the free-tier daily request metric in quota violations.
-  const isDailyQuota = /per[_ ]?day|perday|requestsperday/.test(quotaIds) ||
-    (/generate_content_free_tier_requests/.test(quotaEvidence) && !/generate_content_free_tier_requests[^\n]*(?:minute|second)/.test(quotaEvidence));
   const isMinuteQuota = /per[_ ]?minute|perminute|requestsperminute/.test(quotaIds);
+  const isDailyQuota = /per[_ ]?day|perday|requestsperday/.test(quotaIds) ||
+    (!isMinuteQuota && /generate_content_free_tier_requests/.test(quotaEvidence) &&
+      !/generate_content_free_tier_requests[^\n]*(?:minute|second)/.test(quotaEvidence));
   const defaultDelay = status !== 429 ? 60_000 : isMinuteQuota ? 60_000 : 15 * 60_000;
   const delay = isDailyQuota
     ? Math.max(serverDelay || 0, nextPacificMidnightDelay(now))
@@ -121,15 +122,21 @@ export async function listAvailableModels() {
   if (cachedModels && now - cachedAt < CACHE_TTL_MS) return cachedModels;
 
   try {
-    const res = await axios.get("https://generativelanguage.googleapis.com/v1beta/models", {
-      headers: { "x-goog-api-key": GEMINI_KEY() },
-      timeout: 15000,
-    });
-    // Pastram doar modelele care suporta generateContent (excludem TTS,
-    // embedding, veo etc. care apar in lista dar nu accepta acest apel).
-    cachedModels = (res.data.models || [])
-      .filter((m) => (m.supportedGenerationMethods || []).includes("generateContent"))
-      .map((m) => m.name.replace(/^models\//, ""));
+    const models = [];
+    let pageToken;
+    do {
+      const { data } = await axios.get("https://generativelanguage.googleapis.com/v1beta/models", {
+        headers: { "x-goog-api-key": GEMINI_KEY() },
+        params: { pageSize: 100, pageToken },
+        timeout: 15000,
+      });
+      models.push(...(data.models || [])
+        .filter((model) => model.supportedGenerationMethods?.includes("generateContent"))
+        .map((model) => model.name.replace(/^models\//, "")));
+      pageToken = data.nextPageToken;
+    } while (pageToken);
+
+    cachedModels = models;
     cachedAt = now;
     console.log(`[models] ListModels: ${cachedModels.length} modele disponibile cu generateContent`);
   } catch (err) {

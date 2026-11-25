@@ -1,8 +1,14 @@
-import axios from "axios";
-
 const MAX_RETRIES = 2;
 const MAX_RETRY_DELAY_MS = 60_000;
 export const GEMMA4_TIMEOUT_MS = 120_000;
+
+export function finalGeminiText(candidate) {
+  return (candidate?.content?.parts || [])
+    .filter((part) => part && part.thought !== true && typeof part.text === "string")
+    .map((part) => part.text)
+    .join("")
+    .trim();
+}
 
 export function modelRequestTimeout(model, fallbackTimeoutMs = null) {
   return model.startsWith("gemma-4-") ? GEMMA4_TIMEOUT_MS : fallbackTimeoutMs;

@@ -1,7 +1,7 @@
 import axios from "axios";
 import sharp from "sharp";
 import { describeGeminiError, filterModels, recordModelFailure } from "../ai/models.js";
-import { modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "../ai/gemini-client.js";
+import { finalGeminiText, modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "../ai/gemini-client.js";
 
 // Analiza faciala prin Gemini Vision (multimodal). Folosim Gemini ca motor de:
 //  1. detectie fata -> bounding box pentru crop centrat corect;
@@ -10,22 +10,15 @@ import { modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from ".
 // dupa importurile modulelor).
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 
-// Modele vision, de la CEL MAI BUN la cel mai slab. 3.7 flash primul la
-// comparat fețe; păstrăm 3.8 prioritar la rescriere, ca să nu consumăm cota sa
-// mică și pe analizele repetate de imagini. Lite-urile preiau volumul zilnic.
-// gemini-flash-latest = alias mereu
-// actual, Gemma 4 = ultima linie (14.4K/zi). Modelele care dau 404 (3-flash,
-// 2.5-*) sunt scoase; filterModels le exclude oricum dinamic.
+// Prefer Lite models for the repeated image analyses.
 const VISION_MODELS = [
-  "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
+  "gemini-3.5-flash-lite",
   "gemini-3.8-flash",
+  "gemini-3.6-flash",
   "gemma-4-31b-it",
   "gemma-4-26b-a4b-it",
-  "gemini-3.6-flash",
-  "gemini-flash-latest",
 ];
-let workingVisionModel = null;
 
 // Pregatim imaginea pt. Gemini: JPEG mic (512px max), calitate 80 - requesturi
 // rapide si in limitele de dimensiune ale API-ului inline.
@@ -38,12 +31,9 @@ export async function toInlineJpeg(buffer, maxSize = 512) {
 }
 
 async function geminiVision(parts) {
-  const available = await filterModels(VISION_MODELS);
-  const models = workingVisionModel && available.includes(workingVisionModel)
-    ? [workingVisionModel, ...available.filter((model) => model !== workingVisionModel)]
-    : available;
+  const models = await filterModels(VISION_MODELS);
   if (!models.length) {
-    throw new Error("Toate modelele vision sunt temporar în cooldown după erori de cotă.");
+    throw new Error("Toate modelele vision sunt temporar indisponibile.");
   }
   let lastError;
   for (const model of models) {
@@ -59,9 +49,8 @@ async function geminiVision(parts) {
           },
         }
       ));
-      const text = res.data.candidates?.[0]?.content?.parts?.[0]?.text?.trim();
+      const text = finalGeminiText(res.data.candidates?.[0]);
       if (!text) throw new Error("raspuns gol");
-      workingVisionModel = model;
       return text;
     } catch (err) {
       lastError = err;

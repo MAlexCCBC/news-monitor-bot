@@ -1,20 +1,16 @@
 import axios from "axios";
 import { describeGeminiError, filterModels, recordModelFailure } from "../ai/models.js";
-import { modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "../ai/gemini-client.js";
+import { finalGeminiText, modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "../ai/gemini-client.js";
 
 const GEMINI_KEY = () => process.env.GEMINI_API_KEY;
 export const SIMILARITY_AI_MODELS = [
-  // Use high-daily-quota Lite models first; larger Flash tiers have much lower
-  // free-tier daily request limits and should remain a fallback.
   "gemini-3.5-flash-lite",
   "gemini-3.1-flash-lite",
-  "gemini-flash-lite-latest",
+  "gemma-4-31b-it",
   "gemini-3.8-flash",
+  "gemma-4-26b-a4b-it",
   "gemini-3.6-flash",
   "gemini-3-flash-preview",
-  "gemma-4-31b-it",
-  "gemma-4-26b-a4b-it",
-  "gemini-flash-latest",
 ];
 const MAX_SIMILARITY_MODEL_ATTEMPTS = 3;
 
@@ -175,14 +171,6 @@ Reguli:
 ȘTIRE NOUĂ\n${articleBlock(incoming)}
 
 ${listed}`;
-}
-
-function responseText(data) {
-  return (data?.candidates?.[0]?.content?.parts || [])
-    .filter((part) => part && part.thought !== true && typeof part.text === "string")
-    .map((part) => part.text)
-    .join("")
-    .trim();
 }
 
 function hasClearLowProbabilityNegativeConsensus(checks) {
@@ -653,10 +641,13 @@ async function requestGemini(model, prompt) {
     `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`,
     {
       contents: [{ parts: [{ text: prompt }] }],
-      generationConfig: modelGenerationConfig(model, { temperature: 0, responseMimeType: "application/json" }),
+      generationConfig: modelGenerationConfig(model, {
+        temperature: 0,
+        ...(model.startsWith("gemma-") ? {} : { responseMimeType: "application/json" }),
+      }),
     },
     {
-      timeout: modelRequestTimeout(model),
+      timeout: modelRequestTimeout(model, 60_000),
       headers: { "x-goog-api-key": GEMINI_KEY(), "Content-Type": "application/json" },
     }
   ));
@@ -692,7 +683,7 @@ export async function arbitrateSimilarity(incoming, candidates, {
     }
     try {
       const attemptResults = parseSimilarityReview(
-        responseText(response.data), attemptCandidates.length, incoming, attemptCandidates, { allowPartial: true }
+        finalGeminiText(response.data?.candidates?.[0]), attemptCandidates.length, incoming, attemptCandidates, { allowPartial: true }
       );
       let resolvedThisRound = 0;
       for (let localIndex = 0; localIndex < attemptResults.length; localIndex++) {

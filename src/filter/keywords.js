@@ -128,7 +128,7 @@ const ROMANIA_INDICATORS = [
   "cluj", "timisoara", "iasi", "brasov", "sibiu", "constanta", "craiova",
   "galati", "oradea", "bacau", "arad", "suceava", "pitesti", "targu mures",
   "transilvania", "moldova", "dobrogea", "banat", "olt", "mures", "prut",
-  "guvernul roman", "parlamentul roman", "presedintele roman",
+  "guvernul roman", "parlamentul roman", "presedintele roman", "ansvsa",
 ];
 
 // Potrivire pe limite de cuvinte: \b in JS e ASCII-based, dar textul e deja
@@ -196,7 +196,8 @@ export function isForeignOnly(text, personalities) {
   const norm = normalize(text);
   const hasForeign = FOREIGN_INDICATORS.some((w) => hasWord(norm, w));
   if (!hasForeign) return false;
-  const hasRomanianContext = ROMANIA_INDICATORS.some((w) => hasWord(norm, w));
+  const hasRomanianContext = ROMANIA_INDICATORS.some((w) => hasWord(norm, w)) ||
+    /\b(?:PSD|PNL|USR)\b/.test(String(text).split("\n", 1)[0]);
   const hasRomanianPerson = personalities.some((kw) => norm.includes(normalize(kw)));
   return !hasRomanianContext && !hasRomanianPerson;
 }
