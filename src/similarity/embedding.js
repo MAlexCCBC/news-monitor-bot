@@ -519,19 +519,6 @@ export function selectSimilarityCandidate(candidates) {
   return bestDuplicate || bestOverall || { isDuplicate: false, score: 0, url: null };
 }
 
-// The link shown next to a "needs review" card must be an article the model
-// actually compared. Falling back to the highest-scoring candidate would point
-// the reader at an arbitrary article that Gemini never read, which is how a
-// similarity check ends up as a meaningless side-by-side link.
-function selectReviewedCandidate(candidates, reviewedUrls) {
-  let best = null;
-  for (const candidate of candidates) {
-    if (!reviewedUrls.has(candidate.url)) continue;
-    if (!best || candidate.score > best.score) best = candidate;
-  }
-  return best;
-}
-
 // Keep a wider semantic net for Gemini: this is a candidate-recall threshold,
 // not a duplicate threshold. Gemini still makes the final event-level call.
 const AI_RETRIEVAL_FLOOR = 0.55;
@@ -614,28 +601,7 @@ export function selectAiReviewCandidates(candidates) {
 }
 
 export function applySimilarityAiReview(candidates, reviewedCandidates, review) {
-  const reviewedCandidateUrls = new Set(reviewedCandidates.map((candidate) => candidate.url));
-  if (!review?.results?.length) {
-    // Embeddings retrieve likely matches; they must not make the final
-    // duplicate decision when Gemini could not provide a verdict. The link
-    // shown to the human still has to be a real compared article.
-    const unresolved = candidates.map((candidate) => candidate.isDuplicate
-      ? {
-          ...candidate,
-          similarityZone: "NECESITĂ VERIFICARE (Gemini indisponibil)",
-          similarityReason: "Embeddingul a găsit un posibil candidat, dar Gemini nu a putut verifica dacă este același eveniment.",
-          similarityBasis: candidate.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
-          aiVerdict: "uncertain",
-        }
-      : candidate);
-    const best = selectSimilarityCandidate(unresolved);
-    if (best.isDuplicate && !reviewedCandidateUrls.has(best.url)) {
-      const reviewed = selectReviewedCandidate(unresolved, reviewedCandidateUrls);
-      if (reviewed) return { ...best, url: reviewed.url, title: reviewed.title || best.title, content: reviewed.content || best.content };
-    }
-    return best;
-  }
-  const verdictByUrl = new Map(reviewedCandidates.map((candidate, index) => [candidate.url, review.results[index]]));
+  const verdictByUrl = new Map(reviewedCandidates.map((candidate, index) => [candidate.url, review?.results?.[index]]));
   const confirmed = candidates.filter((candidate) => verdictByUrl.get(candidate.url)?.verdict === "duplicate");
   if (confirmed.length) {
     const best = confirmed.sort((a, b) => {
@@ -657,13 +623,25 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
   }
   const resolved = candidates.map((candidate) => {
     const verdict = verdictByUrl.get(candidate.url);
+    const anchored = candidate.isDuplicate || candidate.sameArticleIdentity || Number.isFinite(candidate.lexicalRetrievalScore);
+    const unavailable = verdictByUrl.has(candidate.url) && (!verdict || verdict.verdict === "unavailable");
+    if (unavailable) {
+      // Retrieval alone is insufficient when the service gives no decision.
+      // Keep review for pairs that also match by text or canonical identity.
+      return {
+        ...candidate,
+        isDuplicate: Boolean(anchored),
+        similarityZone: anchored ? "NECESITĂ VERIFICARE (Gemini indisponibil)" : "NECONFIRMAT (Gemini indisponibil)",
+        similarityReason: anchored
+          ? "Există indicii de duplicat în text sau URL, iar Gemini nu a putut verifica perechea."
+          : "Gemini nu a returnat un verdict, iar comparația locală nu a găsit indicii suficiente de duplicat.",
+        similarityBasis: candidate.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
+        aiVerdict: anchored ? "uncertain" : "unavailable",
+      };
+    }
     if (verdict?.verdict === "uncertain") {
-      // A low-probability unresolved backfill is not positive duplicate evidence.
-      // Preserve review for an anchored candidate, a positive model claim, or
-      // missing/high probability. Do not promote an unrelated recent item.
       const lowProbability = Number.isInteger(verdict.duplicateProbability) && verdict.duplicateProbability < 50;
       const negativeOrAbstention = ["different", "new_development", "related_context", "uncertain"].includes(verdict.modelVerdict || verdict.verdict);
-      const anchored = candidate.isDuplicate || candidate.sameArticleIdentity || Number.isFinite(candidate.lexicalRetrievalScore);
       if (lowProbability && negativeOrAbstention && !anchored) {
         return {
           ...candidate, isDuplicate: false,
@@ -693,7 +671,7 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
       };
     }
     if (!["different", "new_development", "related_context"].includes(verdict?.verdict)) {
-      if (candidate.isDuplicate && !reviewedCandidateUrls.has(candidate.url)) {
+      if (candidate.isDuplicate && !verdictByUrl.has(candidate.url)) {
         return {
           ...candidate,
           isDuplicate: false,
@@ -714,16 +692,7 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
       similarityBasis: "semantic_ai",
     };
   });
-  // A pair the model found ambiguous is the only reason to keep an article out
-  // of the queue, and the reader has to be shown that exact pair. If the
-  // ambiguous verdict belongs to a different candidate than the highest-scoring
-  // one, show the compared pair instead of an unrelated article.
-  const best = selectSimilarityCandidate(resolved);
-  if (best.isDuplicate && best.aiVerdict === "uncertain" && !reviewedCandidateUrls.has(best.url)) {
-    const reviewed = selectReviewedCandidate(resolved, reviewedCandidateUrls);
-    if (reviewed) return { ...best, url: reviewed.url, title: reviewed.title || best.title, content: reviewed.content || best.content };
-  }
-  return best;
+  return selectSimilarityCandidate(resolved);
 }
 
 // Reutilizăm un embedding salvat pentru verificări de restituire/migrare fără
@@ -840,14 +809,13 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
           reviewCandidates.map(({ title, content }) => ({ title, content }))
         );
       } catch (error) {
-        console.warn(`[similarity-ai] Arbitraj indisponibil; candidații probabili vor necesita verificare manuală: ${error.message}`);
+        console.warn(`[similarity-ai] Arbitraj indisponibil: ${error.message}`);
       }
     } else {
       console.warn("[similarity-ai] GEMINI_API_KEY lipsește; nu folosesc embeddingul ca verdict final.");
     }
-    // Embeddings retrieve candidates only; Gemini decides duplicate vs. different.
-    // Missing/failed AI verdicts remain visible for a human instead of blocking
-    // an article based on cosine similarity alone.
+    // Gemini arbitrates all retrieved candidates. When it gives no decision,
+    // only pairs with local duplicate evidence require manual review.
     best = applySimilarityAiReview(openCandidates, reviewCandidates, review);
   }
   // O pereche confirmată de om are prioritate peste orice verdict automat.

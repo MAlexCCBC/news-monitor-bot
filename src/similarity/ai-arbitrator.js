@@ -742,8 +742,8 @@ export async function arbitrateSimilarity(incoming, candidates, {
       };
     }
     return uncertain || {
-      verdict: "uncertain",
-      reason: "Niciun model disponibil nu a returnat un verdict complet și validat pentru această pereche.",
+      verdict: "unavailable",
+      reason: "Niciun model nu a returnat un verdict pentru această pereche.",
       modelChecks,
     };
   });

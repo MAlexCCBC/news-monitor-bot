@@ -142,6 +142,45 @@ test("partial Gemini results are retained and only candidates without a valid ve
   assert.equal(result.results[1].modelChecks[0].model, "gemini-focus-b");
 });
 
+test("Gemini outage does not make unrelated vector candidates into manual approvals", async () => {
+  const incoming = {
+    title: "Dan Neculăescu reacționează la atacurile împotriva românilor din Germania",
+    content: "Ambasadorul a condamnat atacurile împotriva românilor.",
+  };
+  const candidates = [
+    { url: "budget", title: "Nicușor Dan vorbește despre bugetul european", content: "Negocierile bugetare vor fi dificile.",
+      score: .80, embeddingComparable: true, isDuplicate: false, isPendingApproval: true },
+    { url: "backfill", title: "Anunț electoral", content: "Campania începe luni.",
+      score: 0, embeddingComparable: false, isDuplicate: false },
+  ];
+  const outage = await arbitrateSimilarity(incoming, candidates, {
+    models: ["test-outage-model"],
+    modelFilter: async (models) => models,
+    callModel: async () => { throw { response: { status: 503 } }; },
+  });
+
+  assert.deepEqual(outage.results.map(({ verdict }) => verdict), ["unavailable", "unavailable"]);
+  for (const review of [outage, null]) {
+    const result = applySimilarityAiReview(candidates, candidates, review);
+    assert.equal(result.isDuplicate, false);
+    assert.equal(result.aiVerdict, "unavailable");
+  }
+});
+
+test("a missing decision keeps an anchored pair and never substitutes a higher-scoring unrelated link", () => {
+  const weak = { url: "topic-only", score: .91, embeddingComparable: true, isDuplicate: false };
+  for (const anchor of [{ isDuplicate: true }, { lexicalRetrievalScore: .77 }, { sameArticleIdentity: true }]) {
+    const strong = { url: "matched", score: .79, ...anchor };
+    const review = { results: [{ verdict: "different" }, { verdict: "unavailable" }] };
+    const result = applySimilarityAiReview([weak, strong], [weak, strong], review);
+
+    assert.equal(result.isDuplicate, true);
+    assert.equal(result.aiVerdict, "uncertain");
+    assert.equal(result.url, strong.url);
+    assert.match(result.similarityZone, /Gemini indisponibil/);
+  }
+});
+
 test("uncertain pairs get at most three independent model checks", async () => {
   const attemptedModels = [];
   const result = await arbitrateSimilarity(
