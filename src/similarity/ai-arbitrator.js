@@ -1,4 +1,5 @@
 import axios from "axios";
+import { articleFocus } from "../scraper/clean-content.js";
 import { describeGeminiError, filterModels, recordModelFailure } from "../ai/models.js";
 import { finalGeminiText, modelGenerationConfig, modelRequestTimeout, withGeminiRetries } from "../ai/gemini-client.js";
 
@@ -152,6 +153,7 @@ Reguli:
 - Verifică valorile concrete centrale (de exemplu număr de voturi, sumă, procent sau dată). Estimări diferite ale aceluiași rezultat nu sunt aceeași informație; tratează-le ca actualizare/relatări distincte, nu le uni doar pentru că actorul și subiectul coincid.
 - Declarații diferite ale aceleiași persoane, întâlniri diferite, etape diferite ale unui proces și evenimente ulterioare distincte NU sunt duplicate. Potrivește acțiunea/afirmația centrală, nu simpla participare la același context.
 - Nu marca "same_report" pe baza unui singur nume, a aceleiași teme sau a unei explicații vagi precum "relatează aceeași criză". O declarație ulterioară sau o informație concretă nouă (de exemplu, anunțarea datei unei noi desemnări) este o actualizare, nu duplicatul unei reacții anterioare care doar aștepta pașii următori.
+- Dovada trebuie să susțină faptul din titlu și din deschiderea fiecărui articol. Dacă un articol relatează arestările și altul o reacție publică la dosar, sau dacă declarațiile provin din intervenții separate, contextul comun din paragrafele de final nu dovedește un duplicat.
 - Pentru fiecare știre, extrage evenimentul central în patru câmpuri:
   * actor: numele canonic al persoanei sau instituției care acționează, fără funcție sau titlu când numele apare în text (ex. "Nicușor Dan", nu "președintele României"). Folosește "${UNKNOWN_LABEL}" dacă actorul nu poate fi identificat.
   * action: O ETICHETĂ EXACTĂ din această listă: ${ACTION_LABELS.join(", ")}. Alege cea mai apropiată; nu scrie o formulare liberă.
@@ -257,12 +259,6 @@ function stageIsGrounded(stage, evidence) {
   return Array.from(factTokens(evidence)).some((token) => canonicalStage(token) === expected);
 }
 
-function hasVerifiedQuote(quotes, article) {
-  return Array.isArray(quotes) && quotes.some((quote) =>
-    typeof quote === "string" && quote.trim().length >= 25 && quoteAppearsInArticle(quote, article)
-  );
-}
-
 function normalizeQuote(value) {
   return String(value || "")
     .normalize("NFC")
@@ -275,11 +271,87 @@ function normalizeQuote(value) {
     .trim();
 }
 
-function quoteAppearsInArticle(quote, article) {
-  const needle = normalizeQuote(quote);
-  if (needle.length < 25) return false;
-  const units = articleEvidenceUnits(article);
-  return units.some((unit) => normalizeQuote(unit).includes(needle));
+function foldedArticleText(value) {
+  return normalizeQuote(value).normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+    .replace(/\bsa i\b/g, "sa ii");
+}
+
+const PERSON_NAME = String.raw`\p{Lu}\p{Ll}+(?:[- ]\p{Lu}\p{Ll}+){1,2}`;
+const HEADLINE_REACTION = new RegExp(String.raw`^(${PERSON_NAME}) (?:ridică semne de întrebare|reacționează|comentează)\b`, "u");
+const CANDIDATE_NAME = new RegExp(String.raw`(${PERSON_NAME}),?\s+va candida\b|\bcandidat(?:ă)?\s+[A-Z]{2,5}\b[^.!?;]{0,85}?\s+pe\s+(${PERSON_NAME})`, "u");
+const NOMINATION_SPEAKER = new RegExp(String.raw`(${PERSON_NAME}),?\s+a (?:anunțat|anunţat|desemnat)\b`, "u");
+const MAYOR_OFFICE = /\bPrimări[aei]{1,2}\s+(\p{Lu}\p{Ll}+(?:[- ]\p{Lu}\p{Ll}+)*)/u;
+
+function mayoralNomination(title, focus) {
+  const headline = title.match(CANDIDATE_NAME);
+  const name = foldedArticleText(headline?.[1] || headline?.[2]);
+  const party = title.match(/\b(?:candidat(?:ă)?\s+|candida\s+din partea\s+)([A-Z]{2,5})\b/)?.[1];
+  const announcer = focus.match(NOMINATION_SPEAKER)?.[1];
+  const office = focus.match(MAYOR_OFFICE)?.[1];
+  if (!name || /^(?:primarul|primarita|presedintele|ministrul) /.test(name) || !party || !announcer || !office || !foldedArticleText(focus).includes(name)) return null;
+  if (!new RegExp(String.raw`\b(?:candidat(?:ă)?\s+|candida\s+din partea\s+|candideze[^.!?]{0,90}?din partea\s+)${party}\b`, "u").test(focus)) return null;
+  return {
+    identity: [name, foldedArticleText(announcer), party, foldedArticleText(office)].join("|"),
+    year: title.match(/\b20\d{2}\b/)?.[0],
+  };
+}
+
+function articleFacts(article) {
+  const title = String(article.title || "").replace(/^(?:(?:video|update|exclusiv)\s*[:.-]?\s+)+/i, "");
+  const focus = articleFocus(article.content, article.title);
+  const lead = foldedArticleText(focus);
+  const headline = foldedArticleText(title);
+  const reactionActor = foldedArticleText(title.match(HEADLINE_REACTION)?.[1]);
+  const opening = foldedArticleText(articleEvidenceUnits(article).slice(1, 9).join(" "));
+  return {
+    title, lead, headline, content: article.content,
+    reaction: reactionActor && lead.includes(reactionActor) ? reactionActor : null,
+    courtAppearance: /\b(?:inculpat|audiat|incadrarea juridica)\b/.test(headline) &&
+      /\bla iesirea de la parchet\w*\b/.test(lead),
+    eveningConference: /\bseara\b/.test(opening) &&
+      /\bconferinta\b.{0,120}\b(?:filialei|judeteana|alegeri)\b/.test(opening),
+    nomination: mayoralNomination(title, focus),
+  };
+}
+
+function sharedHeadlineQuote(left, right) {
+  // A quote selected for one headline must also be recognizable in the other
+  // headline and appear in both bodies. Shared background is not enough.
+  const leftBody = foldedArticleText(left.content);
+  const rightBody = foldedArticleText(right.content);
+  for (const [source, other] of [[left, right], [right, left]]) {
+    for (const [, quote] of source.title.matchAll(/[„“"]([^”"“]{20,})[”"“]/gu)) {
+      const phrase = foldedArticleText(quote);
+      const words = phrase.split(" ");
+      if (words.length >= 6 && other.headline.includes(words.slice(0, 4).join(" ")) &&
+          leftBody.includes(phrase) && rightBody.includes(phrase)) return true;
+    }
+  }
+  return false;
+}
+
+function compareGroundedFacts(left, right) {
+  const reactionToLegalCase = (reaction, caseReport) => reaction.reaction &&
+    /\b(?:arestat\w*|sechestrat\w*|inculpat\w*|retinut\w*)\b/.test(caseReport.headline) &&
+    /\b(?:arest\w*|sechestr\w*|inculpat\w*|retinut\w*)\b/.test(caseReport.lead) &&
+    !caseReport.lead.includes(reaction.reaction);
+  if (reactionToLegalCase(left, right) || reactionToLegalCase(right, left)) {
+    return { verdict: "new_development", reason: "Un articol are ca fapt central o reacție publică, celălalt relatarea cazului." };
+  }
+  if ((left.courtAppearance && right.eveningConference && !right.courtAppearance) ||
+      (right.courtAppearance && left.eveningConference && !left.courtAppearance)) {
+    return { verdict: "new_development", reason: "Declarațiile de la ieșirea din Parchet și cele de la conferința de seară sunt intervenții separate." };
+  }
+  if (left.nomination && right.nomination && left.nomination.identity === right.nomination.identity &&
+      (!left.nomination.year || !right.nomination.year || left.nomination.year === right.nomination.year)) {
+    return { verdict: "duplicate", evidenceSource: "article_text", reason: "Ambele texte redau același anunț privind candidatul, partidul și primăria." };
+  }
+  const speaker = left.headline.split(" ")[0];
+  if (left.eveningConference && right.eveningConference && speaker.length >= 5 &&
+      right.headline.startsWith(speaker + " ") && sharedHeadlineQuote(left, right)) {
+    return { verdict: "duplicate", evidenceSource: "article_text", reason: "Aceeași declarație apare în ambele titluri și este confirmată în corpurile articolelor." };
+  }
+  return null;
 }
 
 function conceptTokens(value) {
@@ -433,18 +505,18 @@ function validateDuplicateEvidence(result, incoming, candidate) {
     typeof candidateFact[field] === "string" && candidateFact[field].trim());
   if (!factsComplete) return "Nu există o fișă completă a faptului central pentru ambele articole.";
 
-  // A bad optional quote should not erase otherwise traceable paragraph
-  // evidence. Only a quote that actually appears in that article may relax
-  // the lexical fact check, and it relaxes it for that side alone.
-  const incomingQuoteVerified = hasVerifiedQuote(result.incoming_quotes, incoming);
-  const candidateQuoteVerified = hasVerifiedQuote(result.candidate_quotes, candidate);
-
   const incomingEvidence = evidenceFromUnitIds(result.incoming_evidence_ids, incoming);
   const candidateEvidence = evidenceFromUnitIds(result.candidate_evidence_ids, candidate);
   if (!incomingEvidence || !candidateEvidence) return "Referințele de probă nu indică unități valide din ambele articole.";
   if (!includesBodyEvidence(result.incoming_evidence_ids, incoming) || !includesBodyEvidence(result.candidate_evidence_ids, candidate)) {
     return "Un verdict de duplicat trebuie susținut și de corpul ambelor articole, nu doar de titluri.";
   }
+  // An optional literal quote can support the fact only when it comes from
+  // one of the referenced body paragraphs.
+  const incomingQuoteVerified = bodyEvidenceIdsFromQuotes(result.incoming_quotes, incoming)
+    ?.some((id) => result.incoming_evidence_ids.includes(id));
+  const candidateQuoteVerified = bodyEvidenceIdsFromQuotes(result.candidate_quotes, candidate)
+    ?.some((id) => result.candidate_evidence_ids.includes(id));
   if (!evidenceSupportsFact(incomingEvidence, incomingFact, { quoteVerified: incomingQuoteVerified }) ||
       !evidenceSupportsFact(candidateEvidence, candidateFact, { quoteVerified: candidateQuoteVerified })) {
     return "Fragmentele exacte nu susțin suficient fișele faptelor centrale.";
@@ -659,11 +731,14 @@ export async function arbitrateSimilarity(incoming, candidates, {
   callModel = requestGemini,
 } = {}) {
   if (!candidates.length) return null;
-  const eligible = await modelFilter(models);
-  const resolvedResults = Array(candidates.length).fill(null);
+  const incomingFacts = articleFacts(incoming);
+  const resolvedResults = candidates.map((candidate) => compareGroundedFacts(incomingFacts, articleFacts(candidate)));
+  let unresolvedIndexes = candidates.flatMap((_, index) => resolvedResults[index] ? [] : [index]);
+  const eligible = unresolvedIndexes.length ? await modelFilter(models) : [];
+  const textResolved = candidates.length - unresolvedIndexes.length;
+  if (textResolved) console.log(`[similarity-ai] Dovezi directe în text pentru ${textResolved}/${candidates.length} perechi.`);
   const lastUncertainResults = Array(candidates.length).fill(null);
   const checksByCandidate = Array.from({ length: candidates.length }, () => []);
-  let unresolvedIndexes = candidates.map((_, index) => index);
   let attempted = 0;
   while (attempted < eligible.length && unresolvedIndexes.length && attempted < MAX_SIMILARITY_MODEL_ATTEMPTS) {
     const model = eligible[attempted++];

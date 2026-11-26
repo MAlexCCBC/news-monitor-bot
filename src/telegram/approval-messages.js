@@ -44,7 +44,8 @@ export function formatApprovalText(item) {
     : null;
   const aiRationale = item.simResult?.aiRationale || (needsManualReview ? item.simResult?.similarityReason : null);
   const aiChecks = Array.isArray(item.simResult?.aiChecks) ? item.simResult.aiChecks : [];
-  const score = aiProbability || (item.simResult?.similarityBasis === "ai_cross_embedding"
+  const directEvidence = item.simResult?.similarityBasis === "article_text";
+  const score = aiProbability || (directEvidence ? "confirmat prin text" : item.simResult?.similarityBasis === "ai_cross_embedding"
     ? (needsManualReview ? "neclar; verificare manuală" : "confirmat prin AI")
     : `${(Number(item.similarity || 0) * 100).toFixed(0)}%${needsManualReview ? " · verdict AI neclar" : item.simResult?.similarityBasis === "semantic_ai" ? " · confirmat prin AI" : ""}`);
   const currentLink = clickableUrl(item.url);
@@ -63,7 +64,9 @@ export function formatApprovalText(item) {
           ? `Gemini nu a putut decide sigur dacă e aceeași informație. Motivul: ${modelText(aiRationale)}`
           : "Gemini nu a putut decide sigur dacă e aceeași informație. Verifică cele două linkuri.")
     : aiVerdict === "duplicate"
-      ? "Gemini a comparat articolele integral și a confirmat că relatează același fapt."
+      ? directEvidence
+        ? modelText(item.simResult.similarityReason || "Aceeași informație a fost confirmată în textele ambelor articole.")
+        : "Gemini a comparat articolele integral și a confirmat că relatează același fapt."
       : ["different", "new_development", "related_context"].includes(aiVerdict)
         ? "Gemini a comparat articolele integral și a respins potrivirea ca duplicat."
         : aiVerdict === "unreviewed"

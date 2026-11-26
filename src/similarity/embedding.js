@@ -606,16 +606,20 @@ export function applySimilarityAiReview(candidates, reviewedCandidates, review) 
   if (confirmed.length) {
     const best = confirmed.sort((a, b) => {
       if (a.isPendingApproval !== b.isPendingApproval) return a.isPendingApproval ? -1 : 1;
+      const directEvidence = Number(verdictByUrl.get(b.url).evidenceSource === "article_text") -
+        Number(verdictByUrl.get(a.url).evidenceSource === "article_text");
+      if (directEvidence) return directEvidence;
       if (a.embeddingComparable !== b.embeddingComparable) return a.embeddingComparable ? -1 : 1;
       return (b.score || b.lexicalRetrievalScore || 0) - (a.score || a.lexicalRetrievalScore || 0);
     })[0];
     const result = verdictByUrl.get(best.url);
+    const directEvidence = result.evidenceSource === "article_text";
     return {
       ...best,
       isDuplicate: true,
-      similarityZone: best.embeddingComparable ? "AI CONFIRMAT (embedding + articol complet)" : "AI CONFIRMAT (articole complete; spații de embedding diferite)",
+      similarityZone: directEvidence ? "CONFIRMAT (dovezi în text)" : best.embeddingComparable ? "AI CONFIRMAT (embedding + articol complet)" : "AI CONFIRMAT (articole complete; spații de embedding diferite)",
       similarityReason: result.reason || "Modelul AI a confirmat că articolele relatează același eveniment.",
-      similarityBasis: best.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
+      similarityBasis: directEvidence ? "article_text" : best.embeddingComparable ? "semantic_ai" : "ai_cross_embedding",
       aiVerdict: "duplicate",
       aiSimilarityProbability: result.duplicateProbability,
       aiChecks: result.modelChecks || [],

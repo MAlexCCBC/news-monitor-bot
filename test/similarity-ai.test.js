@@ -181,6 +181,72 @@ test("a missing decision keeps an anchored pair and never substitutes a higher-s
   }
 });
 
+test("the same mayoral nomination is confirmed from both texts despite a different headline angle", async () => {
+  const incoming = {
+    title: "Primarul PSD al Sucevei, Vasile Rîmbu, va candida din partea PNL în 2028. Anunțul, făcut de Ilie Bolojan",
+    content: "Președintele PNL, Ilie Bolojan, a anunțat joi că primarul Sucevei, Vasile Rîmbu, va candida din partea PNL pentru un nou mandat.\n\nA spus că Rîmbu va candida la Primăria Suceava în 2028 din partea PNL.",
+  };
+  const candidate = {
+    title: "VIDEO Ilie Bolojan l-a anunțat candidat PNL la Primăria Suceava pe Vasile Rîmbu, actualul primar ales pe listele PSD",
+    content: "Ilie Bolojan a anunțat joi că viitorul candidat PNL la Primăria Suceava va fi Vasile Rîmbu, actualul primar ales pe listele PSD.\n\nRîmbu a fost achitat definitiv într-un dosar penal anul trecut.",
+  };
+  for (const [left, right] of [[incoming, candidate], [candidate, incoming]]) {
+    const result = await arbitrateSimilarity(left, [right], {
+      modelFilter: async () => assert.fail("The matching nomination is grounded in both texts"),
+    });
+    assert.equal(result.results[0].verdict, "duplicate");
+    assert.equal(result.results[0].evidenceSource, "article_text");
+  }
+  const differentYear = { ...candidate, title: candidate.title + " în 2032" };
+  const result = await arbitrateSimilarity(incoming, [differentYear], { modelFilter: async () => [] });
+  assert.equal(result.results[0].verdict, "unavailable");
+});
+
+test("public reactions and separate appearances are distinguished from shared case background", async () => {
+  const report = {
+    title: "Primarul din Baia Mare a fost sechestrat, iar trei persoane au fost arestate",
+    content: "Trei persoane au fost arestate preventiv după ce l-ar fi atras pe primarul din Baia Mare într-o locuință.",
+  };
+  const reaction = {
+    title: "Diana Buzoianu ridică semne de întrebare în cazul primarului din Baia Mare",
+    content: "Într-o postare pe Facebook, Diana Buzoianu a pus întrebări despre prezența primarului în apartament.\n\n" + report.content,
+  };
+  const morning = {
+    title: "George Simion, inculpat în dosarul de instigare publică",
+    content: "George Simion a anunțat joi, la ieșirea de la Parchetul General, că a devenit inculpat în dosarul de instigare publică.",
+  };
+  const evening = {
+    title: "Simion: Sunt hotărât să le fac felul. Să-i las fără demnități, să-i jupoi cum au făcut și ei",
+    content: "George Simion a vorbit joi seară la Conferința de alegeri a filialei AUR Vâlcea.\n\n" +
+      "A precizat că a ajuns la Parchet ca suspect și a plecat inculpat.\n\n" +
+      "A adăugat că vrea să îi jupoi cum ne-au jupuit și ei pe noi.",
+  };
+  const sameEvening = {
+    title: "Simion, mesaj pentru Nicușor Dan. Apoi repetă: „Să îi jupoi cum ne-au jupuit”",
+    content: "Liderul AUR, George Simion, a vorbit joi seară la conferința județeană a filialei AUR Vâlcea.\n\n" +
+      "Restul discursului a atins și alte subiecte.\n\n".repeat(8) +
+      "„Să îi jupoi cum ne-au jupuit și ei pe noi”, a declarat liderul AUR.",
+  };
+  for (const [left, right] of [[reaction, report], [evening, morning]]) {
+    const result = await arbitrateSimilarity(left, [right], {
+      modelFilter: async () => assert.fail("The separate developments are grounded in both texts"),
+    });
+    assert.equal(result.results[0].verdict, "new_development");
+  }
+  const result = await arbitrateSimilarity(evening, [morning, sameEvening], {
+    modelFilter: async () => assert.fail("The two definite pairs need no model"),
+  });
+  assert.deepEqual(result.results.map(({ verdict }) => verdict), ["new_development", "duplicate"]);
+  const candidates = [
+    { url: "morning", score: .97, isDuplicate: true },
+    { url: "evening", score: .90, isDuplicate: false },
+  ];
+  const final = applySimilarityAiReview(candidates, candidates, result);
+  assert.equal(final.url, "evening");
+  assert.equal(final.similarityBasis, "article_text");
+  assert.equal(final.aiSimilarityProbability, undefined);
+});
+
 test("uncertain pairs get at most three independent model checks", async () => {
   const attemptedModels = [];
   const result = await arbitrateSimilarity(
