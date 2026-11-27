@@ -273,6 +273,35 @@ test("energy supplier payments and a future pension decision do not require manu
   }
 });
 
+test("an original statement, a later clarification, and a third-party reply stay distinct", async () => {
+  const original = {
+    title: "Mara Ionescu explică motivele anulării alegerilor locale",
+    content: "Mara Ionescu a explicat în conferință motivele anulării alegerilor locale din oraș.",
+  };
+  const clarificationBody = "Mara Ionescu a revenit cu o postare pe rețelele de socializare ca să clarifice declarația despre anularea alegerilor locale.";
+  const clarification = { title: "Mara Ionescu, clarificări despre anularea alegerilor locale", content: clarificationBody };
+  const reprint = { title: "Mara Ionescu revine cu clarificări despre anularea alegerilor locale", content: clarificationBody };
+  const reaction = {
+    title: "Andrei Popescu o critică pe Mara Ionescu după explicațiile despre anularea alegerilor",
+    content: "Andrei Popescu o critică pe Mara Ionescu pentru felul în care a explicat anularea alegerilor locale.",
+  };
+  const noModel = { modelFilter: async () => assert.fail("The reports are distinguished by their primary facts") };
+  const review = await arbitrateSimilarity(clarification, [original, reprint], noModel);
+  assert.deepEqual(review.results.map(({ verdict }) => verdict), ["new_development", "duplicate"]);
+  assert.equal((await arbitrateSimilarity(reaction, [original], noModel)).results[0].verdict, "new_development");
+});
+
+test("the same pension announcement is recognized from the speaker, date and words in both articles", async () => {
+  const body = "Ministrul Ana Ionescu a declarat într-un interviu că pensiile se vor indexa de la 1 ianuarie 2030, iar Guvernul va stabili procentul de majorare în funcție de proiecțiile bugetare.";
+  const earlier = { title: "Ionescu dă asigurări că pensiile vor crește de la 1 ianuarie 2030", content: body };
+  const later = { title: "Ana Ionescu spune că pensiile vor crește de la 1 ianuarie 2030", content: body };
+  const result = await arbitrateSimilarity(later, [earlier], { modelFilter: async () => assert.fail("Same dated statement") });
+  assert.equal(result.results[0].verdict, "duplicate");
+  const changed = { title: later.title.replace("2030", "2031"), content: body.replace("2030", "2031") };
+  const contrast = await arbitrateSimilarity(changed, [earlier], { modelFilter: async () => [] });
+  assert.equal(contrast.results[0].verdict, "unavailable");
+});
+
 test("uncertain pairs get at most three independent model checks", async () => {
   const attemptedModels = [];
   const result = await arbitrateSimilarity(

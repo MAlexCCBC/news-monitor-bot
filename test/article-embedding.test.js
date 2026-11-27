@@ -143,6 +143,48 @@ test("AI similarity arbitration receives full candidate articles and can recover
   }
 });
 
+test("a verified publisher translation takes precedence over unrelated candidates", async (t) => {
+  t.mock.method(axios, "post", async (_url, requestBody) => ({
+    data: { embeddings: requestBody.requests.map(() => ({ values: [1, 0] })) },
+  }));
+  const english = [
+    "The Ministry of Finance described the economic situation and public debt of 65 percent of GDP in the government report.",
+    "The government proposes a budget review before August 2030. The Ministry of Finance will publish the updated fiscal report.",
+    "The report notes that taxes collected for recycling household appliances will be transferred to the EU budget.",
+  ].join("\n\n");
+  const romanian = [
+    "Ministerul Finanțelor a descris situația economică și datoria publică de 65 la sută din PIB în raportul Guvernului.",
+    "Guvernul propune o revizuire a bugetului înainte de august 2030. Ministerul Finanțelor va publica raportul fiscal actualizat.",
+    "Raportul notează că taxele colectate pentru reciclarea electrocasnicelor vor fi virate la bugetul UE.",
+  ].join("\n\n");
+  const incoming = "Ministry of Finance presents the economic situation and public debt\n" + english;
+  const previous = {
+    url: "https://news.example/economie/raport",
+    title: "Ministerul Finanțelor prezintă situația economică și datoria publică",
+    content: romanian,
+    embedding: [0.94, Math.sqrt(1 - 0.94 ** 2)],
+    embeddingModel: "gemini-embedding-001",
+    embeddingVersion: "article-full-v1:gemini-embedding-001",
+  };
+  const result = await checkSimilarity(incoming, [previous], 0.8, "https://news.example/english/report", {
+    arbitrate: async () => assert.fail("The translation already has matching body paragraphs"),
+  });
+  assert.equal(result.isDuplicate, true);
+  assert.equal(result.similarUrl, previous.url);
+  assert.equal(result.similarityBasis, "article_text");
+
+  for (const alternate of [
+    { ...previous, url: "https://other.example/economie/raport" },
+    { ...previous, content: romanian.replace("65", "70") },
+    { ...previous, content: romanian.split("\n\n")[0] },
+  ]) {
+    const contrast = await checkSimilarity(incoming, [alternate], 0.8, "https://news.example/english/report", {
+      arbitrate: async () => ({ results: [{ verdict: "different" }] }),
+    });
+    assert.equal(contrast.isDuplicate, false);
+  }
+});
+
 test("confirmed matches preserve pending-approval identity for duplicate-card suppression", async () => {
   const originalPost = axios.post;
   axios.post = async (_url, requestBody) => ({

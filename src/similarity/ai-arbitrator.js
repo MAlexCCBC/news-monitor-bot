@@ -296,6 +296,39 @@ function mayoralNomination(title, focus) {
   };
 }
 
+function headlineSpeaker(title, opening) {
+  const start = title.replace(/^(?:Liberalul|Social-democratul|Deputatul|Ministrul|Senatorul) /, "");
+  const name = start.match(/^\p{Lu}\p{Ll}+(?:[- ]\p{Lu}\p{Ll}+){0,2}(?=\s*(?:[,:()„"]| (?:revine|spune|da|dă|afirma|afirmă|cere|anunta|anunță|explica|explică|il|îl|o|acuza|acuză|critica|critică|considera|consideră|sustine|susține)(?!\p{L})))/u)?.[0];
+  const surname = foldedArticleText(name).split(" ").at(-1);
+  return surname.length >= 3 && opening.split(" ").includes(surname) ? surname : null;
+}
+
+function hasSharedPhrase(left, right) {
+  const phrases = bodyShingles(right, 8);
+  return [...bodyShingles(left, 8)].some((phrase) => phrases.has(phrase));
+}
+
+function headlineUpdate(headline, opening) {
+  if (/\b(?:clarific\w*|revine .{0,22}precizar\w*)\b/.test(headline) &&
+      /\b(?:postar\w*|facebook|retelele de socializare)\b/.test(opening) &&
+      /\b(?:a revenit|dupa ce a declarat|clarific\w*)\b/.test(opening)) return "clarification";
+  return null;
+}
+
+function leadReacted(facts) {
+  return /\b(?:critic\w*|ironizeaz\w*|contrazic\w*|reaction\w*|minte|atrage atentia|dezmin\w*)\b/.test(facts.headline) ||
+    /^.{0,90}\b(?:ii critica|il critica|il ironizeaza|le raspunde|ii raspunde)\b/.test(facts.lead) ||
+    (/\bdupa ce\b/.test(facts.headline) && /\b(?:raspund\w*|ironizeaz\w*|replic\w*)\b/.test(facts.lead));
+}
+
+function pensionsPromise({ headline, opening }) {
+  const monthDay = headline.match(/\b(?:[1-9]|[12]\d|3[01]) (?:ianuarie|februarie|martie|aprilie|mai|iunie|iulie|august|septembrie|octombrie|noiembrie|decembrie)\b/)?.[0];
+  const claim = /\bpensi\w*\b.{0,55}\b(?:vor creste|vor fi indexate|vor fi majorate|se vor indexa|se vor majora)\b/;
+  if (!monthDay || !claim.test(headline) || !claim.test(opening) || !opening.includes(monthDay) ||
+      /\b(?:daca|nu|ar putea|s ar putea)\b.{0,18}\bpensi\w*\b/.test(headline)) return null;
+  return { monthDay, year: headline.match(/\b20\d{2}\b/)?.[0] };
+}
+
 function articleFacts(article) {
   const title = String(article.title || "").replace(/^(?:(?:video|update|exclusiv)\s*[:.-]?\s+)+/i, "");
   const focus = articleFocus(article.content, article.title);
@@ -304,7 +337,9 @@ function articleFacts(article) {
   const reactionActor = foldedArticleText(title.match(HEADLINE_REACTION)?.[1]);
   const opening = foldedArticleText(articleEvidenceUnits(article).slice(1, 9).join(" "));
   return {
-    title, lead, headline, content: article.content,
+    title, lead, headline, opening, content: article.content,
+    speaker: headlineSpeaker(title, opening),
+    update: headlineUpdate(headline, opening),
     reaction: reactionActor && lead.includes(reactionActor) ? reactionActor : null,
     courtAppearance: /\b(?:inculpat|audiat|incadrarea juridica)\b/.test(headline) &&
       /\bla iesirea de la parchet\w*\b/.test(lead),
@@ -354,6 +389,71 @@ function compareGroundedFacts(left, right) {
   const rightFinance = financialStoryFocus(right);
   if (leftFinance && rightFinance && leftFinance !== rightFinance) {
     return { verdict: "related_context", reason: "Plățile pentru schemele de energie și decizia viitoare privind pensiile sau salariile sunt informații distincte." };
+  }
+  if (left.speaker && left.speaker === right.speaker) {
+    if (left.update !== right.update && (left.update || right.update)) {
+      const original = left.update ? right : left;
+      const followUp = left.update ? left : right;
+      if (/\b(?:a declarat|a explicat|conferinta|a afirmat)\b/.test(original.opening) &&
+          !/\b(?:a revenit|postare pe facebook|postare pe retelele)\b/.test(original.lead) &&
+          sharedFactTerms(original.headline, followUp.headline) >= 3) {
+        return { verdict: "new_development", reason: "Un articol relatează declarația inițială, iar celălalt o clarificare transmisă ulterior." };
+      }
+    }
+    if (left.update && left.update === right.update && sharedFactTerms(left.headline, right.headline) >= 3 &&
+        overlapRatio(left.opening, right.opening) >= 0.22 &&
+        hasSharedPhrase(left.opening, right.opening)) {
+      return { verdict: "duplicate", evidenceSource: "article_text", reason: "Ambele articole redau aceeași clarificare, confirmată de textele lor." };
+    }
+    const referencesNewReport = (facts) => /\braport\w*\b.{0,32}\b(?:prezentat|publicat)\b.{0,10}\b(?:astazi|azi|vineri)\b/.test(facts.opening);
+    const referencesEarlierInterview = (facts) => /\b(?:intrebat la|interviu acordat|intr un interviu)\b/.test(facts.lead) &&
+      !referencesNewReport(facts);
+    if ((referencesNewReport(left) && referencesEarlierInterview(right)) ||
+        (referencesNewReport(right) && referencesEarlierInterview(left))) {
+      return { verdict: "new_development", reason: "Un articol relatează reacția la raportul publicat ulterior, iar celălalt declarația din interviu." };
+    }
+    const leftPromise = pensionsPromise(left);
+    const rightPromise = pensionsPromise(right);
+    if (leftPromise && rightPromise && leftPromise.monthDay === rightPromise.monthDay &&
+        (!leftPromise.year || !rightPromise.year || leftPromise.year === rightPromise.year) &&
+        overlapRatio(left.opening, right.opening) >= 0.24 && hasSharedPhrase(left.opening, right.opening)) {
+      return { verdict: "duplicate", evidenceSource: "article_text", reason: "Același vorbitor anunță aceeași majorare a pensiilor, cu aceeași dată, în ambele articole." };
+    }
+  }
+  const repliesTo = (reply, source) => reply.speaker && source.speaker && reply.speaker !== source.speaker &&
+    leadReacted(reply) && (reply.headline.split(" ").includes(source.speaker) ||
+      reply.lead.split(" ").includes(source.speaker)) && !source.lead.split(" ").includes(reply.speaker);
+  if (repliesTo(left, right) || repliesTo(right, left)) {
+    return { verdict: "new_development", reason: "Una dintre știri relatează replica unui alt vorbitor la declarația din cealaltă știre." };
+  }
+  const focusesOnOffice = (facts) => /\b(?:remani\w*|demis\w*|revoc\w*)\b/.test(facts.headline) &&
+    /\b(?:remani\w*|demis\w*|revoc\w*)\b/.test(facts.opening);
+  const focusesOnPensionCalendar = (facts) => /\bpensi\w*\b/.test(facts.headline) &&
+    /\b(?:decizi\w*|calendar\w*)\b/.test(facts.headline) &&
+    /\b(?:decizi\w*|calendar\w*)\b/.test(facts.lead) && !focusesOnOffice(facts);
+  if ((focusesOnOffice(left) && focusesOnPensionCalendar(right)) ||
+      (focusesOnOffice(right) && focusesOnPensionCalendar(left))) {
+    return { verdict: "related_context", reason: "Răspunsul despre o eventuală schimbare din funcție și calendarul măsurii sunt declarații distincte." };
+  }
+  const publicDebtThreshold = (facts) => {
+    const value = facts.headline.match(/\bdatori\w*\b.{0,75}\b(\d+) din pib\b/)?.[1];
+    return value && /\b(?:prag\w*|reducere)\b.{0,80}\bdatori\w*\b|\bprag\w*.{0,22}\d+/.test(facts.lead) ? value : null;
+  };
+  const leftDebt = publicDebtThreshold(left);
+  const rightDebt = publicDebtThreshold(right);
+  const institutionFunding = (facts) => /\b(?:bani|finant\w*)\b/.test(facts.headline) &&
+    /\b[A-Z]{4,}\b/.test(facts.title) && /\b(?:finant\w*|fond\w*|bani)\b/.test(facts.lead);
+  if ((leftDebt && !rightDebt && institutionFunding(right)) ||
+      (rightDebt && !leftDebt && institutionFunding(left))) {
+    return { verdict: "related_context", reason: "Pragul datoriei publice și finanțarea unei instituții sunt subiecte distincte." };
+  }
+  const budgetOutlookExcludesThreshold = (facts, threshold) =>
+    /\bbuget\w*\b.{0,15}\b20\d{2}\b/.test(facts.headline) &&
+    /\b(?:raport\w*|finante\w*)\b/.test(facts.lead) &&
+    !new RegExp(String.raw`\b(?:prag\w*|depas\w*)\b.{0,28}\b${threshold}\b`, "u").test(foldedArticleText(facts.content));
+  if ((leftDebt && !rightDebt && budgetOutlookExcludesThreshold(right, leftDebt)) ||
+      (rightDebt && !leftDebt && budgetOutlookExcludesThreshold(left, rightDebt))) {
+    return { verdict: "related_context", reason: "Depășirea pragului legal al datoriei și perspectiva generală a bugetului sunt informații distincte." };
   }
   const reactionToLegalCase = (reaction, caseReport) => reaction.reaction &&
     /\b(?:arestat\w*|sechestrat\w*|inculpat\w*|retinut\w*)\b/.test(caseReport.headline) &&

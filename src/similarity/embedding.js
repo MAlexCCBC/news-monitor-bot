@@ -542,6 +542,72 @@ function lexicalRetrievalScore(title, content, old) {
   );
 }
 
+// The publisher's English section has separate URLs for its translated copy.
+function complementaryLanguageSections(leftUrl, rightUrl) {
+  if (!isSamePublisherSource(leftUrl, rightUrl)) return false;
+  const english = (url) => new URL(url).pathname.startsWith("/english/");
+  return english(leftUrl) !== english(rightUrl);
+}
+
+const TRANSLATION_TERMS = [
+  [/\b(?:eu|ue|uniun\w* europe\w*|european union)\b/g, "uniune"],
+  [/\b(?:fund\w*|fond\w*|revenue\w*|venitur\w*|banii|bani)\b/g, "fond"],
+  [/\b(?:budget\w*|buget\w*)\b/g, "buget"],
+  [/\b(?:ministr\w*|ministry|finant\w*|finance)\b/g, "finante"],
+  [/\b(?:taxe\w*|taxes|tax)\b/g, "taxe"],
+  [/\b(?:waste|deseur\w*)\b/g, "deseuri"],
+  [/\b(?:tobacco|tutun\w*)\b/g, "tutun"],
+  [/\b(?:situation|situati\w*)\b/g, "situatie"],
+  [/\b(?:threshold|prag\w*)\b/g, "prag"],
+  [/\b(?:gdp|pib)\b/g, "pib"],
+  [/\b(?:government|guvern\w*)\b/g, "guvern"],
+  [/\b(?:debt\w*|datori\w*)\b/g, "datorie"],
+  [/\b(?:transferred|virat\w*|transfer\w*)\b/g, "transfer"],
+  [/\b(?:household appliances|electrocasnic\w*)\b/g, "electrocasnic"],
+  [/\b(?:refrigerator\w*|frigider\w*)\b/g, "frigider"],
+  [/\b(?:recycl\w*|recicl\w*)\b/g, "reciclare"],
+];
+
+function translationTokens(text) {
+  let folded = normalizedText(text).toLowerCase();
+  for (const [pattern, value] of TRANSLATION_TERMS) folded = folded.replace(pattern, value);
+  return new Set((folded.match(/[a-z]{3,}|[0-9]+(?:[.,][0-9]+)?/g) || [])
+    .filter((word) => !STOP_WORDS.has(word) && !/^(?:the|and|from|are|into|this|that|will|would|for|with|said|some|state|they|which)$/.test(word))
+    .map((word) => /^\d/.test(word) ? word.replace(",", ".") : word.slice(0, 5)));
+}
+
+function translationAnchors(left, right) {
+  const tokens = translationTokens(right);
+  return [...translationTokens(left)].filter((term) => tokens.has(term));
+}
+
+export function hasTranslationEvidence(incoming, previous) {
+  if (!previous.embeddingComparable || !(previous.score >= 0.92) ||
+      !complementaryLanguageSections(incoming.url, previous.url)) return false;
+  if (translationAnchors(incoming.title, previous.title).length < 3) return false;
+  const paragraphs = (article) => cleanArticleContent(article.content || "").split("\n\n")
+    .filter((paragraph) => paragraph.length >= 85);
+  const incomingBody = paragraphs(incoming);
+  const priorBody = paragraphs(previous);
+  const firstNumbers = (body) => [...translationTokens(body.slice(0, 2).join(" "))].filter((token) => /^\d/.test(token));
+  const incomingNumbers = firstNumbers(incomingBody);
+  const priorNumbers = firstNumbers(priorBody);
+  if (incomingNumbers.length && priorNumbers.length &&
+      incomingNumbers.filter((number) => priorNumbers.includes(number)).length < Math.min(incomingNumbers.length, priorNumbers.length)) {
+    return false;
+  }
+  let priorIndex = 0;
+  let matches = 0;
+  for (const paragraph of incomingBody) {
+    const match = priorBody.findIndex((other, index) => index >= priorIndex &&
+      translationAnchors(paragraph, other).length >= 4);
+    if (match === -1) continue;
+    priorIndex = match + 1;
+    if (++matches >= 3) return true;
+  }
+  return false;
+}
+
 export function selectAiReviewCandidates(candidates) {
   const canonicalArticleCandidates = candidates
     .filter((item) => item.sameArticleIdentity)
@@ -587,6 +653,7 @@ export function selectAiReviewCandidates(candidates) {
   // evidence for deciding whether an edit is a true new stage. It must not be
   // crowded out by unrelated high-vector stories in the fixed-size batch.
   addCandidates(canonicalArticleCandidates, 1);
+  addCandidates(candidates.filter((candidate) => candidate.verifiedTranslation), 2);
   addCandidates(vectorCandidates.filter((item) => item.isDuplicate), 2);
   addCandidates(lexicalCandidates, 2);
   // Reserve two Gemini slots for likely matches that have not yet been
@@ -760,6 +827,10 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
     const result = evaluate3ZoneSimilarity(rawSim, titleNew, leadNew, item.title || "", item.content || "", threshold, {
       samePublisher,
     });
+    const verifiedTranslation = hasTranslationEvidence(
+      { title: titleNew, content: leadNew, url: incomingUrl },
+      { ...item, score: rawSim, embeddingComparable }
+    );
     return {
       ...result,
       url: item.url,
@@ -770,6 +841,7 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
       embeddingComparable,
       samePublisher,
       sameArticleIdentity,
+      verifiedTranslation,
       historyRecencyRank,
       samePublisherThreshold: Math.max(threshold, 0.97),
       lexicalRetrievalScore: samePublisher && embeddingComparable ? null : lexicalRetrievalScore(titleNew, leadNew, item),
@@ -796,6 +868,7 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
         Number.isFinite(candidate.lexicalRetrievalScore) ? `text=${Math.round(candidate.lexicalRetrievalScore * 100)}%` : null,
         candidate.isPendingApproval ? "pending" : null,
         candidate.sameArticleIdentity ? "same-url-version" : null,
+        candidate.verifiedTranslation ? "publisher-translation" : null,
         !candidate.isDuplicate && !Number.isFinite(candidate.lexicalRetrievalScore) &&
           !(candidate.embeddingComparable && candidate.score >= AI_RETRIEVAL_FLOOR) ? "recent-backfill" : null,
       ].filter(Boolean).join(",");
@@ -806,7 +879,12 @@ export async function checkSimilarity(newText, recentNewsWithEmbeddings, thresho
   let best = localBest;
   if (reviewCandidates.length) {
     let review = null;
-    if (arbitrate || process.env.GEMINI_API_KEY) {
+    if (reviewCandidates.some((candidate) => candidate.verifiedTranslation)) {
+      review = { results: reviewCandidates.map((candidate) => candidate.verifiedTranslation ? {
+        verdict: "duplicate", evidenceSource: "article_text",
+        reason: "Traducerea aceluiași editor este confirmată de potrivirea titlului și de mai multe paragrafe în aceeași ordine.",
+      } : null) };
+    } else if (arbitrate || process.env.GEMINI_API_KEY) {
       try {
         review = await (arbitrate || arbitrateSimilarity)(
           { title: titleNew, content: leadNew },
