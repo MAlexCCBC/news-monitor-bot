@@ -247,6 +247,32 @@ test("public reactions and separate appearances are distinguished from shared ca
   assert.equal(final.aiSimilarityProbability, undefined);
 });
 
+test("energy supplier payments and a future pension decision do not require manual review", async () => {
+  const energy = {
+    title: "Ministrul Finanțelor anunță că a achitat 90% din datoriile către furnizorii de energie",
+    content: "Ministrul spune că statul a achitat 90% din obligațiile aferente schemelor de plafonare a prețului energiei.",
+  };
+  const pensions = {
+    title: "Nazare, întrebat dacă pensiile și salariile vor crește în 2027",
+    content: "Decizia privind pensiile și salariile va fi luată odată cu aprobarea bugetului, estimată pentru decembrie.",
+  };
+  const pair = await arbitrateSimilarity(energy, [pensions], {
+    modelFilter: async () => assert.fail("Both central facts are corroborated by their opening paragraphs"),
+  });
+  assert.equal(pair.results[0].verdict, "related_context");
+  const previous = { url: "pensions", score: .7388, isDuplicate: false, embeddingComparable: true };
+  assert.equal(applySimilarityAiReview([previous], [previous], pair).isDuplicate, false);
+
+  for (const ambiguous of [
+    { ...pensions, title: "Bugetul pentru pensii și schemele de energie, în discuție" },
+    { ...pensions, content: energy.content },
+    { ...energy, title: "Statul a plătit datoriile din schemele de energie" },
+  ]) {
+    const result = await arbitrateSimilarity(energy, [ambiguous], { modelFilter: async () => [] });
+    assert.equal(result.results[0].verdict, "unavailable");
+  }
+});
+
 test("uncertain pairs get at most three independent model checks", async () => {
   const attemptedModels = [];
   const result = await arbitrateSimilarity(

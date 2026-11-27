@@ -330,7 +330,31 @@ function sharedHeadlineQuote(left, right) {
   return false;
 }
 
+function financialStoryFocus({ headline, lead }) {
+  const energy = /\benerg\w*\b/;
+  const pensionsOrPay = /\b(?:pensi\w*|salari\w*)\b/;
+  const settledPayments = /\b(?:achit\w*|platit\w*|compensat\w*)\b/;
+  const supplierSchemes = /\b(?:furnizor\w*|schem\w*)\b/;
+  const futureDecision = /\b(?:decizi\w*|aprob\w*)\b/;
+  const budgetTiming = /\b(?:buget\w*|decembrie|ianuarie)\b/;
+
+  if (energy.test(headline) && settledPayments.test(headline) && energy.test(lead) &&
+      settledPayments.test(lead) && supplierSchemes.test(lead) && !pensionsOrPay.test(headline)) {
+    return "energy_payments";
+  }
+  if (pensionsOrPay.test(headline) && pensionsOrPay.test(lead) && futureDecision.test(lead) &&
+      budgetTiming.test(lead) && !energy.test(headline)) {
+    return "pension_pay_decision";
+  }
+  return null;
+}
+
 function compareGroundedFacts(left, right) {
+  const leftFinance = financialStoryFocus(left);
+  const rightFinance = financialStoryFocus(right);
+  if (leftFinance && rightFinance && leftFinance !== rightFinance) {
+    return { verdict: "related_context", reason: "Plățile pentru schemele de energie și decizia viitoare privind pensiile sau salariile sunt informații distincte." };
+  }
   const reactionToLegalCase = (reaction, caseReport) => reaction.reaction &&
     /\b(?:arestat\w*|sechestrat\w*|inculpat\w*|retinut\w*)\b/.test(caseReport.headline) &&
     /\b(?:arest\w*|sechestr\w*|inculpat\w*|retinut\w*)\b/.test(caseReport.lead) &&
